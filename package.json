@@ -1,0 +1,21 @@
+{
+  "name": "venue-dashboard",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DASHBOARD_PASSCODE": {
+        "description": "Choose a password for your dashboard \u2014 you type it each time you open the dashboard. Pick something only you and your team know; you can change it later."
+      },
+      "TOKENS": {
+        "description": "Secure storage the dashboard sets up for itself. Nothing for you to enter \u2014 it is created automatically."
+      }
+    }
+  }
+}

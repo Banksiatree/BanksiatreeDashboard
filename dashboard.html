@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your venue dashboard</title>
+<!-- ============================================================
+  Dashboard scaffold (ships in the FC Member Dashboard Kit).
+  Built for the owner's AI to wire data into - do not rebuild it.
+  - All metric maths follows kpi-spec.md (locked definitions).
+  - The Worker (worker.js) supplies raw source data; THIS file computes
+    the metrics, so the locked definitions live in exactly one place.
+  - No FC identity anywhere: this is the owner's own tool.
+  - JS rules: no template literals, apostrophes as ’ in JS strings,
+    dynamic screens built with DOM methods.
+============================================================ -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Khand:wght@500;600;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --gold:        #F2A900;
+  --gold-dim:    rgba(242,169,0,0.10);
+  --black:       #0D0D0D;
+  --cream:       #FAF7F2;
+  --cream2:      #F2EDE4;
+  --cream3:      #E8E0D4;
+  --muted:       #8C8075;
+  --text:        #2A2420;
+  --border:      rgba(13,13,13,0.08);
+  --border-med:  rgba(13,13,13,0.14);
+  --c-teal:        #0E8A6E;
+  --c-teal-bg:     #E6F5F1;
+  --c-teal-border: rgba(14,138,110,0.15);
+  --c-teal-text:   #0a4a3a;
+  --c-blue:        #1A5FB4;
+  --c-blue-bg:     #E8F0FB;
+  --c-blue-border: rgba(26,95,180,0.15);
+  --c-blue-text:   #0f3470;
+  --c-coral:        #C04B28;
+  --c-coral-bg:     #FAECE7;
+  --c-coral-border: rgba(192,75,40,0.15);
+  --c-purple:        #5C3DB0;
+  --c-purple-bg:     #EDE8FA;
+  --c-purple-border: rgba(92,61,176,0.15);
+  --c-purple-text:   #33216b;
+  --c-amber:        #9E6800;
+  --c-amber-bg:     #FDF3DC;
+  --c-amber-border: rgba(158,104,0,0.15);
+  --c-green:        #1A7A3C;
+  --c-green-bg:     #E8F5EE;
+  --c-green-border: rgba(26,122,60,0.15);
+  --accent: var(--gold);
+  --accent-dim: rgba(242,169,0,0.12);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  min-height: 100vh;
+  background: var(--cream);
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text);
+  background-image:
+    radial-gradient(ellipse at 0% 0%, rgba(242,169,0,0.07) 0%, transparent 55%),
+    radial-gradient(ellipse at 100% 100%, rgba(242,169,0,0.04) 0%, transparent 50%);
+}
+#app { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 4rem; }
+
+/* Top bar: the owner's name for the venue, no other identity */
+.topbar { display: flex; align-items: baseline; gap: 1rem; padding: 2rem 0 0.4rem; flex-wrap: wrap; }
+.venue-name { font-family: 'Khand', sans-serif; font-size: 40px; font-weight: 700; color: var(--black); line-height: 1; letter-spacing: -0.01em; }
+.topbar-sub { font-size: 13px; color: var(--muted); font-weight: 300; }
+.top-rule { width: 48px; height: 3px; background: var(--accent); border-radius: 2px; margin: 0.4rem 0 1rem; }
+
+/* Nav tabs */
+.nav { display: flex; gap: 6px; margin-bottom: 1.1rem; flex-wrap: wrap; }
+.nav-tab {
+  font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 500;
+  padding: 9px 18px; border-radius: 50px; border: 1px solid var(--border-med);
+  background: transparent; color: var(--text); cursor: pointer; transition: all .15s;
+}
+.nav-tab:hover { background: var(--cream2); }
+.nav-tab.active { background: var(--black); color: #fff; border-color: var(--black); }
+.nav-tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c-coral); margin-left: 7px; vertical-align: 1px; }
+
+/* Banners */
+.banner { border-radius: 12px; padding: 0.85rem 1.1rem; font-size: 14px; line-height: 1.55; margin-bottom: 0.9rem; border: 1px solid transparent; }
+.banner b { font-weight: 500; }
+.banner-amber { background: var(--c-amber-bg); border-color: var(--c-amber-border); color: var(--c-amber-text, #5a3c00); }
+.banner-coral { background: var(--c-coral-bg); border-color: var(--c-coral-border); color: #6b2510; }
+.banner-link { color: inherit; font-weight: 500; text-decoration: underline; cursor: pointer; }
+
+/* Period bar */
+.period-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 0.4rem; }
+.period-label { font-family: 'Khand', sans-serif; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-right: 2px; }
+.pchip {
+  font-size: 13px; font-weight: 400; padding: 8px 15px; border-radius: 50px;
+  border: 1px solid var(--border-med); background: #fffdf9; color: var(--text);
+  cursor: pointer; transition: all .15s; user-select: none;
+}
+.pchip:hover { border-color: var(--accent); background: var(--accent-dim); }
+.pchip.on { background: var(--black); color: #fff; border-color: var(--black); font-weight: 500; }
+.custom-wrap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0.5rem 0; }
+.custom-wrap input[type=date] {
+  font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 10px;
+  border: 1px solid var(--border-med); border-radius: 9px; background: #fff; color: var(--text);
+}
+.btn-small {
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; padding: 8px 16px;
+  border-radius: 9px; border: none; background: var(--accent); color: var(--black); cursor: pointer;
+}
+.btn-small:disabled { opacity: 0.5; cursor: default; }
+.btn-plain {
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; padding: 8px 16px;
+  border-radius: 9px; border: 1px solid var(--border-med); background: transparent; color: var(--text); cursor: pointer;
+}
+.btn-plain:hover { background: var(--cream2); }
+
+/* Freshness row */
+.fresh-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin: 0.2rem 0 1.1rem; flex-wrap: wrap; }
+.fresh-row .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(242,169,0,0.25); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Period heading */
+.period-heading { font-family: 'Khand', sans-serif; font-size: 21px; font-weight: 600; color: var(--black); margin: 0 0 0.9rem; }
+.period-heading span { color: var(--muted); font-weight: 500; }
+
+/* Metric cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.mcard {
+  background: #fffdf9; border: 1px solid var(--border); border-radius: 16px;
+  padding: 1.25rem 1.35rem 1.1rem; position: relative; overflow: hidden;
+}
+.mcard.needs-check { border-color: var(--c-coral-border); box-shadow: inset 4px 0 0 var(--c-coral); }
+.mcard.not-conf { background: var(--cream2); border-style: dashed; }
+.m-label { font-family: 'Khand', sans-serif; font-size: 13px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem; }
+.m-value { font-family: 'Khand', sans-serif; font-size: 42px; font-weight: 700; color: var(--black); line-height: 1; margin-bottom: 0.15rem; }
+.m-value.dim { color: var(--muted); font-size: 30px; }
+.m-sub { font-size: 13px; color: var(--muted); margin-bottom: 0.55rem; }
+.m-def { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.55; border-top: 1px solid var(--border); padding-top: 0.55rem; margin-top: 0.55rem; }
+.m-tag { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; padding: 3px 9px; border-radius: 4px; margin-bottom: 8px; }
+.tag-check { background: var(--c-coral-bg); color: var(--c-coral); border: 1px solid var(--c-coral-border); }
+.tag-unverified { background: var(--c-amber-bg); color: var(--c-amber); border: 1px solid var(--c-amber-border); }
+.tag-proj { background: var(--c-purple-bg); color: var(--c-purple); border: 1px solid var(--c-purple-border); }
+.cmp-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; padding: 3px 0; }
+.cmp-lab { color: var(--muted); font-weight: 300; }
+.cmp-val { font-weight: 500; }
+.good { color: var(--c-green); } .bad { color: var(--c-coral); } .flat { color: var(--muted); }
+.sparkwrap { margin-top: 0.6rem; }
+.spark-cap { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
+.notconf-msg { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.mcard.alert { border-color: var(--c-amber-border); box-shadow: inset 4px 0 0 var(--c-amber); }
+.tag-alert { background: var(--c-amber-bg); color: var(--c-amber); border: 1px solid var(--c-amber-border); }
+.m-alert { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--c-amber); font-weight: 500; margin: 0 0 0.5rem; }
+.m-decision { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.55; margin-top: 0.45rem; }
+.m-decision b { color: var(--text); font-weight: 500; }
+
+/* Sections shared */
+.screen-title { font-family: 'Khand', sans-serif; font-size: 26px; font-weight: 600; color: var(--black); margin: 0.4rem 0 0.3rem; }
+.screen-sub { font-size: 14px; color: var(--muted); font-weight: 300; line-height: 1.7; max-width: 640px; margin-bottom: 1.2rem; }
+
+/* Connections */
+.conn-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
+.conn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 0.3rem; }
+.conn-name { font-family: 'Khand', sans-serif; font-size: 19px; font-weight: 600; color: var(--black); }
+.conn-pill { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 10px; border-radius: 20px; }
+.pill-ok { background: var(--c-green-bg); color: var(--c-green); border: 1px solid var(--c-green-border); }
+.pill-off { background: var(--cream2); color: var(--muted); border: 1px dashed var(--border-med); }
+.pill-warn { background: var(--c-coral-bg); color: var(--c-coral); border: 1px solid var(--c-coral-border); }
+.conn-line { font-size: 13px; color: var(--muted); line-height: 1.65; }
+.conn-org { background: var(--c-blue-bg); border: 1px solid var(--c-blue-border); color: var(--c-blue-text); border-radius: 10px; padding: 0.65rem 0.9rem; font-size: 13px; margin: 0.6rem 0; line-height: 1.6; }
+.conn-actions { display: flex; gap: 8px; margin-top: 0.6rem; flex-wrap: wrap; }
+.cb-url { font-size: 12px; color: var(--muted); word-break: break-all; background: var(--cream2); border-radius: 8px; padding: 0.5rem 0.7rem; margin-top: 0.55rem; }
+
+/* Reconciliation */
+.recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
+.recon-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.recon-metric { font-family: 'Khand', sans-serif; font-size: 19px; font-weight: 600; color: var(--black); }
+.recon-fig { font-family: 'Khand', sans-serif; font-size: 24px; font-weight: 700; color: var(--black); }
+.recon-inst { font-size: 13.5px; color: var(--text); font-weight: 300; line-height: 1.7; margin: 0.5rem 0 0.7rem; }
+.recon-state { font-size: 12px; font-weight: 500; }
+.diag { background: var(--c-coral-bg); border: 1px solid var(--c-coral-border); border-radius: 10px; padding: 0.8rem 1rem; margin-top: 0.7rem; font-size: 13px; color: #6b2510; line-height: 1.7; }
+.diag ol { margin: 0.3rem 0 0 1.1rem; }
+
+/* Settings */
+.set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; max-width: 760px; }
+.set-cell { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1.2rem; }
+.set-label { font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem; }
+.set-cell input[type=text], .set-cell select, .set-cell input[type=number] {
+  width: 100%; font-family: 'DM Sans', sans-serif; font-size: 14px; padding: 9px 11px;
+  border: 1px solid var(--border-med); border-radius: 9px; background: #fff; color: var(--text);
+}
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatch { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
+.swatch.on { border-color: var(--black); }
+.set-note { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.6; margin-top: 0.5rem; }
+.tag-manual { background: var(--c-blue-bg); color: var(--c-blue-text); border: 1px solid var(--c-blue-border); }
+.mode-wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; max-width: 760px; margin-bottom: 1.6rem; }
+.mode-card { background: #fffdf9; border: 1px solid var(--border-med); border-radius: 14px; padding: 1rem 1.2rem; cursor: pointer; transition: all 0.15s; }
+.mode-card:hover { border-color: var(--accent); }
+.mode-card.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-dim); }
+.mode-t { font-family: 'Khand', sans-serif; font-size: 17px; font-weight: 600; color: var(--black); margin-bottom: 3px; }
+.mode-d { font-size: 12.5px; color: var(--muted); line-height: 1.55; font-weight: 300; }
+.manual-dates { font-size: 14px; color: var(--text); font-weight: 400; margin: 0.2rem 0 1.1rem; }
+.manual-attest { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; color: var(--text); margin: 1.1rem 0; max-width: 760px; line-height: 1.5; }
+.manual-attest input { margin-top: 3px; flex-shrink: 0; }
+.err-line { color: var(--c-coral); font-size: 13px; margin: 0.5rem 0; }
+.btn-primary-dash { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; font-size: 15px; font-weight: 500; font-family: 'DM Sans', sans-serif; color: var(--black); background: var(--accent); border: none; border-radius: 10px; cursor: pointer; }
+.section-sub { font-family: 'Khand', sans-serif; font-size: 16px; font-weight: 600; color: var(--black); margin: 1.8rem 0 0.5rem; }
+.manual-row { font-size: 13px; color: var(--muted); padding: 6px 0; border-bottom: 1px solid var(--border); }
+
+/* Footer */
+.dash-footer { margin-top: 2.4rem; padding-top: 1.3rem; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); font-weight: 300; }
+.dash-footer a { color: var(--muted); }
+
+.fade-in { animation: fadeUp 0.45s cubic-bezier(0.4,0,0.2,1) both; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media (max-width: 640px) {
+  .venue-name { font-size: 30px; }
+  .m-value { font-size: 34px; }
+}
+/* ---- §1 dashboard upgrade: dual headline, meters, trend bars ---- */
+.m-figs { display: flex; align-items: flex-end; gap: 1.6rem; flex-wrap: wrap; margin-bottom: 0.15rem; }
+.m-fig { display: flex; flex-direction: column; }
+.m-pri { font-family: 'Khand', sans-serif; font-size: 42px; font-weight: 700; color: var(--black); line-height: 0.95; }
+.m-fig.sec .m-pri { font-size: 32px; color: var(--text); }
+.m-pri.loss { color: var(--c-coral); }
+.m-unit { font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+.meter { margin: 0.55rem 0 0.5rem; }
+.meter-track { position: relative; height: 8px; border-radius: 5px; background: var(--cream3); }
+.meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; min-width: 2px; }
+.meter-fill.good { background: var(--c-green); }
+.meter-fill.bad { background: var(--c-coral); }
+.meter-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--black); border-radius: 2px; }
+.meter-cap { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.meter-cap b { color: var(--text); font-weight: 600; }
+.meter-cap .good { color: var(--c-green); font-weight: 500; }
+.meter-cap .bad { color: var(--c-coral); font-weight: 500; }
+.tbars { margin-top: 0.7rem; }
+.tbars-cap { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 5px; }
+.tbars svg { display: block; width: 100%; height: 46px; }
+.tbar { fill: var(--accent); }
+.tbar.good { fill: var(--c-green); }
+.tbar.bad { fill: var(--c-coral); }
+.tbar.cur { stroke: var(--black); stroke-width: 0.8; }
+.tbar { cursor: default; }
+.tbar:hover { opacity: 0.78; }
+.mcard.alert { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+</style>
+</head>
+<body>
+<div id="app">
+  <noscript><p style="padding:2rem 0">This dashboard needs JavaScript turned on.</p></noscript>
+</div>
+<script>
+'use strict';
+
+/* ============================================================
+   KIT CONFIG - filled by the kit when it was built.
+   The defaults below are only for previewing the scaffold.
+============================================================ */
+/*KIT_CONFIG_START*/
+var KIT_CONFIG = {
+  "region": "AU",
+  "fyStartMonth": 7,
+  "fyLabel": "1 July to 30 June",
+  "taxLabel": "ex-GST",
+  "currency": "$",
+  "providers": {
+    "accounting": "Xero",
+    "pos": "OOLIO",
+    "rostering": "Urhere"
+  },
+  "metrics": [
+    "revenue",
+    "transactions",
+    "acs",
+    "cogs",
+    "wage",
+    "overheads",
+    "profit"
+  ],
+  "startLevel": "live",
+  "kitDate": "July 2026",
+  "feedbackUrl": ""
+};
+/*KIT_CONFIG_END*/
+
+/* ============================================================
+   Settings (owner-editable in the Settings screen, never in code)
+============================================================ */
+var TZ_DEFAULTS = { AU: 'Australia/Sydney', NZ: 'Pacific/Auckland', US: 'America/New_York' };
+var TZ_CHOICES = {
+  AU: ['Australia/Sydney','Australia/Melbourne','Australia/Brisbane','Australia/Adelaide','Australia/Perth','Australia/Hobart','Australia/Darwin'],
+  NZ: ['Pacific/Auckland','Pacific/Chatham'],
+  US: ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','Pacific/Honolulu','America/Anchorage']
+};
+var ACCENTS = [
+  { key: 'gold',   c: '#F2A900', dim: 'rgba(242,169,0,0.12)' },
+  { key: 'teal',   c: '#0E8A6E', dim: 'rgba(14,138,110,0.12)' },
+  { key: 'blue',   c: '#1A5FB4', dim: 'rgba(26,95,180,0.12)' },
+  { key: 'coral',  c: '#C04B28', dim: 'rgba(192,75,40,0.12)' },
+  { key: 'purple', c: '#5C3DB0', dim: 'rgba(92,61,176,0.12)' },
+  { key: 'green',  c: '#1A7A3C', dim: 'rgba(26,122,60,0.12)' }
+];
+
+function defaultSettings() {
+  return {
+    venueName: 'Your venue',
+    defaultPeriod: 'thisMonth',
+    weekStart: 1,            /* 1 = Monday */
+    rolloverHour: 0,         /* sales before this hour count to the previous trading day */
+    timezone: TZ_DEFAULTS[KIT_CONFIG.region] || 'Australia/Sydney',
+    accent: 'gold',
+    dataMode: KIT_CONFIG.startLevel === 'manual' ? 'manual' : 'live',
+    targets: { cogs: 30, wage: 30, overheads: 30, profit: 10 }
+  };
+}
+function loadSettings() {
+  try {
+    var raw = localStorage.getItem('vd_settings');
+    if (!raw) return defaultSettings();
+    var s = JSON.parse(raw);
+    var d = defaultSettings();
+    for (var k in d) { if (!(k in s)) s[k] = d[k]; }
+    return s;
+  } catch (e) { return defaultSettings(); }
+}
+function saveSettings() { try { localStorage.setItem('vd_settings', JSON.stringify(SETTINGS)); } catch (e) {} }
+var SETTINGS = loadSettings();
+
+function loadJson(key, fallback) {
+  try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch (e) { return fallback; }
+}
+var RECON = loadJson('vd_recon', {});          /* metricKey -> 'confirmed' | 'flagged' */
+var ORG_OK = loadJson('vd_orgok', {});         /* sourceKey -> true */
+var MANUAL = loadJson('vd_manual', {});        /* rangeKey -> { from,to,period,values,attested,enteredAt } */
+function saveRecon() { try { localStorage.setItem('vd_recon', JSON.stringify(RECON)); } catch (e) {} }
+function saveOrgOk() { try { localStorage.setItem('vd_orgok', JSON.stringify(ORG_OK)); } catch (e) {} }
+function saveManual() { try { localStorage.setItem('vd_manual', JSON.stringify(MANUAL)); } catch (e) {} }
+function isManual() { return SETTINGS.dataMode === 'manual'; }
+function rangeKey(from, to) { return iso(from) + '_' + iso(to); }
+
+/* ============================================================
+   Metric catalogue - mirrors kpi-spec.md (locked definitions).
+   Values are computed HERE from raw source data, in one place.
+============================================================ */
+var P = KIT_CONFIG.providers;
+var METRIC_DEFS = {
+  revenue:      { label: 'Revenue', fmt: 'money', needs: ['accounting'], goodDir: 'up', benchmark: true,
+                  def: 'All trading income, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
+                  decision: 'Is the top line growing? Sets the base every other number is judged against.' },
+  transactions: { label: 'Number of transactions', fmt: 'int', needs: ['pos'], goodDir: 'up',
+                  def: 'Completed transactions, voids and refunds excluded · from ' + P.pos,
+                  decision: 'Busier or quieter? Points you at footfall versus spend per visit.' },
+  acs:          { label: 'Average customer spend', fmt: 'money2', needs: ['accounting', 'pos'], goodDir: 'up',
+                  def: 'Revenue (' + P.accounting + ', ' + KIT_CONFIG.taxLabel + ') ÷ transactions (' + P.pos + ')',
+                  decision: 'Are upsells and pricing working? Move it with specials, bundles and staff prompts.' },
+  cogs:         { label: 'Cost of goods', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Everything in your Cost of Sales accounts, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
+                  decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
+  wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Wages plus super ÷ revenue · from ' + P.accounting,
+                  decision: 'Rostered to your trade? Over target means trim hours or lift sales per shift.' },
+  overheads:    { label: 'Overheads', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Operating expenses excluding wages, super and cost of sales · from ' + P.accounting,
+                  decision: 'Fixed costs drifting up? Review subscriptions, utilities and new recurring spend.' },
+  profit:       { label: 'Profit', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'up',
+                  def: 'Revenue less cost of sales, wages, super and overheads · from ' + P.accounting,
+                  decision: 'What the venue keeps after the costs you control. The bottom line of the board.' }
+};
+var CHOSEN = KIT_CONFIG.metrics.filter(function (k) { return METRIC_DEFS[k]; });
+
+var SOURCES = [
+  { key: 'accounting', name: P.accounting, role: 'Money figures (' + KIT_CONFIG.taxLabel + ')' },
+  { key: 'pos',        name: P.pos,        role: 'Transaction count' }
+];
+if (P.rostering) SOURCES.push({ key: 'rostering', name: P.rostering, role: 'Projected wages (optional)' });
+
+/* ============================================================
+   Dates and periods - venue timezone, week start, rollover.
+   All maths on UTC-noon stamps so daylight saving never bites.
+============================================================ */
+function partsInTz(dateObj, tz) {
+  var fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false });
+  var parts = {};
+  fmt.formatToParts(dateObj).forEach(function (p) { parts[p.type] = p.value; });
+  return { y: +parts.year, m: +parts.month, d: +parts.day, h: +(parts.hour === '24' ? 0 : parts.hour) };
+}
+function stamp(y, m, d) { return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)); }
+function addDays(s, n) { var x = new Date(s.getTime()); x.setUTCDate(x.getUTCDate() + n); return x; }
+function addMonths(s, n) { var x = new Date(s.getTime()); x.setUTCMonth(x.getUTCMonth() + n); return x; }
+function addYears(s, n) { var x = new Date(s.getTime()); x.setUTCFullYear(x.getUTCFullYear() + n); return x; }
+function iso(s) { return s.toISOString().slice(0, 10); }
+function fromIso(str) { var p = str.split('-'); return stamp(+p[0], +p[1], +p[2]); }
+function monthKey(s) { return iso(s).slice(0, 7); }
+
+/* Today as a TRADING day: before the rollover hour, it is still yesterday. */
+function tradingToday() {
+  var p = partsInTz(new Date(), SETTINGS.timezone);
+  var t = stamp(p.y, p.m, p.d);
+  if (p.h < (+SETTINGS.rolloverHour || 0)) t = addDays(t, -1);
+  return t;
+}
+function startOfWeek(s) {
+  var dow = s.getUTCDay();                       /* 0 Sun .. 6 Sat */
+  var diff = (dow - SETTINGS.weekStart + 7) % 7;
+  return addDays(s, -diff);
+}
+function fyStart(forDate) {
+  var sm = KIT_CONFIG.fyStartMonth;
+  var y = forDate.getUTCFullYear();
+  var thisYears = stamp(y, sm, 1);
+  return (forDate.getTime() >= thisYears.getTime()) ? thisYears : stamp(y - 1, sm, 1);
+}
+
+var PERIODS = [
+  { key: 'thisWeek',  label: 'This week' },
+  { key: 'lastWeek',  label: 'Last week' },
+  { key: 'thisMonth', label: 'This month' },
+  { key: 'lastMonth', label: 'Last month' },
+  { key: 'thisFY',    label: 'This financial year' },
+  { key: 'lastFY',    label: 'Last financial year' },
+  { key: 'custom',    label: 'Custom…' }
+];
+
+/* Returns { from, to, prev:{from,to}, yoy:{from,to}|null, label, prevLabel, yoyLabel } */
+function resolvePeriod(key, customFrom, customTo) {
+  var today = tradingToday();
+  var from, to, prev, yoy, prevLabel, yoyLabel;
+  if (key === 'thisWeek' || key === 'lastWeek') {
+    var ws = startOfWeek(today);
+    if (key === 'lastWeek') ws = addDays(ws, -7);
+    from = ws; to = (key === 'thisWeek') ? today : addDays(ws, 6);
+    prev = { from: addDays(from, -7), to: addDays(to, -7) };
+    yoy = { from: addDays(from, -364), to: addDays(to, -364) };   /* weekday-aligned */
+    prevLabel = 'vs week before'; yoyLabel = 'vs same week last year';
+  } else if (key === 'thisMonth' || key === 'lastMonth') {
+    var base = (key === 'thisMonth') ? today : addMonths(stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), -1);
+    from = stamp(base.getUTCFullYear(), base.getUTCMonth() + 1, 1);
+    var endOfMonth = addDays(addMonths(from, 1), -1);
+    to = (key === 'thisMonth') ? today : endOfMonth;
+    var pf = addMonths(from, -1);
+    var pt = (key === 'thisMonth') ? addDays(addMonths(to, -1), 0) : addDays(addMonths(from, 0), -1);
+    if (key === 'thisMonth') { if (pt.getTime() < pf.getTime()) pt = pf; prev = { from: pf, to: pt }; }
+    else prev = { from: pf, to: addDays(from, -1) };
+    yoy = { from: addYears(from, -1), to: addYears(to, -1) };
+    prevLabel = 'vs month before'; yoyLabel = 'vs same month last year';
+  } else if (key === 'thisFY') {
+    from = fyStart(today); to = today;
+    prev = { from: addYears(from, -1), to: addYears(to, -1) };    /* last FY to the same date */
+    yoy = null;
+    prevLabel = 'vs last financial year to the same date'; yoyLabel = null;
+  } else if (key === 'lastFY') {
+    var curStart = fyStart(today);
+    from = addYears(curStart, -1); to = addDays(curStart, -1);
+    prev = { from: addYears(from, -1), to: addDays(from, -1) };
+    yoy = null;
+    prevLabel = 'vs the financial year before'; yoyLabel = null;
+  } else { /* custom */
+    if (!customFrom || !customTo) return resolvePeriod('thisWeek');
+    from = fromIso(customFrom); to = fromIso(customTo);
+    if (to.getTime() < from.getTime()) { var sw = from; from = to; to = sw; }
+    var len = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
+    prev = { from: addDays(from, -len), to: addDays(from, -1) };
+    yoy = { from: addYears(from, -1), to: addYears(to, -1) };
+    prevLabel = 'vs the ' + len + ' days before'; yoyLabel = 'vs same dates last year';
+  }
+  return { from: from, to: to, prev: prev, yoy: yoy, prevLabel: prevLabel, yoyLabel: yoyLabel };
+}
+
+function fmtRange(r) {
+  function f(s) {
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return s.getUTCDate() + ' ' + months[s.getUTCMonth()] + ' ' + s.getUTCFullYear();
+  }
+  return f(r.from) + ' to ' + f(r.to);
+}
+
+/* ============================================================
+   App state + data fetch
+============================================================ */
+var state = {
+  view: 'dashboard',           /* dashboard | connections | recon | settings */
+  period: SETTINGS.defaultPeriod === 'custom' ? 'thisWeek' : SETTINGS.defaultPeriod,
+  customFrom: null, customTo: null,
+  loading: false,
+  data: null,                  /* last /api/metrics payload */
+  fetchedAt: null,
+  fetchError: null
+};
+
+function apiUrl(force) {
+  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
+  var trendEnd = tradingToday();
+  var trendStart = addMonths(stamp(trendEnd.getUTCFullYear(), trendEnd.getUTCMonth() + 1, 1), -24);
+  var q = 'cur=' + iso(r.from) + ':' + iso(r.to)
+        + '&prev=' + iso(r.prev.from) + ':' + iso(r.prev.to)
+        + (r.yoy ? '&yoy=' + iso(r.yoy.from) + ':' + iso(r.yoy.to) : '')
+        + '&trend=' + monthKey(trendStart) + ':' + monthKey(trendEnd)
+        + '&tz=' + encodeURIComponent(SETTINGS.timezone)
+        + '&rollover=' + (+SETTINGS.rolloverHour || 0);
+  return '/api/metrics?' + q + (force ? '&refresh=1' : '');
+}
+
+/* ---------- Manual mode: build state.data from typed-in numbers ---------- */
+function manualEntry(rng) { return rng ? MANUAL[rangeKey(rng.from, rng.to)] : null; }
+function manualPeriod(entry) {
+  if (!entry) return null;
+  var v = entry.values || {};
+  return {
+    accounting: { revenue: num(v.revenue), cogs: num(v.cogs), wagesSuper: num(v.wagesSuper), overheads: num(v.overheads) },
+    pos: { count: num(v.count) },
+    rostering: { cost: num(v.rosteredCost) }
+  };
+}
+function buildManualTrend() {
+  var byMonth = {};
+  for (var k in MANUAL) {
+    var e = MANUAL[k];
+    if (e && (e.period === 'thisMonth' || e.period === 'lastMonth')) byMonth[e.from.slice(0, 7)] = e.values || {};
+  }
+  var end = tradingToday();
+  var months = [];
+  for (var i = 23; i >= 0; i--) months.push(monthKey(addMonths(stamp(end.getUTCFullYear(), end.getUTCMonth() + 1, 1), -i)));
+  function arr(field) { return months.map(function (m) { var v = byMonth[m]; return (v && typeof v[field] === 'number') ? v[field] : null; }); }
+  return { months: months, accounting: { revenue: arr('revenue'), cogs: arr('cogs'), wagesSuper: arr('wagesSuper'), overheads: arr('overheads') }, pos: { count: arr('count') } };
+}
+function buildManualData() {
+  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
+  var P2 = KIT_CONFIG.providers;
+  var sources = {
+    accounting: { configured: true, connected: true, manual: true, name: P2.accounting },
+    pos: { configured: true, connected: true, manual: true, name: P2.pos }
+  };
+  if (P2.rostering) sources.rostering = { configured: true, connected: true, manual: true, name: P2.rostering };
+  return {
+    manual: true,
+    sources: sources,
+    periods: {
+      cur: manualPeriod(manualEntry({ from: r.from, to: r.to })) || { accounting: {}, pos: {}, rostering: {} },
+      prev: manualPeriod(manualEntry(r.prev)),
+      yoy: r.yoy ? manualPeriod(manualEntry(r.yoy)) : null
+    },
+    trend: buildManualTrend()
+  };
+}
+
+function fetchData(force) {
+  if (isManual()) {
+    state.data = buildManualData();
+    state.fetchedAt = new Date();
+    state.loading = false;
+    state.fetchError = null;
+    render();
+    return;
+  }
+  state.loading = true; state.fetchError = null;
+  render();
+  fetch(apiUrl(force)).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    state.data = json; state.fetchedAt = json.generatedAt ? new Date(json.generatedAt) : new Date(); state.loading = false;
+    render();
+  }).catch(function (err) {
+    state.loading = false;
+    state.fetchError = 'The dashboard couldn’t fetch data just now. Check the Connections screen, or try refresh.';
+    render();
+  });
+}
+
+/* ============================================================
+   Metric computation from raw source data (kpi-spec.md rules)
+============================================================ */
+function srcStatus(key) {
+  var d = state.data;
+  if (!d || !d.sources || !d.sources[key]) return { configured: false };
+  return d.sources[key];
+}
+function isConfigured(key) { var s = srcStatus(key); return !!s.configured; }
+
+function periodValues(slot) {  /* slot: 'cur' | 'prev' | 'yoy' */
+  var d = state.data;
+  if (!d || !d.periods || !d.periods[slot]) return {};
+  var p = d.periods[slot];
+  var acc = p.accounting || null;
+  var pos = p.pos || null;
+  var ros = p.rostering || null;
+  var out = {};
+  if (acc) {
+    out.revenue = num(acc.revenue);
+    out.cogs = num(acc.cogs);
+    out.wagesSuper = num(acc.wagesSuper);
+    out.overheads = num(acc.overheads);
+  }
+  if (pos) out.count = num(pos.count);
+  if (ros) out.rosteredCost = num(ros.cost);
+  return out;
+}
+function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
+
+/* Profit = Revenue − Cost of Sales − (wages+super) − Overheads, for the period.
+   Needs all four; a missing component returns null (never a part-figure). */
+function profitDollars(vals) {
+  if (vals.revenue == null || vals.cogs == null || vals.wagesSuper == null || vals.overheads == null) return null;
+  return vals.revenue - vals.cogs - vals.wagesSuper - vals.overheads;
+}
+/* The dollar amount behind a dual (share-of-revenue) metric. */
+function shareDollars(key, vals) {
+  if (key === 'cogs') return vals.cogs;
+  if (key === 'overheads') return vals.overheads;
+  if (key === 'wage') return vals.wagesSuper;
+  if (key === 'profit') return profitDollars(vals);
+  return null;
+}
+/* The % of revenue a dual metric represents (its primary headline figure). */
+function sharePct(key, vals) {
+  if (vals.revenue == null || vals.revenue === 0) return null;
+  var d = shareDollars(key, vals);
+  if (d == null) return null;
+  return (d / vals.revenue) * 100;
+}
+/* The figure a target/meter applies to: the % for dual metrics, the value
+   otherwise. Revenue has no target (it uses a benchmark). */
+function primaryFigure(key, vals) {
+  return METRIC_DEFS[key].dual ? sharePct(key, vals) : metricValue(key, vals);
+}
+function fmtPctVal(v) { return (v == null) ? '—' : v.toFixed(1) + '%'; }
+function fmtTarget(key, t) {
+  if (METRIC_DEFS[key].dual) return t + '%';
+  if (METRIC_DEFS[key].fmt === 'int') return Math.round(t).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return fmtMoney(t, false);
+}
+
+/* metric value for a slot; null = no data; 'zero-count' handled by caller */
+function metricValue(key, vals) {
+  if (key === 'revenue') return vals.revenue;
+  if (key === 'transactions') return vals.count;
+  if (key === 'cogs') return vals.cogs;
+  if (key === 'overheads') return vals.overheads;
+  if (key === 'profit') return profitDollars(vals);
+  if (key === 'wage') {
+    if (vals.wagesSuper == null || vals.revenue == null || vals.revenue === 0) return null;
+    return (vals.wagesSuper / vals.revenue) * 100;
+  }
+  if (key === 'acs') {
+    if (vals.revenue == null || vals.count == null) return null;
+    if (vals.count === 0) return 'dash';
+    return vals.revenue / vals.count;
+  }
+  return null;
+}
+
+function fmtMoney(v, cents) {
+  var neg = v < 0; v = Math.abs(v);
+  var s = cents ? v.toFixed(2) : Math.round(v).toString();
+  var parts = cents ? s.split('.') : [s];
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '−' : '') + KIT_CONFIG.currency + parts.join('.');
+}
+function fmtValue(key, v) {
+  if (v === 'dash') return '—';
+  if (v == null) return '—';
+  var f = METRIC_DEFS[key].fmt;
+  if (f === 'money') return fmtMoney(v, true);
+  if (f === 'money2') return fmtMoney(v, true);
+  if (f === 'int') return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (f === 'pct') return v.toFixed(1) + '%';
+  return '' + v;
+}
+/* Comparison: % change for money/count, percentage-point change for ratios */
+function compare(key, cur, base) {
+  if (cur == null || base == null || cur === 'dash' || base === 'dash') return null;
+  var dir, text;
+  if (METRIC_DEFS[key].fmt === 'pct') {
+    var diff = cur - base;
+    dir = diff > 0.049 ? 'up' : diff < -0.049 ? 'down' : 'flat';
+    text = Math.abs(diff).toFixed(1) + ' pts';
+  } else {
+    if (base === 0) return null;
+    var pc = ((cur - base) / Math.abs(base)) * 100;
+    dir = pc > 0.049 ? 'up' : pc < -0.049 ? 'down' : 'flat';
+    text = Math.abs(pc).toFixed(1) + '%';
+  }
+  /* Colour by whether the move is GOOD for this metric, not just its direction:
+     a rising cost is bad (coral), a falling cost is good (green). The arrow still
+     shows the real direction. goodDir is 'up' or 'down' per metric. */
+  var good = dir === 'flat' ? null : (dir === METRIC_DEFS[key].goodDir);
+  return { dir: dir, text: text, good: good };
+}
+
+/* Targets and alerts: the owner sets a target per metric in Settings; a card
+   flags when its value sits on the wrong side of that target. */
+function metricTarget(key) {
+  var t = SETTINGS.targets && SETTINGS.targets[key];
+  return (typeof t === 'number' && isFinite(t)) ? t : null;
+}
+function targetBreached(key, v) {
+  if (v == null || v === 'dash') return false;
+  var t = metricTarget(key);
+  if (t == null) return false;
+  return METRIC_DEFS[key].goodDir === 'down' ? (v > t) : (v < t);
+}
+
+/* ============================================================
+   Rendering
+============================================================ */
+function app() { return document.getElementById('app'); }
+function el(tag, cls, html) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (html != null) n.innerHTML = html;
+  return n;
+}
+function applyAccent() {
+  var a = ACCENTS.filter(function (x) { return x.key === SETTINGS.accent; })[0] || ACCENTS[0];
+  document.documentElement.style.setProperty('--accent', a.c);
+  document.documentElement.style.setProperty('--accent-dim', a.dim);
+}
+
+function unconfirmedConnectedMetrics() {
+  return CHOSEN.filter(function (k) {
+    var ready = METRIC_DEFS[k].needs.every(isConfigured);
+    return ready && RECON[k] !== 'confirmed';
+  });
+}
+function anyFlagged() {
+  return CHOSEN.some(function (k) { return RECON[k] === 'flagged'; });
+}
+function anyConfiguredSource() { return SOURCES.some(function (s) { return isConfigured(s.key); }); }
+function unconfirmedOrgs() {
+  return SOURCES.filter(function (s) {
+    var st = srcStatus(s.key);
+    return st.configured && st.connected && !ORG_OK[s.key];
+  });
+}
+
+function render() {
+  applyAccent();
+  var root = app();
+  root.innerHTML = '';
+  var _bt = document.getElementById('vd-bartip'); if (_bt) _bt.style.opacity = '0';
+
+  /* Topbar */
+  var top = el('div', 'topbar');
+  top.appendChild(el('div', 'venue-name', esc(SETTINGS.venueName)));
+  top.appendChild(el('div', 'topbar-sub', 'Your numbers · ' + esc(KIT_CONFIG.taxLabel) + ' · financial year ' + esc(KIT_CONFIG.fyLabel)));
+  root.appendChild(top);
+  root.appendChild(el('div', 'top-rule'));
+
+  /* Nav */
+  var nav = el('div', 'nav');
+  var tabs = isManual()
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+  tabs.forEach(function (t) {
+    var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
+    b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
+    b.onclick = function () { state.view = t.key; render(); };
+    nav.appendChild(b);
+  });
+  root.appendChild(nav);
+
+  /* Banners */
+  if (!isManual() && anyConfiguredSource() && unconfirmedOrgs().length) {
+    var ub = el('div', 'banner banner-amber');
+    ub.innerHTML = '<b>New connection.</b> Confirm the connected account is your business on the <span class="banner-link" id="go-conn">Connections screen</span>.';
+    root.appendChild(ub);
+  }
+  if (!isManual() && anyConfiguredSource() && unconfirmedConnectedMetrics().length) {
+    var b = el('div', 'banner banner-amber');
+    b.innerHTML = '<b>Not verified yet.</b> Before trusting these numbers, check them against your own records on the <span class="banner-link" id="go-recon">Check your numbers screen</span>. Money figures should match your accounting to the cent.';
+    root.appendChild(b);
+  }
+  if (!isManual() && anyFlagged()) {
+    var fb = el('div', 'banner banner-coral');
+    fb.innerHTML = '<b>A number needs checking.</b> One or more figures didn’t match your records. They’re marked below while your AI works through the fix.';
+    root.appendChild(fb);
+  }
+  if (state.fetchError) root.appendChild(el('div', 'banner banner-coral', esc(state.fetchError)));
+  if (!isManual() && state.data && state.data.protected === false) {
+    var pwb = el('div', 'banner banner-coral');
+    pwb.innerHTML = '<b>No password set yet.</b> Anyone with this link can see your numbers. Ask your AI to set a dashboard password.';
+    root.appendChild(pwb);
+  }
+
+  if (isManual() && (state.view === 'connections' || state.view === 'recon')) state.view = 'dashboard';
+  if (state.view === 'dashboard') renderDashboard(root);
+  else if (state.view === 'enter') renderManualEntry(root);
+  else if (state.view === 'connections') renderConnections(root);
+  else if (state.view === 'recon') renderRecon(root);
+  else renderSettings(root);
+
+  /* Footer */
+  var foot = el('div', 'dash-footer');
+  var left = el('div', null, 'Kit built ' + esc(KIT_CONFIG.kitDate) + ' · every connection is read-only');
+  foot.appendChild(left);
+  if (KIT_CONFIG.feedbackUrl) {
+    var right = el('div');
+    right.innerHTML = '<a href="' + esc(KIT_CONFIG.feedbackUrl) + '" target="_blank" rel="noopener">How’s it going? Report a snag</a>';
+    foot.appendChild(right);
+  }
+  root.appendChild(foot);
+
+  var goR = document.getElementById('go-recon');
+  if (goR) goR.onclick = function () { state.view = 'recon'; render(); };
+  var goC = document.getElementById('go-conn');
+  if (goC) goC.onclick = function () { state.view = 'connections'; render(); };
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ---------- Dashboard view ---------- */
+function renderDashboard(root) {
+  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
+
+  /* Period selector */
+  var bar = el('div', 'period-bar');
+  bar.appendChild(el('span', 'period-label', 'Period'));
+  PERIODS.forEach(function (p) {
+    var c = el('button', 'pchip' + (state.period === p.key ? ' on' : ''), p.label);
+    c.onclick = function () {
+      if (p.key === 'custom') { state.period = 'custom'; render(); return; }
+      state.period = p.key; fetchData();
+    };
+    bar.appendChild(c);
+  });
+  root.appendChild(bar);
+
+  if (state.period === 'custom') {
+    var cw = el('div', 'custom-wrap');
+    var f = document.createElement('input'); f.type = 'date'; f.id = 'cfrom'; if (state.customFrom) f.value = state.customFrom;
+    var t = document.createElement('input'); t.type = 'date'; t.id = 'cto'; if (state.customTo) t.value = state.customTo;
+    var go = el('button', 'btn-small', 'Show this range');
+    go.onclick = function () {
+      var fv = document.getElementById('cfrom').value, tv = document.getElementById('cto').value;
+      if (!fv || !tv) return;
+      state.customFrom = fv; state.customTo = tv; fetchData();
+    };
+    cw.appendChild(el('span', 'cmp-lab', 'From'));
+    cw.appendChild(f);
+    cw.appendChild(el('span', 'cmp-lab', 'to'));
+    cw.appendChild(t);
+    cw.appendChild(go);
+    root.appendChild(cw);
+    if (!state.customFrom || !state.customTo) { root.appendChild(el('p', 'screen-sub', 'Pick a start and end date.')); return; }
+  }
+
+  /* Freshness (or, in manual mode, an edit prompt) */
+  var fr = el('div', 'fresh-row');
+  if (isManual()) {
+    fr.innerHTML = 'Showing the numbers you entered.';
+    var eb = el('button', 'btn-plain', 'Add or edit numbers');
+    eb.style.padding = '5px 12px'; eb.style.fontSize = '12px';
+    eb.onclick = function () { state.view = 'enter'; render(); };
+    fr.appendChild(eb);
+  } else if (state.loading) {
+    fr.innerHTML = '<span class="spin"></span> Fetching your latest numbers…';
+  } else {
+    var when = state.fetchedAt ? state.fetchedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+    fr.innerHTML = 'Updated ' + when + ' · updates when you open or refresh this page';
+    var rb = el('button', 'btn-plain', 'Refresh');
+    rb.style.padding = '5px 12px'; rb.style.fontSize = '12px';
+    rb.onclick = function () { fetchData(true); };
+    fr.appendChild(rb);
+  }
+  root.appendChild(fr);
+
+  root.appendChild(el('div', 'period-heading', periodLabel() + ' <span>· ' + fmtRange(r) + '</span>'));
+
+  if (isManual() && !manualEntry({ from: r.from, to: r.to })) {
+    var mb = el('div', 'banner banner-amber');
+    mb.innerHTML = '<b>No numbers entered for this period yet.</b> Add them and your dashboard fills in straight away.';
+    mb.appendChild(document.createElement('br'));
+    var mbtn = el('button', 'btn-plain', 'Enter numbers for ' + periodLabel().toLowerCase());
+    mbtn.style.marginTop = '8px';
+    mbtn.onclick = function () { state.enterPeriod = state.period; state.view = 'enter'; render(); };
+    mb.appendChild(mbtn);
+    root.appendChild(mb);
+  }
+
+  /* Cards */
+  var grid = el('div', 'cards');
+  var cur = periodValues('cur'), prev = periodValues('prev'), yoy = periodValues('yoy');
+  CHOSEN.forEach(function (k) { grid.appendChild(metricCard(k, cur, prev, yoy, r)); });
+  root.appendChild(grid);
+}
+
+function periodLabel() {
+  var p = PERIODS.filter(function (x) { return x.key === state.period; })[0];
+  return p ? p.label.replace('…', '') : '';
+}
+
+function metricCard(key, cur, prev, yoy, r) {
+  var def = METRIC_DEFS[key];
+  var ready = def.needs.every(isConfigured);
+  var card = el('div', 'mcard fade-in');
+
+  if (!ready) {
+    card.className += ' not-conf';
+    card.appendChild(el('div', 'm-label', esc(def.label)));
+    card.appendChild(el('div', 'm-value dim', 'Not configured'));
+    var missing = def.needs.filter(function (s) { return !isConfigured(s); })
+      .map(function (s) { return sourceName(s); }).join(' and ');
+    card.appendChild(el('div', 'notconf-msg', esc(missing) + ' isn’t connected yet. This card lights up when it is – nothing here shows a made-up zero.'));
+    card.appendChild(el('div', 'm-def', esc(def.def)));
+    return card;
+  }
+
+  if (state.data && state.data.manual) {
+    if (manualEntry({ from: r.from, to: r.to })) card.appendChild(el('span', 'm-tag tag-manual', 'Entered by you'));
+  } else if (RECON[key] === 'flagged') {
+    card.className += ' needs-check';
+    card.appendChild(el('span', 'm-tag tag-check', 'Needs checking'));
+  } else if (RECON[key] !== 'confirmed') {
+    card.appendChild(el('span', 'm-tag tag-unverified', 'Unverified'));
+  }
+
+  card.appendChild(el('div', 'm-label', esc(def.label)));
+
+  var v = metricValue(key, cur);
+  if (state.loading && state.data == null) {
+    card.appendChild(el('div', 'm-value dim', '…'));
+  } else {
+    card.appendChild(headline(key, cur, v));
+    if (key === 'acs' && v === 'dash') card.appendChild(el('div', 'm-sub', 'No transactions in this period'));
+    if (key === 'wage' && P.rostering && cur.rosteredCost != null && cur.revenue != null && cur.revenue !== 0) {
+      var pj = ((cur.rosteredCost / cur.revenue) * 100).toFixed(1);
+      var ps = el('div', 'm-sub');
+      ps.innerHTML = '<span class="m-tag tag-proj" style="margin:0 6px 0 0">Projected</span>' + pj + '% from ' + esc(P.rostering) + ' roster';
+      card.appendChild(ps);
+    }
+
+    /* Meter: target for most metrics, recent-average benchmark for revenue */
+    var pf = primaryFigure(key, cur);
+    if (targetBreached(key, pf)) card.className += ' alert';
+    var meter = def.benchmark ? revenueBenchmark(cur) : targetMeter(key, pf);
+    if (meter) card.appendChild(meter);
+
+    /* Comparisons */
+    var cmp1 = compare(key, v, metricValue(key, prev));
+    var row1 = el('div', 'cmp-row');
+    row1.appendChild(el('span', 'cmp-lab', esc(r.prevLabel)));
+    row1.appendChild(cmpVal(cmp1));
+    card.appendChild(row1);
+    if (r.yoy) {
+      var cmp2 = compare(key, v, metricValue(key, yoy));
+      var row2 = el('div', 'cmp-row');
+      row2.appendChild(el('span', 'cmp-lab', esc(r.yoyLabel)));
+      row2.appendChild(cmpVal(cmp2));
+      card.appendChild(row2);
+    }
+    card.appendChild(trendBars(key, r));
+  }
+
+  card.appendChild(el('div', 'm-def', esc(def.def)));
+  if (def.decision) {
+    var dec = el('div', 'm-decision');
+    dec.appendChild(el('b', null, 'Drives: '));
+    dec.appendChild(document.createTextNode(def.decision));
+    card.appendChild(dec);
+  }
+  return card;
+}
+
+function sourceName(key) {
+  var s = SOURCES.filter(function (x) { return x.key === key; })[0];
+  return s ? s.name : key;
+}
+function cmpVal(cmp) {
+  var n = el('span', 'cmp-val');
+  if (!cmp) { n.className += ' flat'; n.textContent = 'no data yet'; return n; }
+  n.className += ' ' + (cmp.good == null ? 'flat' : (cmp.good ? 'good' : 'bad'));
+  n.textContent = (cmp.dir === 'up' ? '▲ ' : cmp.dir === 'down' ? '▼ ' : '● ') + cmp.text;
+  return n;
+}
+
+/* Trend per metric, in the card's PRIMARY unit: % of revenue for dual metrics,
+   the value otherwise. One value per month, null where data is missing. */
+function trendSeries(key) {
+  var d = state.data;
+  if (!d || !d.trend || !d.trend.months) return null;
+  var months = d.trend.months;
+  var acc = d.trend.accounting || {};
+  var pos = d.trend.pos || {};
+  function at(arr, i) { return (arr && arr[i] != null) ? arr[i] : null; }
+  function val(i) {
+    var rev = at(acc.revenue, i);
+    if (key === 'revenue') return rev;
+    if (key === 'transactions') return at(pos.count, i);
+    if (key === 'acs') { var c = at(pos.count, i); return (rev == null || c == null || c === 0) ? null : rev / c; }
+    if (rev == null || rev === 0) return null;
+    var cg = at(acc.cogs, i), wg = at(acc.wagesSuper, i), oh = at(acc.overheads, i);
+    if (key === 'cogs') return (cg == null) ? null : (cg / rev) * 100;
+    if (key === 'overheads') return (oh == null) ? null : (oh / rev) * 100;
+    if (key === 'wage') return (wg == null) ? null : (wg / rev) * 100;
+    if (key === 'profit') return (cg == null || wg == null || oh == null) ? null : ((rev - cg - wg - oh) / rev) * 100;
+    return null;
+  }
+  var series = months.map(function (m, i) { return val(i); });
+  if (!series.some(function (x) { return x != null; })) return null;
+  return { months: months, values: series };
+}
+/* Card headline: dual %/$ for share metrics, single value otherwise. */
+function headline(key, vals, v) {
+  var wrap = el('div', 'm-figs');
+  if (METRIC_DEFS[key].dual) {
+    var pct = sharePct(key, vals);
+    var dollars = shareDollars(key, vals);
+    var loss = (dollars != null && dollars < 0);
+    var f1 = el('div', 'm-fig');
+    f1.appendChild(el('div', 'm-pri' + (loss ? ' loss' : ''), fmtPctVal(pct)));
+    f1.appendChild(el('div', 'm-unit', 'of revenue'));
+    wrap.appendChild(f1);
+    var f2 = el('div', 'm-fig sec');
+    f2.appendChild(el('div', 'm-pri' + (loss ? ' loss' : ''), (dollars == null ? '—' : fmtMoney(dollars, false))));
+    f2.appendChild(el('div', 'm-unit', 'dollars'));
+    wrap.appendChild(f2);
+  } else {
+    var f = el('div', 'm-fig');
+    f.appendChild(el('div', 'm-pri', fmtValue(key, v)));
+    wrap.appendChild(f);
+  }
+  return wrap;
+}
+
+/* Target meter: fill to the value, a marker at the target, coloured by whether
+   the value is on the good side. Null when no target is set. */
+function targetMeter(key, pf) {
+  var t = metricTarget(key);
+  if (t == null || pf == null || pf === 'dash') return null;
+  var def = METRIC_DEFS[key];
+  var bad = (def.goodDir === 'down') ? (pf > t) : (pf < t);
+  var scale = Math.max(pf, t) * 1.4; if (!(scale > 0)) scale = 1;
+  var wrap = el('div', 'meter');
+  var track = el('div', 'meter-track');
+  var fl = el('div', 'meter-fill ' + (bad ? 'bad' : 'good'));
+  fl.style.width = Math.max(0, Math.min(100, (pf / scale) * 100)).toFixed(1) + '%';
+  var mk = el('div', 'meter-mark');
+  mk.style.left = Math.max(0, Math.min(100, (t / scale) * 100)).toFixed(1) + '%';
+  track.appendChild(fl); track.appendChild(mk);
+  wrap.appendChild(track);
+  var status = bad ? (def.goodDir === 'down' ? 'over target' : 'below target') : 'on track';
+  var cap = el('div', 'meter-cap');
+  cap.innerHTML = 'Target ' + esc(fmtTarget(key, t)) + ' · <span class="' + (bad ? 'bad' : 'good') + '">' + status + '</span>';
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+/* Revenue benchmark: this period vs the trailing monthly average. Shown only for
+   single-month periods, where the monthly history is a like-for-like comparison. */
+function revenueBenchmark(cur) {
+  if (state.period !== 'thisMonth' && state.period !== 'lastMonth') return null;
+  var rev = cur.revenue;
+  if (rev == null) return null;
+  var t = trendSeries('revenue');
+  if (!t) return null;
+  var vals = t.values.slice(Math.max(0, t.values.length - 12)).filter(function (x) { return x != null; });
+  if (vals.length < 2) return null;
+  var avg = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+  if (!(avg > 0)) return null;
+  var below = rev < avg * 0.999;
+  var above = rev > avg * 1.001;
+  var scale = Math.max(rev, avg) * 1.4;
+  var wrap = el('div', 'meter');
+  var track = el('div', 'meter-track');
+  var fl = el('div', 'meter-fill ' + (below ? 'bad' : 'good'));
+  fl.style.width = Math.max(0, Math.min(100, (rev / scale) * 100)).toFixed(1) + '%';
+  var mk = el('div', 'meter-mark');
+  mk.style.left = Math.max(0, Math.min(100, (avg / scale) * 100)).toFixed(1) + '%';
+  track.appendChild(fl); track.appendChild(mk);
+  wrap.appendChild(track);
+  var word = below ? 'below' : (above ? 'above' : 'in line');
+  var cap = el('div', 'meter-cap');
+  cap.innerHTML = 'Period average <b>' + esc(fmtMoney(avg, false)) + '</b> · <span class="' + (below ? 'bad' : 'good') + '">' + word + '</span>';
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+/* 12-month history as bars, in the card's primary unit. Bars colour good/bad
+   against the target where set (accent otherwise); the viewed month is outlined;
+   hover shows the month and value. Zero-baselined so a high cost reads as a tall bar. */
+/* Instant hover tooltip for the trend bars - a native <title> is delayed and
+   often doesn't show. One shared, pointer-events-none element at the cursor. */
+function barTipEl() {
+  var t = document.getElementById('vd-bartip');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'vd-bartip';
+    t.style.cssText = 'position:fixed;z-index:60;pointer-events:none;background:#0D0D0D;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:12px;line-height:1.3;padding:5px 9px;border-radius:7px;white-space:nowrap;opacity:0;transform:translate(-50%,calc(-100% - 10px));transition:opacity .07s;box-shadow:0 4px 14px rgba(0,0,0,0.18)';
+    document.body.appendChild(t);
+  }
+  return t;
+}
+function attachBarTip(holder) {
+  holder.addEventListener('mousemove', function (e) {
+    var tg = e.target, lab = (tg && tg.getAttribute) ? tg.getAttribute('data-lab') : null;
+    var tip = barTipEl();
+    if (lab) { tip.textContent = lab; tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY + 'px'; tip.style.opacity = '1'; }
+    else { tip.style.opacity = '0'; }
+  });
+  holder.addEventListener('mouseleave', function () { barTipEl().style.opacity = '0'; });
+}
+
+/* 12-month history as bars, built as real namespaced SVG nodes (not via innerHTML)
+   with explicit inline sizing, so the chart can't collapse or balloon to the
+   browser default. Bars colour good/bad vs target; the viewed month is outlined;
+   hover shows month + value instantly. */
+function trendBars(key, r) {
+  var wrap = el('div', 'tbars');
+  wrap.appendChild(el('div', 'tbars-cap', 'Trend · last 12 months · hover a bar for detail'));
+  var t = trendSeries(key);
+  var nums = t ? t.values.filter(function (x) { return x != null; }) : [];
+  if (!t || !nums.length) {
+    wrap.appendChild(el('div', 'notconf-msg', 'The trend fills in as monthly history comes in.'));
+    return wrap;
+  }
+  var n = t.values.length, start = Math.max(0, n - 12);
+  var months = t.months.slice(start), vals = t.values.slice(start);
+  var shown = vals.filter(function (x) { return x != null; });
+  var maxv = Math.max.apply(null, shown.concat([0]));
+  var minv = Math.min.apply(null, shown.concat([0]));
+  var span = (maxv - minv) || 1;
+  var def = METRIC_DEFS[key], tgt = metricTarget(key), curMonth = monthKey(r.from);
+  var W = 280, H = 46, gap = 3, NS = 'http://www.w3.org/2000/svg';
+  var bw = (W - gap * (vals.length - 1)) / vals.length;
+  var zeroY = H - ((0 - minv) / span) * H;
+  var svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('role', 'img');
+  svg.style.cssText = 'display:block;width:100%;height:46px';
+  for (var i = 0; i < vals.length; i++) {
+    if (vals[i] == null) continue;
+    var x = i * (bw + gap);
+    var vy = H - ((vals[i] - minv) / span) * H;
+    var top = Math.min(vy, zeroY), h = Math.max(1.5, Math.abs(zeroY - vy));
+    var cls = 'tbar';
+    if (tgt != null) cls += ((def.goodDir === 'down') ? (vals[i] > tgt) : (vals[i] < tgt)) ? ' bad' : ' good';
+    if (months[i] === curMonth) cls += ' cur';
+    var rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('class', cls);
+    rect.setAttribute('x', x.toFixed(1));
+    rect.setAttribute('y', top.toFixed(1));
+    rect.setAttribute('width', bw.toFixed(1));
+    rect.setAttribute('height', h.toFixed(1));
+    rect.setAttribute('rx', '1.5');
+    rect.setAttribute('data-lab', months[i] + ' · ' + trendLabel(key, vals[i]));
+    svg.appendChild(rect);
+  }
+  var holder = el('div', 'tbars-svg');
+  holder.appendChild(svg);
+  attachBarTip(holder);
+  wrap.appendChild(holder);
+  return wrap;
+}
+function trendLabel(key, v) {
+  if (METRIC_DEFS[key].dual) return v.toFixed(1) + '%';
+  if (METRIC_DEFS[key].fmt === 'int') return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return fmtMoney(v, false);
+}
+
+/* ---------- Connections view ---------- */
+function renderConnections(root) {
+  root.appendChild(el('div', 'screen-title', 'Connections'));
+  root.appendChild(el('p', 'screen-sub', 'Each of your tools connects here, read-only: the dashboard can look at the numbers, it can never change anything in your till or your books.'));
+
+  SOURCES.forEach(function (s) {
+    var st = srcStatus(s.key);
+    var card = el('div', 'conn-card fade-in');
+    var head = el('div', 'conn-head');
+    head.appendChild(el('span', 'conn-name', esc(s.name)));
+    if (!st.configured) head.appendChild(el('span', 'conn-pill pill-off', 'Not connected'));
+    else if (st.error) head.appendChild(el('span', 'conn-pill pill-warn', 'Needs attention'));
+    else if (st.connected) head.appendChild(el('span', 'conn-pill pill-ok', 'Connected'));
+    else head.appendChild(el('span', 'conn-pill pill-off', 'Set up, not linked yet'));
+    card.appendChild(head);
+    card.appendChild(el('div', 'conn-line', esc(s.role) + (st.lastSync ? ' · last synced ' + esc(st.lastSync) : '')));
+
+    if (st.sandbox) {
+      var sb = el('div', 'banner banner-coral');
+      sb.style.margin = '0.6rem 0 0';
+      sb.innerHTML = '<b>This looks like a test environment.</b> The data here may be fake. Your AI will switch the connection to the live one before any number is trusted.';
+      card.appendChild(sb);
+    }
+
+    if (st.configured && st.connected && st.org) {
+      var ob = el('div', 'conn-org');
+      if (ORG_OK[s.key]) {
+        ob.innerHTML = 'Connected to <b>' + esc(st.org) + '</b> · confirmed as your business';
+      } else {
+        ob.innerHTML = 'Connected to <b>' + esc(st.org) + '</b>. Is that your business (not a personal account, and not someone else’s file)?';
+        var okBtn = el('button', 'btn-small', 'Yes, that’s my business');
+        okBtn.style.marginTop = '8px';
+        okBtn.onclick = function () { ORG_OK[s.key] = true; saveOrgOk(); render(); };
+        ob.appendChild(document.createElement('br'));
+        ob.appendChild(okBtn);
+      }
+      card.appendChild(ob);
+    }
+
+    if (st.error && st.error.plain) {
+      var eb = el('div', 'conn-line');
+      eb.style.color = '#6b2510';
+      eb.style.marginTop = '0.5rem';
+      eb.textContent = st.error.plain;
+      card.appendChild(eb);
+    }
+
+    var act = el('div', 'conn-actions');
+    if (st.configured) {
+      var rec = el('button', 'btn-plain', st.connected ? 'Reconnect' : 'Connect');
+      rec.onclick = function () { window.location.href = '/auth/' + s.key + '/start'; };
+      act.appendChild(rec);
+    } else {
+      act.appendChild(el('span', 'conn-line', 'Your AI sets this up with you during the build.'));
+    }
+    card.appendChild(act);
+
+    var cb = el('div', 'cb-url');
+    cb.innerHTML = 'Callback address for this connection (your AI may ask for it): <b>' + esc(location.origin + '/auth/' + s.key + '/callback') + '</b>';
+    card.appendChild(cb);
+
+    if (st.ingest) card.appendChild(uploadPanel(s));
+
+    root.appendChild(card);
+  });
+}
+
+/* ---------- File upload (the guided-upload rung) ---------- */
+function uploadPanel(s) {
+  var wrap = el('div', 'conn-org');
+  wrap.style.background = 'var(--c-purple-bg)';
+  wrap.style.borderColor = 'var(--c-purple-border)';
+  wrap.style.color = 'var(--c-purple-text)';
+  wrap.innerHTML = '<b>Add data from a file.</b> Export the usual report from '
+    + esc(s.name) + ' (or use the one it emails you), then drop it here. Your AI told you the upload code the first time.';
+
+  var row = el('div', 'conn-actions');
+  var file = document.createElement('input');
+  file.type = 'file';
+  file.accept = '.csv,.txt,.json,.tsv';
+  file.style.fontSize = '12px';
+  row.appendChild(file);
+
+  var code = null;
+  try { code = localStorage.getItem('vd_upcode'); } catch (e) {}
+  var codeInput = null;
+  if (!code) {
+    codeInput = document.createElement('input');
+    codeInput.type = 'password';
+    codeInput.placeholder = 'Upload code';
+    codeInput.style.cssText = 'font-family:DM Sans,sans-serif;font-size:13px;padding:7px 10px;border:1px solid var(--border-med);border-radius:8px;';
+    row.appendChild(codeInput);
+  }
+
+  var btn = el('button', 'btn-small', 'Upload');
+  var msg = el('div', 'conn-line');
+  msg.style.marginTop = '0.4rem';
+  btn.onclick = function () {
+    var f = file.files && file.files[0];
+    if (!f) { msg.textContent = 'Pick the exported file first.'; return; }
+    var useCode = code || (codeInput && codeInput.value);
+    if (!useCode) { msg.textContent = 'Enter the upload code your AI gave you.'; return; }
+    btn.disabled = true;
+    msg.textContent = 'Uploading\u2026';
+    var reader = new FileReader();
+    reader.onload = function () {
+      fetch('/api/ingest?source=' + s.key, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + useCode, 'Content-Type': 'text/plain' },
+        body: reader.result
+      }).then(function (res) { return res.json().then(function (j) { return { ok: res.ok, j: j }; }); })
+        .then(function (out) {
+          btn.disabled = false;
+          if (out.ok && out.j.ok) {
+            try { localStorage.setItem('vd_upcode', useCode); } catch (e) {}
+            msg.textContent = 'Done: ' + out.j.days + ' day' + (out.j.days === 1 ? '' : 's') + ' of data added. Refreshing\u2026';
+            fetchData();
+          } else {
+            msg.textContent = (out.j && out.j.plain) || 'That didn\u2019t work. Try again, or show your AI.';
+          }
+        })
+        .catch(function () { btn.disabled = false; msg.textContent = 'That didn\u2019t work. Check your connection and try again.'; });
+    };
+    reader.readAsText(f);
+  };
+  row.appendChild(btn);
+  wrap.appendChild(row);
+  wrap.appendChild(msg);
+  return wrap;
+}
+
+/* ---------- Check your numbers (reconciliation) ---------- */
+function renderRecon(root) {
+  root.appendChild(el('div', 'screen-title', 'Check your numbers'));
+  root.appendChild(el('p', 'screen-sub',
+    'Before you trust this dashboard, check it against your own records for the same dates: your '
+    + esc(P.accounting) + ' profit and loss for the money figures, and ' + esc(P.pos)
+    + ' for the transaction count. Money figures come straight from ' + esc(P.accounting)
+    + ', so they should match to the cent. Any gap is a build problem for your AI to fix, not something to shrug at.'));
+
+  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
+  root.appendChild(el('p', 'screen-sub', 'Checking period: <b>' + fmtRange(r) + '</b> (change it with the period buttons on the Dashboard).'));
+
+  var cur = periodValues('cur');
+  var anyReady = false;
+
+  CHOSEN.forEach(function (k) {
+    var def = METRIC_DEFS[k];
+    if (!def.needs.every(isConfigured)) return;
+    anyReady = true;
+    var card = el('div', 'recon-card fade-in');
+    var head = el('div', 'recon-head');
+    head.appendChild(el('span', 'recon-metric', esc(def.label)));
+    head.appendChild(el('span', 'recon-fig', fmtValue(k, metricValue(k, cur))));
+    card.appendChild(head);
+
+    var inst;
+    if (k === 'transactions') {
+      inst = 'Open ' + P.pos + ' reporting for exactly these dates. Does the number of completed transactions match the figure above?';
+    } else if (k === 'acs') {
+      inst = 'This one is worked out from two numbers you’ve already checked: revenue (from ' + P.accounting + ') divided by transactions (from ' + P.pos + '). If both inputs match, this is right by definition.';
+    } else if (k === 'wage') {
+      inst = 'In your ' + P.accounting + ' profit and loss for these dates, add the wages and super lines, then divide by the revenue figure you verified. Does it come to the percentage above?';
+    } else {
+      inst = 'Open ' + P.accounting + ' and run your profit and loss for exactly these dates. Does ' + def.label + ' there match the figure above, to the cent?';
+    }
+    card.appendChild(el('div', 'recon-inst', esc(inst)));
+
+    var stateLine = el('div', 'recon-state');
+    if (RECON[k] === 'confirmed') { stateLine.innerHTML = '<span class="up">✓ Confirmed against your records</span>'; }
+    else if (RECON[k] === 'flagged') { stateLine.innerHTML = '<span class="down">Marked as needing a check</span>'; }
+    else { stateLine.innerHTML = '<span class="flat">Not checked yet</span>'; }
+    card.appendChild(stateLine);
+
+    var act = el('div', 'conn-actions');
+    var yes = el('button', 'btn-small', 'It matches');
+    yes.onclick = function () { RECON[k] = 'confirmed'; saveRecon(); render(); };
+    var no = el('button', 'btn-plain', 'It doesn’t match');
+    no.onclick = function () { RECON[k] = 'flagged'; saveRecon(); render(); };
+    act.appendChild(yes); act.appendChild(no);
+    card.appendChild(act);
+
+    if (RECON[k] === 'flagged') {
+      var dg = el('div', 'diag');
+      dg.innerHTML = '<b>Tell your AI it doesn’t match.</b> It will work through the usual culprits, in order:'
+        + '<ol>'
+        + '<li>Wrong accounts mapped (an account included that shouldn’t be, or one missed)</li>'
+        + '<li>Wrong dates, timezone, week start or trading-day rollover</li>'
+        + '<li>Report basis: cash vs accrual, matched to the report you actually ran</li>'
+        + '<li>' + esc(KIT_CONFIG.taxLabel === 'ex-GST' ? 'GST left in, or taken out twice' : 'Sales tax left in, or taken out twice') + '</li>'
+        + '<li>A missing or extra sales channel, or other income bleeding into revenue</li>'
+        + '</ol>';
+      card.appendChild(dg);
+    }
+    root.appendChild(card);
+  });
+
+  if (!anyReady) {
+    root.appendChild(el('p', 'screen-sub', 'Nothing to check yet: no data source is connected. As each tool connects, its numbers appear here for you to verify.'));
+  }
+}
+
+/* ---------- Settings ---------- */
+var TAX_WORD = (KIT_CONFIG.taxLabel || 'ex-GST').replace('ex-', '');
+var MANUAL_FIELDS = [
+  { key: 'revenue',    label: 'Revenue (' + KIT_CONFIG.taxLabel + ')', kind: 'money',
+    help: 'The total trading income on your profit and loss for these dates, before ' + TAX_WORD + '.' },
+  { key: 'count',      label: 'Number of transactions', kind: 'int',
+    help: 'How many completed sales your POS report shows for these dates. Just the count, not dollars.' },
+  { key: 'cogs',       label: 'Cost of goods (Cost of Sales)', kind: 'money',
+    help: 'Your Cost of Sales total on the profit and loss for these dates.' },
+  { key: 'wagesSuper', label: 'Wages plus super', kind: 'money',
+    help: 'Your wages and super total on the profit and loss for these dates.' },
+  { key: 'overheads',  label: 'Overheads', kind: 'money',
+    help: 'Operating expenses on the profit and loss for these dates, not counting wages, super or cost of sales.' },
+  { key: 'rosteredCost', label: 'Rostered wage cost (optional)', kind: 'money',
+    help: 'The rostered wage cost from your roster for these dates. Optional, it powers a projected wage percentage.' }
+];
+var MANUAL_DEP = { revenue: ['revenue'], transactions: ['count'], acs: ['revenue', 'count'], cogs: ['cogs', 'revenue'], wage: ['wagesSuper', 'revenue'], overheads: ['overheads', 'revenue'], profit: ['revenue', 'cogs', 'wagesSuper', 'overheads'] };
+function manualNeededFieldKeys() {
+  var set = {};
+  CHOSEN.forEach(function (k) { (MANUAL_DEP[k] || []).forEach(function (f) { set[f] = true; }); });
+  var keys = [];
+  ['revenue', 'count', 'cogs', 'wagesSuper', 'overheads'].forEach(function (f) { if (set[f]) keys.push(f); });
+  if (KIT_CONFIG.providers.rostering && CHOSEN.indexOf('wage') >= 0) keys.push('rosteredCost');
+  return keys;
+}
+
+function renderManualEntry(root) {
+  root.appendChild(el('div', 'screen-title', 'Enter your numbers'));
+  root.appendChild(el('p', 'screen-sub', 'Type the figures from your own profit and loss and POS report. No accounts to connect and no code. Your dashboard fills in the moment you save, and it takes a couple of minutes each week.'));
+
+  var ep = state.enterPeriod || (state.period === 'custom' ? 'lastWeek' : state.period);
+  state.enterPeriod = ep;
+  var pbar = el('div', 'period-bar');
+  pbar.appendChild(el('span', 'period-label', 'Which dates'));
+  PERIODS.forEach(function (p) {
+    if (p.key === 'custom') return;
+    var c = el('button', 'pchip' + (ep === p.key ? ' on' : ''), p.label);
+    c.onclick = function () { state.enterPeriod = p.key; render(); };
+    pbar.appendChild(c);
+  });
+  root.appendChild(pbar);
+
+  var r = resolvePeriod(ep);
+  root.appendChild(el('p', 'manual-dates', 'You are entering numbers for ' + fmtRange(r) + '.'));
+
+  var existing = manualEntry({ from: r.from, to: r.to });
+  var vals = (existing && existing.values) ? existing.values : {};
+  var fields = manualNeededFieldKeys();
+  var inputs = {};
+  var grid = el('div', 'set-grid');
+  fields.forEach(function (fk) {
+    var fdef = MANUAL_FIELDS.filter(function (x) { return x.key === fk; })[0];
+    var cell = el('div', 'set-cell');
+    cell.appendChild(el('div', 'set-label', esc(fdef.label)));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.min = '0';
+    if (typeof vals[fk] === 'number') inp.value = vals[fk];
+    inp.placeholder = fdef.kind === 'int' ? 'e.g. 540' : (KIT_CONFIG.currency + ' amount');
+    inputs[fk] = inp;
+    cell.appendChild(inp);
+    cell.appendChild(el('div', 'set-note', esc(fdef.help)));
+    grid.appendChild(cell);
+  });
+  root.appendChild(grid);
+
+  var att = el('div', 'manual-attest');
+  var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'attest';
+  if (existing && existing.attested) cb.checked = true;
+  var lab = document.createElement('label'); lab.htmlFor = 'attest';
+  lab.textContent = 'These figures are from my own profit and loss and POS report for these dates.';
+  att.appendChild(cb); att.appendChild(lab);
+  root.appendChild(att);
+
+  var errLine = el('div', 'err-line'); errLine.style.display = 'none';
+  root.appendChild(errLine);
+
+  var saveBtn = el('button', 'btn-primary-dash', 'Save these numbers');
+  saveBtn.onclick = function () {
+    if (!cb.checked) { errLine.textContent = 'Please tick the box to confirm these are your own figures.'; errLine.style.display = 'block'; return; }
+    var newVals = {}; var any = false;
+    fields.forEach(function (fk) {
+      var raw = inputs[fk].value;
+      if (raw !== '' && isFinite(parseFloat(raw))) { newVals[fk] = parseFloat(raw); any = true; }
+    });
+    if (!any) { errLine.textContent = 'Enter at least one number before saving.'; errLine.style.display = 'block'; return; }
+    MANUAL[rangeKey(r.from, r.to)] = { from: iso(r.from), to: iso(r.to), period: ep, values: newVals, attested: true, enteredAt: new Date().toISOString() };
+    saveManual();
+    state.period = ep;
+    state.view = 'dashboard';
+    fetchData();
+  };
+  root.appendChild(saveBtn);
+  root.appendChild(el('p', 'set-note', 'After you save, open the Dashboard tab to see these numbers, how they compare to the period before, and where they need your attention.'));
+
+  var keys = Object.keys(MANUAL).sort().reverse();
+  if (keys.length) {
+    root.appendChild(el('div', 'section-sub', 'Saved so far'));
+    keys.forEach(function (k) {
+      var e = MANUAL[k];
+      root.appendChild(el('div', 'manual-row', esc(fmtRange({ from: fromIso(e.from), to: fromIso(e.to) })) + ' \u00b7 saved'));
+    });
+  }
+}
+
+function renderSettings(root) {
+  root.appendChild(el('div', 'screen-title', 'Settings'));
+  root.appendChild(el('p', 'screen-sub', 'The bits you might want to change, with no code anywhere. Your AI set the rest up during the build.'));
+
+  root.appendChild(el('div', 'set-label', 'Where your numbers come from'));
+  var modeWrap = el('div', 'mode-wrap');
+  [ { k: 'manual', t: 'I type them in', d: 'Enter the numbers from your profit and loss and POS report each week. Works straight away, with nothing to connect.' },
+    { k: 'live', t: 'Connect my software', d: 'Your AI links your accounting and POS so the numbers update on their own. More to set up.' }
+  ].forEach(function (m) {
+    var mc = el('div', 'mode-card' + (SETTINGS.dataMode === m.k ? ' on' : ''));
+    mc.appendChild(el('div', 'mode-t', m.t));
+    mc.appendChild(el('div', 'mode-d', m.d));
+    mc.onclick = function () { SETTINGS.dataMode = m.k; saveSettings(); state.view = (m.k === 'manual' ? 'enter' : 'dashboard'); fetchData(); };
+    modeWrap.appendChild(mc);
+  });
+  root.appendChild(modeWrap);
+
+  var grid = el('div', 'set-grid');
+
+  var c1 = el('div', 'set-cell');
+  c1.appendChild(el('div', 'set-label', 'Venue name'));
+  var vn = document.createElement('input'); vn.type = 'text'; vn.value = SETTINGS.venueName; vn.maxLength = 60;
+  vn.onchange = function () { SETTINGS.venueName = vn.value || 'Your venue'; saveSettings(); render(); };
+  c1.appendChild(vn);
+  grid.appendChild(c1);
+
+  var c2 = el('div', 'set-cell');
+  c2.appendChild(el('div', 'set-label', 'Default period'));
+  var sel = document.createElement('select');
+  PERIODS.forEach(function (p) {
+    if (p.key === 'custom') return;
+    var o = document.createElement('option'); o.value = p.key; o.textContent = p.label;
+    if (SETTINGS.defaultPeriod === p.key) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = function () { SETTINGS.defaultPeriod = sel.value; saveSettings(); };
+  c2.appendChild(sel);
+  c2.appendChild(el('div', 'set-note', 'What the dashboard opens on.'));
+  grid.appendChild(c2);
+
+  var c3 = el('div', 'set-cell');
+  c3.appendChild(el('div', 'set-label', 'Week starts on'));
+  var ws = document.createElement('select');
+  var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  days.forEach(function (d, i) {
+    var o = document.createElement('option'); o.value = i; o.textContent = d;
+    if (+SETTINGS.weekStart === i) o.selected = true;
+    ws.appendChild(o);
+  });
+  ws.onchange = function () { SETTINGS.weekStart = +ws.value; saveSettings(); fetchData(); };
+  c3.appendChild(ws);
+  grid.appendChild(c3);
+
+  var c4 = el('div', 'set-cell');
+  c4.appendChild(el('div', 'set-label', 'Trading day rolls over at'));
+  var ro = document.createElement('select');
+  for (var h = 0; h <= 6; h++) {
+    var o2 = document.createElement('option'); o2.value = h;
+    o2.textContent = (h === 0) ? 'Midnight (no rollover)' : (h + 'am');
+    if (+SETTINGS.rolloverHour === h) o2.selected = true;
+    ro.appendChild(o2);
+  }
+  ro.onchange = function () { SETTINGS.rolloverHour = +ro.value; saveSettings(); fetchData(); };
+  c4.appendChild(ro);
+  c4.appendChild(el('div', 'set-note', 'If you trade past midnight, sales before this hour count to the previous day.'));
+  grid.appendChild(c4);
+
+  var c5 = el('div', 'set-cell');
+  c5.appendChild(el('div', 'set-label', 'Timezone'));
+  var tzSel = document.createElement('select');
+  (TZ_CHOICES[KIT_CONFIG.region] || [SETTINGS.timezone]).forEach(function (z) {
+    var o = document.createElement('option'); o.value = z; o.textContent = z.split('/')[1].replace('_', ' ');
+    if (SETTINGS.timezone === z) o.selected = true;
+    tzSel.appendChild(o);
+  });
+  tzSel.onchange = function () { SETTINGS.timezone = tzSel.value; saveSettings(); fetchData(); };
+  c5.appendChild(tzSel);
+  grid.appendChild(c5);
+
+  var c6 = el('div', 'set-cell');
+  c6.appendChild(el('div', 'set-label', 'Accent colour'));
+  var sw = el('div', 'swatches');
+  ACCENTS.forEach(function (a) {
+    var s = el('div', 'swatch' + (SETTINGS.accent === a.key ? ' on' : ''));
+    s.style.background = a.c;
+    s.title = a.key;
+    s.onclick = function () { SETTINGS.accent = a.key; saveSettings(); render(); };
+    sw.appendChild(s);
+  });
+  c6.appendChild(sw);
+  grid.appendChild(c6);
+
+  root.appendChild(grid);
+
+  /* Targets and alerts (Monday-review thresholds) */
+  root.appendChild(el('div', 'screen-title', 'Targets and alerts'));
+  root.appendChild(el('p', 'screen-sub', 'Set the level you want each number to stay on the right side of. Cost and profit targets are a share of revenue (30 means 30% of revenue); transaction and spend targets are a plain number. A card flags amber when it slips to the wrong side. Revenue is shown against its own recent average instead of a fixed target.'));
+  var tgrid = el('div', 'set-grid');
+  CHOSEN.forEach(function (k) {
+    var mdef = METRIC_DEFS[k];
+    if (mdef.benchmark) return;
+    var cell = el('div', 'set-cell');
+    cell.appendChild(el('div', 'set-label', esc(mdef.label) + (mdef.dual ? ' (% of revenue)' : '')));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
+    inp.value = (SETTINGS.targets && typeof SETTINGS.targets[k] === 'number') ? SETTINGS.targets[k] : '';
+    inp.placeholder = (mdef.goodDir === 'down' ? 'alert if above' : 'alert if below');
+    inp.onchange = function () {
+      if (!SETTINGS.targets) SETTINGS.targets = {};
+      var val = parseFloat(inp.value);
+      if (isFinite(val)) SETTINGS.targets[k] = val; else delete SETTINGS.targets[k];
+      saveSettings(); render();
+    };
+    cell.appendChild(inp);
+    var unit = mdef.dual ? 'percent of revenue' : (mdef.fmt === 'int' ? 'count' : KIT_CONFIG.currency);
+    cell.appendChild(el('div', 'set-note', (mdef.goodDir === 'down' ? 'Alerts when above this ' : 'Alerts when below this ') + unit + '.'));
+    tgrid.appendChild(cell);
+  });
+  root.appendChild(tgrid);
+
+  if (!isManual()) {
+    root.appendChild(el('div', 'section-sub', 'Session'));
+    var logoutBtn = el('button', 'btn-plain', 'Log out');
+    logoutBtn.onclick = function () { fetch('/api/logout', { method: 'POST' }).then(function () { location.reload(); }); };
+    root.appendChild(logoutBtn);
+  }
+}
+
+/* ============================================================
+   Boot
+============================================================ */
+state.period = SETTINGS.defaultPeriod || 'thisWeek';
+render();
+fetchData();
+</script>
+</body>
+</html>
+<!-- EOF dashboard.html -->

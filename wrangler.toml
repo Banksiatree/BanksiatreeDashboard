@@ -1,0 +1,64 @@
+# ============================================================================
+# Venue dashboard - Worker config (ships in the FC Member Dashboard Kit)
+# You are the AI running this build. You write this file and push it to the
+# owner's GitHub; Cloudflare reads it and builds server-side (you cannot reach
+# the owner's Cloudflare yourself). The owner never edits this file.
+# ============================================================================
+
+name = "banksiatreedashboard"          # SET to the GitHub REPO name before first push - sets the URL and must match the repo (else Workers Builds opens a reconciling PR). Lowercased: Cloudflare Worker names must be lowercase.
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+# The dashboard page is bundled into the Worker as text.
+rules = [
+  { type = "Text", globs = ["**/*.html"], fallthrough = true }
+]
+
+# Token + session store (KV). Declared so the GitHub -> Cloudflare deploy
+# AUTO-PROVISIONS it: Cloudflare reads this binding, creates the namespace, and
+# writes its id back here during deploy. No manual `wrangler kv namespace
+# create`, no dashboard step. (Verify current auto-provision behaviour in
+# Cloudflare's docs at build time; for a plain local `wrangler deploy`, wrangler
+# 4+ also auto-creates it, or paste a real id here.)
+[[kv_namespaces]]
+binding = "TOKENS"
+# id is omitted so the FIRST deploy/import auto-provisions the namespace (an empty
+# string "" does NOT trigger that - it must be absent). THEN PIN IT: after the
+# first successful deploy, read the provisioned id from the Cloudflare dashboard
+# and set it below, and push. Otherwise a later deploy can try to re-provision and
+# either error (10014 "namespace already exists") or orphan the namespace holding
+# the dashboard password + connection tokens. Omit once, then pin:
+# id = "<paste the TOKENS namespace id here after the first deploy>"
+
+# ----------------------------------------------------------------------------
+# Secrets - NEVER written in any file, never committed. You cannot reach the
+# owner's Cloudflare, so secrets are set IN CLOUDFLARE, not by you:
+#   DASHBOARD_PASSCODE   OPTIONAL override - you do NOT normally set this. By
+#                        default the owner sets the password on the dashboard's own
+#                        first-run screen (stored hashed in KV). This env var still
+#                        works as an override (the "Deploy to Cloudflare" button
+#                        collects it in its wizard). No password => the dashboard
+#                        shows its set-password screen, never an open one.
+#   ACCOUNTING_CLIENT_ID / ACCOUNTING_CLIENT_SECRET   (OAuth accounting, e.g. Xero)
+#   POS_API_TOKEN                                     (pasted-token POS, e.g. Square)
+#   ROSTERING_API_TOKEN                               (pasted-token rostering, e.g. Deputy)
+#   INGEST_TOKEN                                      (only when a no-API rung is used:
+#                                                      a long random string; authorises
+#                                                      /api/ingest and doubles as the
+#                                                      owner's upload code)
+#   SESSION_SECRET                                    (OPTIONAL - auto-generated in KV on
+#                                                      first run; only set to pin a value)
+# For the provider secrets: during integration the owner pastes the value to
+# YOU, then you walk them click-by-click through adding it in their Cloudflare
+# dashboard (Workers > their dashboard > Settings > Variables and Secrets >
+# Add). You cannot set it for them - the owner clicks, you guide.
+# ----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# Cron rung (only when an adapter uses scheduledPull to fetch a tool's own
+# export on a schedule). Uncomment and set a sensible cadence:
+# [triggers]
+# crons = ["0 3 * * *"]   # daily, 3am UTC - adjust to land after the tool's
+#                          # own export runs
+# ----------------------------------------------------------------------------
+# EOF wrangler.toml
