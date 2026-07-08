@@ -879,6 +879,7 @@ async function fetchSlot(env, q) {
 const METRICS_CACHE_TTL = 120; /* seconds: brief cache for live provider data */
 
 async function apiMetrics(env, url) {
+  console.log('[metrics] start', url.search);
   const cur = parseRange(url.searchParams.get('cur'));
   if (!cur) return json({ error: 'bad cur range' }, 400);
   const prev = parseRange(url.searchParams.get('prev'));
@@ -888,11 +889,13 @@ async function apiMetrics(env, url) {
   const rollover = Math.max(0, Math.min(6, parseInt(url.searchParams.get('rollover') || '0', 10) || 0));
 
   const base = { tz, rollover };
+  console.log('[metrics] before sourceStatus');
   const [sAcc, sPos, sRos] = await Promise.all([
     sourceStatus(env, 'accounting'),
     sourceStatus(env, 'pos'),
     sourceStatus(env, 'rostering')
   ]);
+  console.log('[metrics] after sourceStatus', JSON.stringify({ sAcc, sPos, sRos }));
 
   /* The provider calls (periods + trend) are the expensive part and the only
      thing that brushes provider rate limits on quick reopens/refreshes. Cache
@@ -907,17 +910,23 @@ async function apiMetrics(env, url) {
   const force = url.searchParams.get('refresh') === '1';
   let data = null;
   if (!force && env.TOKENS) {
+    console.log('[metrics] checking cache', cacheKey);
     const cached = await env.TOKENS.get(cacheKey);
-    if (cached) { try { data = JSON.parse(cached); } catch (e) { data = null; } }
+    if (cached) { try { data = JSON.parse(cached); console.log('[metrics] cache hit'); } catch (e) { data = null; } }
   }
   if (!data) {
+    console.log('[metrics] cache miss, fetching live - before cur');
     const periods = {};
     periods.cur = await fetchSlot(env, { ...base, ...cur });
+    console.log('[metrics] after cur', JSON.stringify(periods.cur));
     periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
+    console.log('[metrics] after prev', JSON.stringify(periods.prev));
     periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
+    console.log('[metrics] after yoy', JSON.stringify(periods.yoy));
 
     let trendOut = null;
     if (trend) {
+      console.log('[metrics] before trend');
       trendOut = { months: monthList(trend.fromMonth, trend.toMonth) };
       const trendSources = ['accounting', 'pos'];
       const trendResults = await Promise.all(trendSources.map(async (source) => {
@@ -930,12 +939,14 @@ async function apiMetrics(env, url) {
         } catch (err) { return null; }
       }));
       trendSources.forEach((source, i) => { trendOut[source] = trendResults[i]; });
+      console.log('[metrics] after trend');
     }
     data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
     if (env.TOKENS) {
       try { await env.TOKENS.put(cacheKey, JSON.stringify(data), { expirationTtl: METRICS_CACHE_TTL }); } catch (e) {}
     }
   }
+  console.log('[metrics] done, returning');
 
   return json({
     generatedAt: data.generatedAt,
