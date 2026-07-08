@@ -31,6 +31,9 @@
 ============================================================================ */
 
 import dashboardHtml from './dashboard.html';
+/* PATCHED: trend caching decoupled from period caching + hard request ceiling
+   (see apiMetrics below) - fixes multi-minute "stuck loading" on any period
+   other than whichever one happened to already be cached. */
 
 /* ----------------------------------------------------------------------------
    Provider adapters - THE PART YOU BUILD.
@@ -271,7 +274,7 @@ const ADAPTERS = {
        completed transaction (kpi-spec.md #2). Dates are written like
        "05 July 2026, 02:30 pm"; the Date/Time column is matched loosely. */
     async parseExport(env, h, raw) {
-      const lines = raw.text.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/).filter((l) => l.trim().length);
+      const lines = raw.text.replace(/^﻿/, '').split(/\r\n|\n|\r/).filter((l) => l.trim().length);
       if (lines.length < 2) throw new Error('empty export');
       const parseCsvLine = (line) => {
         const out = []; let cur = ''; let inQ = false;
@@ -618,7 +621,7 @@ async function apiSetup(env, request) {
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=' + SESSION_TTL } });
 }
 function apiLogout() {
-  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0' } });
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=; HttpOnly; Secure; SameSite=Lax; Max-Age=0' } });
 }
 function loginPage() {
   return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in</title>'
@@ -658,7 +661,7 @@ function setupPage() {
     + 'button{width:100%;margin-top:12px;padding:13px;font-size:15px;font-weight:500;font-family:"DM Sans",sans-serif;color:#0D0D0D;background:#F2A900;border:none;border-radius:10px;cursor:pointer}'
     + '.err{color:#C04B28;font-size:13px;margin-top:10px;min-height:16px}'
     + '</style></head><body>'
-    + '<div class="box"><h1>Set your password</h1><p>Choose a password for your dashboard. You\u2019ll type it each time you open it - pick something only you and your team know, at least 6 characters.</p>'
+    + '<div class="box"><h1>Set your password</h1><p>Choose a password for your dashboard. You’ll type it each time you open it - pick something only you and your team know, at least 6 characters.</p>'
     + '<form id="f"><input id="p" type="password" autocomplete="new-password" placeholder="New password" autofocus>'
     + '<input id="p2" type="password" autocomplete="new-password" placeholder="Confirm password" style="margin-top:10px">'
     + '<button type="submit">Save and open my dashboard</button><div class="err" id="e"></div></form></div>'
@@ -794,11 +797,11 @@ async function apiIngest(env, request, url) {
   if (!['accounting', 'pos', 'rostering'].includes(source)) return json({ error: 'unknown source' }, 400);
   const auth = request.headers.get('Authorization') || '';
   if (!env.INGEST_TOKEN || auth !== 'Bearer ' + env.INGEST_TOKEN) {
-    return json({ error: 'not authorised', plain: 'That upload code didn\u2019t match. Check it with your AI and try again.' }, 401);
+    return json({ error: 'not authorised', plain: 'That upload code didn’t match. Check it with your AI and try again.' }, 401);
   }
   const adapter = ADAPTERS[source];
   if (!adapter || typeof adapter.parseExport !== 'function') {
-    return json({ error: 'no parser', plain: 'This source isn\u2019t set up for file uploads yet. Your AI adds that when this path is chosen.' }, 501);
+    return json({ error: 'no parser', plain: 'This source isn’t set up for file uploads yet. Your AI adds that when this path is chosen.' }, 501);
   }
   const text = await request.text();
   if (text.length > 2000000) return json({ error: 'too big', plain: 'That file is too large. Export a shorter date range and try again.' }, 413);
@@ -807,11 +810,11 @@ async function apiIngest(env, request, url) {
       text, contentType: request.headers.get('Content-Type') || ''
     });
     const saved = await saveIngestedRows(env, source, rows);
-    if (!saved) return json({ error: 'nothing parsed', plain: 'No usable rows were found in that file. Check it\u2019s the right report, or show it to your AI.' }, 422);
+    if (!saved) return json({ error: 'nothing parsed', plain: 'No usable rows were found in that file. Check it’s the right report, or show it to your AI.' }, 422);
     await noteSync(env, source);
     return json({ ok: true, days: saved });
   } catch (e) {
-    return json({ error: 'parse failed', plain: 'That file couldn\u2019t be read. Check it\u2019s the right report, or show it to your AI.' }, 422);
+    return json({ error: 'parse failed', plain: 'That file couldn’t be read. Check it’s the right report, or show it to your AI.' }, 422);
   }
 }
 
@@ -876,10 +879,35 @@ async function fetchSlot(env, q) {
   return out;
 }
 
-const METRICS_CACHE_TTL = 120; /* seconds: brief cache for live provider data */
+/* A promise that resolves to `fallback` after `ms` if `p` hasn't settled yet -
+   a hard ceiling so one slow upstream call can never leave the dashboard
+   spinning forever. The underlying work in `p` keeps running in the
+   background (its own KV/cache writes still land when it finishes), but the
+   HTTP response to the browser is never held hostage waiting for it. */
+function withCeiling(p, ms, fallback) {
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+/* Periods (cur/prev/yoy) change with every period the owner picks, so they
+   get a short cache - the owner expects near-live money numbers.
+   Trend is a 24-month lookback that barely changes between two dashboard
+   loads a few minutes apart, and is by far the most expensive thing this
+   Worker asks Xero for (up to two 12-month Profit & Loss reports, which can
+   genuinely take Xero a while to compute for a busy venue). It used to share
+   a single cache entry keyed on the WHOLE query string, so every time the
+   owner switched periods it silently re-ran that full 24-month recompute
+   from scratch - the likely cause of multi-minute "stuck loading" on
+   anything other than whichever period happened to be cached already.
+   Caching it separately, keyed only on its own (fixed) range, means it is
+   computed live once and then reused across every period the owner picks
+   for the next half hour. */
+const PERIODS_CACHE_TTL = 120;   /* seconds: brief cache for the picked period's numbers */
+const TREND_CACHE_TTL = 1800;    /* seconds: trend barely moves load to load - reuse it */
+const REQUEST_CEILING_MS = 25000; /* hard cap so /api/metrics always answers within ~25s */
 
 async function apiMetrics(env, url) {
-  console.log('[metrics] start', url.search);
   const cur = parseRange(url.searchParams.get('cur'));
   if (!cur) return json({ error: 'bad cur range' }, 400);
   const prev = parseRange(url.searchParams.get('prev'));
@@ -889,72 +917,77 @@ async function apiMetrics(env, url) {
   const rollover = Math.max(0, Math.min(6, parseInt(url.searchParams.get('rollover') || '0', 10) || 0));
 
   const base = { tz, rollover };
-  console.log('[metrics] before sourceStatus');
   const [sAcc, sPos, sRos] = await Promise.all([
     sourceStatus(env, 'accounting'),
     sourceStatus(env, 'pos'),
     sourceStatus(env, 'rostering')
   ]);
-  console.log('[metrics] after sourceStatus', JSON.stringify({ sAcc, sPos, sRos }));
 
-  /* The provider calls (periods + trend) are the expensive part and the only
-     thing that brushes provider rate limits on quick reopens/refreshes. Cache
-     them briefly in KV, keyed by the requested ranges; source status stays live.
-     generatedAt is stored with the data so the dashboard's "last synced" reflects
-     the real fetch time even when served from cache. ?refresh=1 forces fresh. */
-  const cacheKey = 'metricscache:' + [
-    url.searchParams.get('cur') || '', url.searchParams.get('prev') || '',
-    url.searchParams.get('yoy') || '', url.searchParams.get('trend') || '',
-    tz, rollover
-  ].join('|');
   const force = url.searchParams.get('refresh') === '1';
-  let data = null;
+
+  /* ---- Periods (cur/prev/yoy): short-lived cache, keyed on just these ranges ---- */
+  const periodsCacheKey = 'periodscache:' + [
+    url.searchParams.get('cur') || '', url.searchParams.get('prev') || '',
+    url.searchParams.get('yoy') || '', tz, rollover
+  ].join('|');
+  let periods = null;
   if (!force && env.TOKENS) {
-    console.log('[metrics] checking cache', cacheKey);
-    const cached = await env.TOKENS.get(cacheKey);
-    if (cached) { try { data = JSON.parse(cached); console.log('[metrics] cache hit'); } catch (e) { data = null; } }
+    const cached = await env.TOKENS.get(periodsCacheKey);
+    if (cached) { try { periods = JSON.parse(cached); } catch (e) { periods = null; } }
   }
-  if (!data) {
-    console.log('[metrics] cache miss, fetching live - before cur');
-    const periods = {};
-    const [curOut, prevOut, yoyOut] = await Promise.all([
+  if (!periods) {
+    const live = Promise.all([
       fetchSlot(env, { ...base, ...cur }),
       prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
       yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
     ]);
-    periods.cur = curOut; periods.prev = prevOut; periods.yoy = yoyOut;
-    console.log('[metrics] after periods (parallel)');
+    const [curOut, prevOut, yoyOut] = await withCeiling(live, REQUEST_CEILING_MS, [null, null, null]);
+    periods = { cur: curOut, prev: prevOut, yoy: yoyOut };
+    if (env.TOKENS && curOut) {
+      try { await env.TOKENS.put(periodsCacheKey, JSON.stringify(periods), { expirationTtl: PERIODS_CACHE_TTL }); } catch (e) {}
+    }
+  }
 
-    let trendOut = null;
-    if (trend) {
-      console.log('[metrics] before trend');
-      trendOut = { months: monthList(trend.fromMonth, trend.toMonth) };
+  /* ---- Trend: long-lived cache, keyed ONLY on the trend range (same for
+     every period the owner picks) so switching periods reuses it instead of
+     recomputing two 12-month Xero reports every time. ---- */
+  let trendOut = null;
+  if (trend) {
+    const trendCacheKey = 'trendcache:' + [trend.fromMonth, trend.toMonth, tz, rollover].join('|');
+    if (!force && env.TOKENS) {
+      const cached = await env.TOKENS.get(trendCacheKey);
+      if (cached) { try { trendOut = JSON.parse(cached); } catch (e) { trendOut = null; } }
+    }
+    if (!trendOut) {
+      const months = monthList(trend.fromMonth, trend.toMonth);
       const trendSources = ['accounting', 'pos'];
-      const trendResults = await Promise.all(trendSources.map(async (source) => {
+      const live = Promise.all(trendSources.map(async (source) => {
         const adapter = ADAPTERS[source];
         if (!adapter || !adapter.configured) return null;
         try {
           const h = makeHelpers(env, source);
           const series = await adapter.fetchMonthly(env, h, { ...base, ...trend });
-          return alignSeries(trendOut.months, series);
+          return alignSeries(months, series);
         } catch (err) { return null; }
       }));
+      const trendResults = await withCeiling(live, REQUEST_CEILING_MS, trendSources.map(() => null));
+      trendOut = { months };
       trendSources.forEach((source, i) => { trendOut[source] = trendResults[i]; });
-      console.log('[metrics] after trend');
-    }
-    data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
-    if (env.TOKENS) {
-      try { await env.TOKENS.put(cacheKey, JSON.stringify(data), { expirationTtl: METRICS_CACHE_TTL }); } catch (e) {}
+      /* Only cache a trend that actually got real accounting data - an
+         all-null result (e.g. the ceiling fired) should be retried on the
+         very next load, not locked in for 30 minutes. */
+      if (env.TOKENS && trendOut.accounting) {
+        try { await env.TOKENS.put(trendCacheKey, JSON.stringify(trendOut), { expirationTtl: TREND_CACHE_TTL }); } catch (e) {}
+      }
     }
   }
-  console.log('[metrics] done, returning');
 
   return json({
-    generatedAt: data.generatedAt,
+    generatedAt: new Date().toISOString(),
     protected: true,
     sources: { accounting: sAcc, pos: sPos, rostering: sRos },
-    periods: data.periods,
-    trend: data.trend
+    periods: periods,
+    trend: trendOut
   });
 }
 
