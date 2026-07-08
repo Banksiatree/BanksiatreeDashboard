@@ -545,6 +545,7 @@ function buildManualData() {
   };
 }
 
+var _fetchAbort = null;
 function fetchData(force) {
   if (isManual()) {
     state.data = buildManualData();
@@ -554,15 +555,19 @@ function fetchData(force) {
     render();
     return;
   }
+  if (_fetchAbort) { try { _fetchAbort.abort(); } catch (e) {} }
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  _fetchAbort = ctrl;
   state.loading = true; state.fetchError = null;
   render();
-  fetch(apiUrl(force)).then(function (res) {
+  fetch(apiUrl(force), ctrl ? { signal: ctrl.signal } : {}).then(function (res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   }).then(function (json) {
     state.data = json; state.fetchedAt = json.generatedAt ? new Date(json.generatedAt) : new Date(); state.loading = false;
     render();
   }).catch(function (err) {
+    if (err && err.name === 'AbortError') return; /* superseded by a newer request - say nothing, the new one owns the UI now */
     state.loading = false;
     state.fetchError = 'The dashboard couldn’t fetch data just now. Check the Connections screen, or try refresh.';
     render();

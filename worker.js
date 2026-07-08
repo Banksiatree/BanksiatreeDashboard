@@ -844,19 +844,22 @@ async function sourceStatus(env, source) {
 }
 
 async function fetchSlot(env, q) {
-  /* One period slot: pull each configured source; null where unavailable. */
-  const out = {};
-  for (const source of ['accounting', 'pos', 'rostering']) {
+  /* One period slot: pull each configured source in parallel; null where unavailable. */
+  const sources = ['accounting', 'pos', 'rostering'];
+  const results = await Promise.all(sources.map(async (source) => {
     const adapter = ADAPTERS[source];
-    if (!adapter || !adapter.configured) { out[source] = null; continue; }
+    if (!adapter || !adapter.configured) return null;
     try {
       const h = makeHelpers(env, source);
-      out[source] = await adapter.fetchRange(env, h, q);
+      const val = await adapter.fetchRange(env, h, q);
       await noteSync(env, source);
+      return val;
     } catch (err) {
-      out[source] = null; /* per-source failure never breaks the whole payload */
+      return null; /* per-source failure never breaks the whole payload */
     }
-  }
+  }));
+  const out = {};
+  sources.forEach((source, i) => { out[source] = results[i]; });
   return out;
 }
 
@@ -896,22 +899,27 @@ async function apiMetrics(env, url) {
   }
   if (!data) {
     const periods = {};
-    periods.cur = await fetchSlot(env, { ...base, ...cur });
-    periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
-    periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
+    const [curOut, prevOut, yoyOut] = await Promise.all([
+      fetchSlot(env, { ...base, ...cur }),
+      prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
+      yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
+    ]);
+    periods.cur = curOut; periods.prev = prevOut; periods.yoy = yoyOut;
 
     let trendOut = null;
     if (trend) {
       trendOut = { months: monthList(trend.fromMonth, trend.toMonth) };
-      for (const source of ['accounting', 'pos']) {
+      const trendSources = ['accounting', 'pos'];
+      const trendResults = await Promise.all(trendSources.map(async (source) => {
         const adapter = ADAPTERS[source];
-        if (!adapter || !adapter.configured) { trendOut[source] = null; continue; }
+        if (!adapter || !adapter.configured) return null;
         try {
           const h = makeHelpers(env, source);
           const series = await adapter.fetchMonthly(env, h, { ...base, ...trend });
-          trendOut[source] = alignSeries(trendOut.months, series);
-        } catch (err) { trendOut[source] = null; }
-      }
+          return alignSeries(trendOut.months, series);
+        } catch (err) { return null; }
+      }));
+      trendSources.forEach((source, i) => { trendOut[source] = trendResults[i]; });
     }
     data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
     if (env.TOKENS) {
