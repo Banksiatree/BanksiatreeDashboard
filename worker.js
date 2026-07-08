@@ -92,11 +92,21 @@ const ADAPTERS = {
 
     /* Which connected tenant (organisation) are we using? Xero's /connections
        endpoint can return several; we use the first and surface its name so the
-       owner can confirm it's their business. Cached briefly alongside org info. */
+       owner can confirm it's their business. Cached in KV for a few minutes -
+       a single dashboard load calls this adapter up to 5x (current period,
+       comparison period, year-on-year, plus the trend chart), and re-fetching
+       from Xero every time was making loads slow or appear to hang. */
     async _tenant(env, h) {
+      const cacheKey = 'xerotenant:cache';
+      if (env.TOKENS) {
+        const cached = await env.TOKENS.get(cacheKey);
+        if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+      }
       const conns = await h.fetchJson('https://api.xero.com/connections', {}, {});
       if (!Array.isArray(conns) || !conns.length) { const e = new Error('no tenants'); e.status = 401; throw e; }
-      return conns[0];
+      const tenant = conns[0];
+      if (env.TOKENS) { try { await env.TOKENS.put(cacheKey, JSON.stringify(tenant), { expirationTtl: 600 }); } catch (e) {} }
+      return tenant;
     },
 
     async status(env, h) {
