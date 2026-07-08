@@ -421,6 +421,19 @@ function tokenRequestInit(cfg, params, env) {
 
 /* Returns a valid access token for an OAuth source, refreshing (and
    persisting the ROTATED refresh token) when needed. */
+async function fetchWithTimeout(url, init, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms || 15000);
+  try {
+    return await fetch(url, { ...(init || {}), signal: ctrl.signal });
+  } catch (e) {
+    if (e && e.name === 'AbortError') { const te = new Error('upstream timed out'); te.status = 504; throw te; }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function getValidAccessToken(env, source) {
   const adapter = ADAPTERS[source];
   const tokens = await getTokens(env, source);
@@ -431,7 +444,7 @@ async function getValidAccessToken(env, source) {
   /* refresh */
   const cfg = adapter.oauth || {};
   if (!tokens.refresh_token || !cfg.tokenUrl) { const e = new Error('cannot refresh'); e.status = 401; throw e; }
-  const res = await fetch(cfg.tokenUrl, tokenRequestInit(cfg, {
+  const res = await fetchWithTimeout(cfg.tokenUrl, tokenRequestInit(cfg, {
     grant_type: 'refresh_token',
     refresh_token: tokens.refresh_token
   }, env));
@@ -469,7 +482,7 @@ function makeHelpers(env, source) {
         if (useAuth && ADAPTERS[source].auth === 'oauth') {
           headers.set('Authorization', 'Bearer ' + await getValidAccessToken(env, source));
         }
-        return fetch(url, { ...(init || {}), headers });
+        return fetchWithTimeout(url, { ...(init || {}), headers });
       };
       let res = await doFetch();
       if (res.status === 401 && useAuth && ADAPTERS[source].auth === 'oauth') {
