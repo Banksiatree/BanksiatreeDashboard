@@ -917,12 +917,13 @@ async function apiMetrics(env, url) {
   if (!data) {
     console.log('[metrics] cache miss, fetching live - before cur');
     const periods = {};
-    periods.cur = await fetchSlot(env, { ...base, ...cur });
-    console.log('[metrics] after cur', JSON.stringify(periods.cur));
-    periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
-    console.log('[metrics] after prev', JSON.stringify(periods.prev));
-    periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
-    console.log('[metrics] after yoy', JSON.stringify(periods.yoy));
+    const [curOut, prevOut, yoyOut] = await Promise.all([
+      fetchSlot(env, { ...base, ...cur }),
+      prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
+      yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
+    ]);
+    periods.cur = curOut; periods.prev = prevOut; periods.yoy = yoyOut;
+    console.log('[metrics] after periods (parallel)');
 
     let trendOut = null;
     if (trend) {

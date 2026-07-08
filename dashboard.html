@@ -862,7 +862,7 @@ function renderDashboard(root) {
     eb.onclick = function () { state.view = 'enter'; render(); };
     fr.appendChild(eb);
   } else if (state.loading) {
-    fr.innerHTML = '<span class="spin"></span> Fetching your latest numbers…';
+    fr.innerHTML = '<span class="spin"></span> Fetching your latest numbers… this can take up to a minute the first time.';
   } else {
     var when = state.fetchedAt ? state.fetchedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
     fr.innerHTML = 'Updated ' + when + ' · updates when you open or refresh this page';
