@@ -227,12 +227,79 @@ const ADAPTERS = {
      connect.squareupsandbox.com.
   */
   pos: {
-    configured: false,
+    configured: true,
     auth: null,
     oauth: {},
-    async status(env, h) { return { connected: false }; },
-    async fetchRange(env, h, q) { throw new NotConfigured('pos'); },
-    async fetchMonthly(env, h, q) { throw new NotConfigured('pos'); }
+    mode: 'export', /* OOLIO has no self-serve API for a single venue; real-time
+       access goes through Doshii, a partner integration platform built for
+       ongoing channel partners (delivery apps etc.), not a quick one-off
+       connection - so this uses the guided-upload rung instead: the owner
+       downloads OOLIO's own Sales Feed CSV (Back Office > Reports > Sales
+       Feed) whenever they like and drops it on the Connections screen. */
+    async status(env, h) {
+      const ls = await lastSync(env, 'pos');
+      return { connected: !!ls, org: ls ? 'OOLIO (uploaded reports)' : null, sandbox: false, lastSync: ls };
+    },
+    async fetchRange(env, h, q) {
+      const r = await h.readIngested(q.from, q.to);
+      if (!r.daysWithData) throw new NotConfigured('pos');
+      return { count: r.sums.count || 0 };
+    },
+    async fetchMonthly(env, h, q) {
+      const r = await h.monthlyIngested(q.fromMonth, q.toMonth);
+      return { months: r.months, count: r.byMonth.map((m) => m ? (m.count || 0) : null) };
+    },
+    /* Parse OOLIO's "Sales Feed" CSV export (Back Office > Reports > Sales
+       Feed > download icon). Columns include (at least) a date/time column
+       and a Status column; only Completed rows count (Voided/Refunded
+       excluded per kpi-spec.md #2). Column names are matched loosely since
+       the owner can toggle which columns are visible before exporting. */
+    async parseExport(env, h, raw) {
+      const lines = raw.text.split(/\r\n|\n|\r/).filter((l) => l.trim().length);
+      if (lines.length < 2) throw new Error('empty export');
+      const parseCsvLine = (line) => {
+        const out = []; let cur = ''; let inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i];
+          if (inQ) {
+            if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
+            else cur += c;
+          } else {
+            if (c === '"') inQ = true;
+            else if (c === ',') { out.push(cur); cur = ''; }
+            else cur += c;
+          }
+        }
+        out.push(cur);
+        return out.map((s) => s.trim());
+      };
+      const header = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+      const findCol = (...keywords) => header.findIndex((h) => keywords.some((k) => h.includes(k)));
+      const dateCol = findCol('date');
+      const statusCol = findCol('status');
+      if (dateCol === -1 || statusCol === -1) throw new Error('unrecognised export - missing Date or Status column');
+
+      const parseDateCell = (cell) => {
+        /* Handles "DD/MM/YYYY[ HH:mm]" (OOLIO's AU format) and ISO "YYYY-MM-DD..." */
+        let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(cell);
+        if (m) return m[1] + '-' + m[2] + '-' + m[3];
+        m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(cell);
+        if (m) return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+        return null;
+      };
+
+      const byDate = {};
+      for (let i = 1; i < lines.length; i++) {
+        const cells = parseCsvLine(lines[i]);
+        if (cells.length <= Math.max(dateCol, statusCol)) continue;
+        const status = (cells[statusCol] || '').toLowerCase();
+        if (status !== 'completed') continue; /* excludes Voided/Refunded per kpi-spec.md */
+        const date = parseDateCell(cells[dateCol] || '');
+        if (!date) continue;
+        byDate[date] = (byDate[date] || 0) + 1;
+      }
+      return Object.entries(byDate).map(([date, count]) => ({ date, count }));
+    }
   },
 
   /* >>> ADAPTER 3: ROSTERING (optional - only if the owner has one)
