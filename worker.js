@@ -912,12 +912,9 @@ async function apiMetrics(env, url) {
   }
   if (!data) {
     const periods = {};
-    const [curOut, prevOut, yoyOut] = await Promise.all([
-      fetchSlot(env, { ...base, ...cur }),
-      prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
-      yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
-    ]);
-    periods.cur = curOut; periods.prev = prevOut; periods.yoy = yoyOut;
+    periods.cur = await fetchSlot(env, { ...base, ...cur });
+    periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
+    periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
 
     let trendOut = null;
     if (trend) {
