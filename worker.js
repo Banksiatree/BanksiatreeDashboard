@@ -426,7 +426,14 @@ function tokenRequestInit(cfg, params, env) {
    persisting the ROTATED refresh token) when needed. */
 async function fetchWithTimeout(url, init, ms) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms || 15000);
+  /* 28s per call: a single P&L report for a FULL financial year (e.g. Last
+     financial year) is a much bigger Xero-side computation than a week or
+     a fresh month, and 15s was cutting those off before Xero could finish -
+     that's why only the short periods (this/last week, this month, this FY
+     while it's brand new) were coming back with data. Cloudflare Workers
+     only meters CPU time, not time spent waiting on a network response, so
+     a longer wait here costs nothing while idle. */
+  const timer = setTimeout(() => ctrl.abort(), ms || 28000);
   try {
     return await fetch(url, { ...(init || {}), signal: ctrl.signal });
   } catch (e) {
@@ -905,7 +912,14 @@ function withCeiling(p, ms, fallback) {
    for the next half hour. */
 const PERIODS_CACHE_TTL = 120;   /* seconds: brief cache for the picked period's numbers */
 const TREND_CACHE_TTL = 1800;    /* seconds: trend barely moves load to load - reuse it */
-const REQUEST_CEILING_MS = 25000; /* hard cap so /api/metrics always answers within ~25s */
+/* Ceilings are PER SLOT, not shared across cur/prev/yoy - a slow "last financial
+   year" prev-period report must never be able to null out an already-finished
+   "cur" period just because they were awaited together. 32s comfortably covers
+   one 28s Xero call plus a little overhead; the trend ceiling is longer because
+   it can be up to two sequential yearly report calls (up to 24 months, chunked
+   12 at a time) - but it only runs once every 30 minutes thanks to its own cache. */
+const REQUEST_CEILING_MS = 32000;
+const TREND_CEILING_MS = 65000;
 
 async function apiMetrics(env, url) {
   const cur = parseRange(url.searchParams.get('cur'));
@@ -936,12 +950,14 @@ async function apiMetrics(env, url) {
     if (cached) { try { periods = JSON.parse(cached); } catch (e) { periods = null; } }
   }
   if (!periods) {
-    const live = Promise.all([
-      fetchSlot(env, { ...base, ...cur }),
-      prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
-      yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
+    /* Each slot gets its OWN ceiling (see the constant's comment above) - a
+       slow prev-year report can no longer null out a cur-period that already
+       came back fine, which is what was happening to Last financial year. */
+    const [curOut, prevOut, yoyOut] = await Promise.all([
+      withCeiling(fetchSlot(env, { ...base, ...cur }), REQUEST_CEILING_MS, null),
+      prev ? withCeiling(fetchSlot(env, { ...base, ...prev }), REQUEST_CEILING_MS, null) : Promise.resolve(null),
+      yoy ? withCeiling(fetchSlot(env, { ...base, ...yoy }), REQUEST_CEILING_MS, null) : Promise.resolve(null)
     ]);
-    const [curOut, prevOut, yoyOut] = await withCeiling(live, REQUEST_CEILING_MS, [null, null, null]);
     periods = { cur: curOut, prev: prevOut, yoy: yoyOut };
     if (env.TOKENS && curOut) {
       try { await env.TOKENS.put(periodsCacheKey, JSON.stringify(periods), { expirationTtl: PERIODS_CACHE_TTL }); } catch (e) {}
@@ -970,7 +986,7 @@ async function apiMetrics(env, url) {
           return alignSeries(months, series);
         } catch (err) { return null; }
       }));
-      const trendResults = await withCeiling(live, REQUEST_CEILING_MS, trendSources.map(() => null));
+      const trendResults = await withCeiling(live, TREND_CEILING_MS, trendSources.map(() => null));
       trendOut = { months };
       trendSources.forEach((source, i) => { trendOut[source] = trendResults[i]; });
       /* Only cache a trend that actually got real accounting data - an
