@@ -126,7 +126,11 @@ const ADAPTERS = {
          rostered labour cost, so it's excluded from Wage % even though it
          matches the general keyword pattern above. */
       const WAGE_EXCLUDE_RE = /owner.*(wages|salaries)|(wages|salaries).*owner/i;
-      let revenue = null, cogs = null, wagesSuper = 0, opexTotal = null, ownerPayInOpex = 0;
+      /* Confirmed with the owner: "Distribution of Profit" also sits inside
+         Operating Expenses in their chart of accounts but is a profit
+         distribution, not a real overhead - excluded from Overheads too. */
+      const PROFIT_DIST_RE = /distribution of profit|profit distribution/i;
+      let revenue = null, cogs = null, wagesSuper = 0, opexTotal = null, ownerPayInOpex = 0, profitDistInOpex = 0;
       const report = reportJson && reportJson.Reports && reportJson.Reports[0];
       const rows = (report && report.Rows) || [];
       const amountCol = 1 + periodIndex; /* Cells[0] = label, one amount column per period thereafter */
@@ -141,6 +145,7 @@ const ADAPTERS = {
           if (r.RowType === 'Row' && isOpex) {
             const label = (r.Cells && r.Cells[0] && r.Cells[0].Value) || '';
             if (WAGE_EXCLUDE_RE.test(label)) { ownerPayInOpex += cellNum(r.Cells, amountCol); }
+            else if (PROFIT_DIST_RE.test(label)) { profitDistInOpex += cellNum(r.Cells, amountCol); }
             else if (WAGE_RE.test(label)) { sectionWages += cellNum(r.Cells, amountCol); }
           }
           if (r.RowType === 'SummaryRow') {
@@ -154,7 +159,7 @@ const ADAPTERS = {
       }
       rows.forEach((r) => { if (r.RowType === 'Section') walkSection(r); });
 
-      const overheads = (opexTotal == null) ? null : (opexTotal - wagesSuper - ownerPayInOpex);
+      const overheads = (opexTotal == null) ? null : (opexTotal - wagesSuper - ownerPayInOpex - profitDistInOpex);
       return {
         revenue: revenue,
         cogs: cogs,
