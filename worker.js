@@ -272,8 +272,19 @@ const ADAPTERS = {
        field - so the owner filters to Completed only (unticking Voided and
        Refunded) before exporting, and every row in the file is one
        completed transaction (kpi-spec.md #2). Dates are written like
-       "05 July 2026, 02:30 pm"; the Date/Time column is matched loosely. */
+       "05 July 2026, 02:30 pm"; the Date/Time column is matched loosely.
+
+       ALSO handles a one-off historical backfill: a "SaleID,SaleNo,SaleDate,..."
+       export from the venue's previous POS (Lightspeed Restaurant O-Series),
+       covering the months before OOLIO went live. Same upload path, same
+       source key ('pos') - the header shape tells the two formats apart, so
+       nothing on the Connections screen needs to change. Only ever supplies
+       a transaction COUNT, same as OOLIO - dollar figures still come from Xero. */
     async parseExport(env, h, raw) {
+      const firstLine = (raw.text.replace(/^﻿/, '').split(/\r\n|\n|\r/)[0] || '').toLowerCase();
+      if (firstLine.includes('saleid') && firstLine.includes('saledate')) {
+        return parseLightspeedHistory(raw.text);
+      }
       const lines = raw.text.replace(/^﻿/, '').split(/\r\n|\n|\r/).filter((l) => l.trim().length);
       if (lines.length < 2) throw new Error('empty export');
       const parseCsvLine = (line) => {
@@ -366,6 +377,54 @@ const ADAPTERS = {
     async fetchMonthly(env, h, q) { return { months: [], cost: [] }; }
   }
 };
+
+/* Parse a Lightspeed Restaurant O-Series sale-history export (columns:
+   SaleID,SaleNo,SaleDate,SiteName,TerminalName,CustomerName,Operator,Notes,
+   LinkedSaleID,Net Amount,Tax Amount,Tip,Total). One-off historical backfill
+   for the months before OOLIO went live - see the pos adapter's parseExport.
+   Rules (mirroring the OOLIO parser so counts are consistent across sources):
+     - a row where Total is exactly 0 is a void/comp/staff item, not a sale -
+       excluded (same treatment as OOLIO's "all zero" rows).
+     - a row with a negative Total is a refund against an earlier sale (see
+       LinkedSaleID) but is still its own completed transaction, so it counts -
+       same call as OOLIO's "negative rows do count".
+     - SaleDate is "YYYY-MM-DD HH:MM:SS"; only the date part is used. */
+function parseLightspeedHistory(text) {
+  const lines = text.replace(/^﻿/, '').split(/\r\n|\n|\r/).filter((l) => l.trim().length);
+  if (lines.length < 2) throw new Error('empty export');
+  const parseCsvLine = (line) => {
+    const out = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (inQ) {
+        if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
+        else cur += c;
+      } else {
+        if (c === '"') inQ = true;
+        else if (c === ',') { out.push(cur); cur = ''; }
+        else cur += c;
+      }
+    }
+    out.push(cur);
+    return out.map((s) => s.trim());
+  };
+  const header = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+  const dateCol = header.indexOf('saledate');
+  const totalCol = header.indexOf('total');
+  if (dateCol === -1 || totalCol === -1) throw new Error('unrecognised Lightspeed export - missing SaleDate or Total');
+  const byDate = {};
+  for (let i = 1; i < lines.length; i++) {
+    const cells = parseCsvLine(lines[i]);
+    if (cells.length <= dateCol || cells.length <= totalCol) continue;
+    const total = parseFloat(cells[totalCol]);
+    if (!isFinite(total) || total === 0) continue;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(cells[dateCol] || '');
+    if (!m) continue;
+    const date = m[1] + '-' + m[2] + '-' + m[3];
+    byDate[date] = (byDate[date] || 0) + 1;
+  }
+  return Object.entries(byDate).map(([date, count]) => ({ date, count }));
+}
 
 /* ============================================================================
    Everything below is the shell. You should rarely need to edit it.
