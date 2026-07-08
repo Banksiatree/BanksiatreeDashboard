@@ -493,10 +493,10 @@ function apiUrl(force) {
   var r = resolvePeriod(state.period, state.customFrom, state.customTo);
   var trendEnd = tradingToday();
   var trendStart = addMonths(stamp(trendEnd.getUTCFullYear(), trendEnd.getUTCMonth() + 1, 1), -24);
-  var q = 'cur=' + iso(r.from) + ':' + iso(r.to)
-        + '&prev=' + iso(r.prev.from) + ':' + iso(r.prev.to)
-        + (r.yoy ? '&yoy=' + iso(r.yoy.from) + ':' + iso(r.yoy.to) : '')
-        + '&trend=' + monthKey(trendStart) + ':' + monthKey(trendEnd)
+  var q = 'cur=' + iso(r.from) + '_' + iso(r.to)
+        + '&prev=' + iso(r.prev.from) + '_' + iso(r.prev.to)
+        + (r.yoy ? '&yoy=' + iso(r.yoy.from) + '_' + iso(r.yoy.to) : '')
+        + '&trend=' + monthKey(trendStart) + '_' + monthKey(trendEnd)
         + '&tz=' + encodeURIComponent(SETTINGS.timezone)
         + '&rollover=' + (+SETTINGS.rolloverHour || 0);
   return '/api/metrics?' + q + (force ? '&refresh=1' : '');
