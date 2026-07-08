@@ -241,6 +241,7 @@ body {
 .tbar { fill: var(--accent); }
 .tbar.good { fill: var(--c-green); }
 .tbar.bad { fill: var(--c-coral); }
+.tbar.amber { fill: var(--c-amber); }
 .tbar.cur { stroke: var(--black); stroke-width: 0.8; }
 .tbar { cursor: default; }
 .tbar:hover { opacity: 0.78; }
@@ -295,6 +296,7 @@ var TZ_CHOICES = {
   US: ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','Pacific/Honolulu','America/Anchorage']
 };
 var ACCENTS = [
+  { key: 'banksia', c: '#629239', dim: 'rgba(98,146,57,0.12)' },
   { key: 'gold',   c: '#F2A900', dim: 'rgba(242,169,0,0.12)' },
   { key: 'teal',   c: '#0E8A6E', dim: 'rgba(14,138,110,0.12)' },
   { key: 'blue',   c: '#1A5FB4', dim: 'rgba(26,95,180,0.12)' },
@@ -305,14 +307,17 @@ var ACCENTS = [
 
 function defaultSettings() {
   return {
-    venueName: 'Your venue',
+    venueName: 'The Banksia Tree',
     defaultPeriod: 'thisMonth',
     weekStart: 1,            /* 1 = Monday */
     rolloverHour: 0,         /* sales before this hour count to the previous trading day */
     timezone: TZ_DEFAULTS[KIT_CONFIG.region] || 'Australia/Sydney',
-    accent: 'gold',
+    accent: 'banksia',
     dataMode: KIT_CONFIG.startLevel === 'manual' ? 'manual' : 'live',
-    targets: { cogs: 30, wage: 30, overheads: 30, profit: 10 }
+    /* acs holds the GREEN threshold (at/above this = green); acsLow holds the
+       RED threshold (below this = red); between the two = amber. Set from
+       the owner's own numbers: below $30 red, $30-$31.50 amber, above green. */
+    targets: { cogs: 30, wage: 30, overheads: 30, profit: 10, acs: 31.5, acsLow: 30 }
   };
 }
 function loadSettings() {
@@ -1111,8 +1116,9 @@ function attachBarTip(holder) {
 
 /* 12-month history as bars, built as real namespaced SVG nodes (not via innerHTML)
    with explicit inline sizing, so the chart can't collapse or balloon to the
-   browser default. Bars colour good/bad vs target; the viewed month is outlined;
-   hover shows month + value instantly. */
+   browser default. Bars colour good/bad vs target (or, for Average customer
+   spend, a three-way red/amber/green band against the owner's two thresholds);
+   the viewed month is outlined; hover shows month + value instantly. */
 function trendBars(key, r) {
   var wrap = el('div', 'tbars');
   wrap.appendChild(el('div', 'tbars-cap', 'Trend · last 12 months · hover a bar for detail'));
@@ -1129,6 +1135,11 @@ function trendBars(key, r) {
   var minv = Math.min.apply(null, shown.concat([0]));
   var span = (maxv - minv) || 1;
   var def = METRIC_DEFS[key], tgt = metricTarget(key), curMonth = monthKey(r.from);
+  /* Average customer spend: a three-band colour (red below acsLow, amber
+     between acsLow and the acs target, green at/above it) instead of the
+     usual binary good/bad - set by the owner in Settings > Targets and alerts. */
+  var acsLow = (key === 'acs') ? (SETTINGS.targets && SETTINGS.targets.acsLow) : null;
+  var acsBand = (key === 'acs' && typeof acsLow === 'number' && tgt != null);
   var W = 280, H = 46, gap = 3, NS = 'http://www.w3.org/2000/svg';
   var bw = (W - gap * (vals.length - 1)) / vals.length;
   var zeroY = H - ((0 - minv) / span) * H;
@@ -1143,7 +1154,11 @@ function trendBars(key, r) {
     var vy = H - ((vals[i] - minv) / span) * H;
     var top = Math.min(vy, zeroY), h = Math.max(1.5, Math.abs(zeroY - vy));
     var cls = 'tbar';
-    if (tgt != null) cls += ((def.goodDir === 'down') ? (vals[i] > tgt) : (vals[i] < tgt)) ? ' bad' : ' good';
+    if (acsBand) {
+      cls += (vals[i] < acsLow) ? ' bad' : (vals[i] < tgt ? ' amber' : ' good');
+    } else if (tgt != null) {
+      cls += ((def.goodDir === 'down') ? (vals[i] > tgt) : (vals[i] < tgt)) ? ' bad' : ' good';
+    }
     if (months[i] === curMonth) cls += ' cur';
     var rect = document.createElementNS(NS, 'rect');
     rect.setAttribute('class', cls);
@@ -1270,7 +1285,7 @@ function uploadPanel(s) {
     var useCode = code || (codeInput && codeInput.value);
     if (!useCode) { msg.textContent = 'Enter the upload code your AI gave you.'; return; }
     btn.disabled = true;
-    msg.textContent = 'Uploading\u2026';
+    msg.textContent = 'Uploading…';
     var reader = new FileReader();
     reader.onload = function () {
       fetch('/api/ingest?source=' + s.key, {
@@ -1282,13 +1297,13 @@ function uploadPanel(s) {
           btn.disabled = false;
           if (out.ok && out.j.ok) {
             try { localStorage.setItem('vd_upcode', useCode); } catch (e) {}
-            msg.textContent = 'Done: ' + out.j.days + ' day' + (out.j.days === 1 ? '' : 's') + ' of data added. Refreshing\u2026';
+            msg.textContent = 'Done: ' + out.j.days + ' day' + (out.j.days === 1 ? '' : 's') + ' of data added. Refreshing…';
             fetchData();
           } else {
-            msg.textContent = (out.j && out.j.plain) || 'That didn\u2019t work. Try again, or show your AI.';
+            msg.textContent = (out.j && out.j.plain) || 'That didn’t work. Try again, or show your AI.';
           }
         })
-        .catch(function () { btn.disabled = false; msg.textContent = 'That didn\u2019t work. Check your connection and try again.'; });
+        .catch(function () { btn.disabled = false; msg.textContent = 'That didn’t work. Check your connection and try again.'; });
     };
     reader.readAsText(f);
   };
@@ -1467,7 +1482,7 @@ function renderManualEntry(root) {
     root.appendChild(el('div', 'section-sub', 'Saved so far'));
     keys.forEach(function (k) {
       var e = MANUAL[k];
-      root.appendChild(el('div', 'manual-row', esc(fmtRange({ from: fromIso(e.from), to: fromIso(e.to) })) + ' \u00b7 saved'));
+      root.appendChild(el('div', 'manual-row', esc(fmtRange({ from: fromIso(e.from), to: fromIso(e.to) })) + ' · saved'));
     });
   }
 }
@@ -1573,6 +1588,40 @@ function renderSettings(root) {
   CHOSEN.forEach(function (k) {
     var mdef = METRIC_DEFS[k];
     if (mdef.benchmark) return;
+    if (k === 'acs') {
+      /* Average customer spend gets its own red/amber/green pair instead of a
+         single target: acsLow is the red line, acs (reused) is the green line. */
+      var cellLow = el('div', 'set-cell');
+      cellLow.appendChild(el('div', 'set-label', 'Average customer spend · red below'));
+      var inpLow = document.createElement('input'); inpLow.type = 'number'; inpLow.step = 'any';
+      inpLow.value = (SETTINGS.targets && typeof SETTINGS.targets.acsLow === 'number') ? SETTINGS.targets.acsLow : '';
+      inpLow.placeholder = 'e.g. 30';
+      inpLow.onchange = function () {
+        if (!SETTINGS.targets) SETTINGS.targets = {};
+        var val = parseFloat(inpLow.value);
+        if (isFinite(val)) SETTINGS.targets.acsLow = val; else delete SETTINGS.targets.acsLow;
+        saveSettings(); render();
+      };
+      cellLow.appendChild(inpLow);
+      cellLow.appendChild(el('div', 'set-note', 'Below this ' + KIT_CONFIG.currency + ' amount, the trend bar shows red.'));
+      tgrid.appendChild(cellLow);
+
+      var cellHigh = el('div', 'set-cell');
+      cellHigh.appendChild(el('div', 'set-label', 'Average customer spend · green at/above'));
+      var inpHigh = document.createElement('input'); inpHigh.type = 'number'; inpHigh.step = 'any';
+      inpHigh.value = (SETTINGS.targets && typeof SETTINGS.targets.acs === 'number') ? SETTINGS.targets.acs : '';
+      inpHigh.placeholder = 'e.g. 31.5';
+      inpHigh.onchange = function () {
+        if (!SETTINGS.targets) SETTINGS.targets = {};
+        var val = parseFloat(inpHigh.value);
+        if (isFinite(val)) SETTINGS.targets.acs = val; else delete SETTINGS.targets.acs;
+        saveSettings(); render();
+      };
+      cellHigh.appendChild(inpHigh);
+      cellHigh.appendChild(el('div', 'set-note', 'Between the two, the bar shows amber. At or above this, green.'));
+      tgrid.appendChild(cellHigh);
+      return;
+    }
     var cell = el('div', 'set-cell');
     cell.appendChild(el('div', 'set-label', esc(mdef.label) + (mdef.dual ? ' (% of revenue)' : '')));
     var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
