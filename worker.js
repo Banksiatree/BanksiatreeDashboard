@@ -250,12 +250,14 @@ const ADAPTERS = {
       return { months: r.months, count: r.byMonth.map((m) => m ? (m.count || 0) : null) };
     },
     /* Parse OOLIO's "Sales Feed" CSV export (Back Office > Reports > Sales
-       Feed > download icon). Columns include (at least) a date/time column
-       and a Status column; only Completed rows count (Voided/Refunded
-       excluded per kpi-spec.md #2). Column names are matched loosely since
-       the owner can toggle which columns are visible before exporting. */
+       Feed > download icon). The export has NO Status column - "Order
+       Status" is a filter on the report screen itself, not an exported
+       field - so the owner filters to Completed only (unticking Voided and
+       Refunded) before exporting, and every row in the file is one
+       completed transaction (kpi-spec.md #2). Dates are written like
+       "05 July 2026, 02:30 pm"; the Date/Time column is matched loosely. */
     async parseExport(env, h, raw) {
-      const lines = raw.text.split(/\r\n|\n|\r/).filter((l) => l.trim().length);
+      const lines = raw.text.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/).filter((l) => l.trim().length);
       if (lines.length < 2) throw new Error('empty export');
       const parseCsvLine = (line) => {
         const out = []; let cur = ''; let inQ = false;
@@ -276,24 +278,51 @@ const ADAPTERS = {
       const header = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
       const findCol = (...keywords) => header.findIndex((h) => keywords.some((k) => h.includes(k)));
       const dateCol = findCol('date');
-      const statusCol = findCol('status');
-      if (dateCol === -1 || statusCol === -1) throw new Error('unrecognised export - missing Date or Status column');
+      const orderCol = findCol('order no', 'order number', 'order #');
+      if (dateCol === -1) throw new Error('unrecognised export - missing a Date/Time column');
+      const statusCol = findCol('status'); /* used only if present, e.g. a future export format */
 
+      const MONTHS = { january: '01', february: '02', march: '03', april: '04', may: '05', june: '06',
+        july: '07', august: '08', september: '09', october: '10', november: '11', december: '12' };
       const parseDateCell = (cell) => {
-        /* Handles "DD/MM/YYYY[ HH:mm]" (OOLIO's AU format) and ISO "YYYY-MM-DD..." */
-        let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(cell);
+        let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(cell); /* ISO, just in case */
         if (m) return m[1] + '-' + m[2] + '-' + m[3];
-        m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(cell);
+        m = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec(cell); /* "05 July 2026, 02:30 pm" */
+        if (m) {
+          const mon = MONTHS[m[2].toLowerCase()];
+          if (mon) return m[3] + '-' + mon + '-' + m[1].padStart(2, '0');
+        }
+        m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(cell); /* DD/MM/YYYY fallback */
         if (m) return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
         return null;
       };
 
+      /* Reconciled against the owner's own OOLIO Sales Summary total (the
+         check kpi-spec.md #2 requires): a completed-transaction count of 760
+         for a sample week matched only when excluding (a) rows where every
+         dollar figure is exactly $0.00 (voided orders) and (b) exact
+         duplicate rows (same order number, date/time and figures repeated -
+         an export quirk, not a second transaction). Negative-amount rows DO
+         count - OOLIO's own total includes them. */
+      const seenRows = new Set();
       const byDate = {};
       for (let i = 1; i < lines.length; i++) {
         const cells = parseCsvLine(lines[i]);
-        if (cells.length <= Math.max(dateCol, statusCol)) continue;
-        const status = (cells[statusCol] || '').toLowerCase();
-        if (status !== 'completed') continue; /* excludes Voided/Refunded per kpi-spec.md */
+        if (cells.length <= dateCol) continue;
+        if (orderCol !== -1 && !cells[orderCol]) continue; /* skip blank/artifact rows */
+        if (statusCol !== -1) { /* only filter by status if the column actually exists */
+          const status = (cells[statusCol] || '').toLowerCase();
+          if (status && status !== 'completed') continue;
+        }
+        /* "All zero" row (every $-looking cell parses to 0) = a voided order */
+        const rowIsAllZero = cells.every((c) => {
+          if (!/^-?\$?[\d,]*\.?\d+$/.test(c)) return true; /* non-money cell, ignore */
+          return parseFloat(c.replace(/[$,]/g, '')) === 0;
+        });
+        if (rowIsAllZero) continue;
+        const rowKey = cells.join('|');
+        if (seenRows.has(rowKey)) continue; /* exact duplicate row - export quirk, not a second transaction */
+        seenRows.add(rowKey);
         const date = parseDateCell(cells[dateCol] || '');
         if (!date) continue;
         byDate[date] = (byDate[date] || 0) + 1;
