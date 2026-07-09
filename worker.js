@@ -986,7 +986,25 @@ const TREND_CACHE_TTL = 1800;    /* seconds: trend barely moves load to load - r
 const REQUEST_CEILING_MS = 60000;
 const TREND_CEILING_MS = 90000;
 
+/* Hard OUTER ceiling wrapping the whole metrics lookup: no matter what hangs
+   inside (a slow/broken Xero connections check, a stuck refresh-token
+      exchange, anything at all upstream) the browser always gets a real,
+         final response within this time - never an endless spinner. This is a
+            safety net on top of the per-slot ceilings above, not a replacement for
+               them. */
+const OVERALL_CEILING_MS = 45000;
 async function apiMetrics(env, url) {
+     const outcome = await withCeiling(apiMetricsInner(env, url), OVERALL_CEILING_MS, 'TIMEOUT');
+     if (outcome === 'TIMEOUT') {
+            return json({
+                     error: 'timeout',
+                     plain: 'Still working on that - one of your connections is responding slowly right now. Try again in a moment.'
+            }, 503);
+     }
+     return outcome;
+}
+
+async function apiMetricsInner(env, url) {
   const cur = parseRange(url.searchParams.get('cur'));
   if (!cur) return json({ error: 'bad cur range' }, 400);
   const prev = parseRange(url.searchParams.get('prev'));
