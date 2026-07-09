@@ -485,14 +485,17 @@ function tokenRequestInit(cfg, params, env) {
    persisting the ROTATED refresh token) when needed. */
 async function fetchWithTimeout(url, init, ms) {
   const ctrl = new AbortController();
-  /* 28s per call: a single P&L report for a FULL financial year (e.g. Last
+  /* 55s per call: a single P&L report for a FULL financial year (e.g. Last
      financial year) is a much bigger Xero-side computation than a week or
-     a fresh month, and 15s was cutting those off before Xero could finish -
-     that's why only the short periods (this/last week, this month, this FY
-     while it's brand new) were coming back with data. Cloudflare Workers
-     only meters CPU time, not time spent waiting on a network response, so
-     a longer wait here costs nothing while idle. */
-  const timer = setTimeout(() => ctrl.abort(), ms || 28000);
+     a fresh month. 15s, then 28s, both still cut it off before Xero could
+     finish for a busy year of trading - that's why only the short periods
+     (this/last week, this month, this FY while it's brand new) were coming
+     back with data. Cloudflare Workers only meter CPU time, never time spent
+     waiting on a network response (confirmed: HTTP-triggered Workers have no
+     wall-clock duration cap while the client stays connected), so a longer
+     wait here costs nothing while idle - there's no platform reason to keep
+     this tight. */
+  const timer = setTimeout(() => ctrl.abort(), ms || 55000);
   try {
     return await fetch(url, { ...(init || {}), signal: ctrl.signal });
   } catch (e) {
@@ -973,12 +976,15 @@ const PERIODS_CACHE_TTL = 120;   /* seconds: brief cache for the picked period's
 const TREND_CACHE_TTL = 1800;    /* seconds: trend barely moves load to load - reuse it */
 /* Ceilings are PER SLOT, not shared across cur/prev/yoy - a slow "last financial
    year" prev-period report must never be able to null out an already-finished
-   "cur" period just because they were awaited together. 32s comfortably covers
-   one 28s Xero call plus a little overhead; the trend ceiling is longer because
-   it can be up to two sequential yearly report calls (up to 24 months, chunked
-   12 at a time) - but it only runs once every 30 minutes thanks to its own cache. */
-const REQUEST_CEILING_MS = 32000;
-const TREND_CEILING_MS = 65000;
+   "cur" period just because they were awaited together. 60s comfortably covers
+   one 55s Xero call plus a little overhead - a full financial year's P&L is
+   the single biggest report this Worker ever asks Xero for, and 32s was still
+   cutting it off before Xero could finish. The trend ceiling is longer again
+   because it can be up to two sequential yearly report calls (up to 24 months,
+   chunked 12 at a time) - but it only runs once every 30 minutes thanks to its
+   own cache, so the extra wait is rarely felt. */
+const REQUEST_CEILING_MS = 60000;
+const TREND_CEILING_MS = 90000;
 
 async function apiMetrics(env, url) {
   const cur = parseRange(url.searchParams.get('cur'));
