@@ -485,6 +485,7 @@ function tokenRequestInit(cfg, params, env) {
    persisting the ROTATED refresh token) when needed. */
 async function fetchWithTimeout(url, init, ms) {
   const ctrl = new AbortController();
+   console.log('[fetchWithTimeout] START ' + url + ' t=' + Date.now());
   /* 55s per call: a single P&L report for a FULL financial year (e.g. Last
      financial year) is a much bigger Xero-side computation than a week or
      a fresh month. 15s, then 28s, both still cut it off before Xero could
@@ -497,9 +498,9 @@ async function fetchWithTimeout(url, init, ms) {
      this tight. */
   const timer = setTimeout(() => ctrl.abort(), ms || 55000);
   try {
-    return await fetch(url, { ...(init || {}), signal: ctrl.signal });
+    const res = await fetch(url, { ...(init || {}), signal: ctrl.signal }); console.log('[fetchWithTimeout] END status=' + res.status + ' t=' + Date.now()); return res;
   } catch (e) {
-    if (e && e.name === 'AbortError') { const te = new Error('upstream timed out'); te.status = 504; throw te; }
+    console.log('[fetchWithTimeout] CATCH ' + (e && e.message) + ' t=' + Date.now()); if (e && e.name === 'AbortError') { const te = new Error('upstream timed out'); te.status = 504; throw te; }
     throw e;
   } finally {
     clearTimeout(timer);
@@ -507,20 +508,21 @@ async function fetchWithTimeout(url, init, ms) {
 }
 
 async function getValidAccessToken(env, source) {
+   console.log('[getValidAccessToken] ENTRY ' + source + ' t=' + Date.now());
   const adapter = ADAPTERS[source];
   const tokens = await getTokens(env, source);
   if (!tokens || !tokens.access_token) { const e = new Error('no tokens'); e.status = 401; throw e; }
   const skewMs = 60 * 1000;
-  if (!tokens.expires_at || Date.now() < tokens.expires_at - skewMs) return tokens.access_token;
+  console.log('[getValidAccessToken] ' + source + ' expiry-check expires_at=' + tokens.expires_at + ' now=' + Date.now()); if (!tokens.expires_at || Date.now() < tokens.expires_at - skewMs) return tokens.access_token;
 
   /* refresh */
   const cfg = adapter.oauth || {};
   if (!tokens.refresh_token || !cfg.tokenUrl) { const e = new Error('cannot refresh'); e.status = 401; throw e; }
-  const res = await fetchWithTimeout(cfg.tokenUrl, tokenRequestInit(cfg, {
+  console.log('[getValidAccessToken] ' + source + ' REFRESH START t=' + Date.now()); const res = await fetchWithTimeout(cfg.tokenUrl, tokenRequestInit(cfg, {
     grant_type: 'refresh_token',
     refresh_token: tokens.refresh_token
   }, env));
-  if (!res.ok) {
+  console.log('[getValidAccessToken] ' + source + ' refresh response received t=' + Date.now()); if (!res.ok) {
     /* refresh failed: force a reconnect rather than silently serving stale data */
     const e = new Error('refresh failed'); e.status = 401; throw e;
   }
@@ -1010,15 +1012,18 @@ async function apiMetricsInner(env, url) {
   const prev = parseRange(url.searchParams.get('prev'));
   const yoy = parseRange(url.searchParams.get('yoy'));
   const trend = parseMonthRange(url.searchParams.get('trend'));
+   const __t0 = Date.now(); console.log('[apiMetricsInner] START t=' + __t0);
   const tz = url.searchParams.get('tz') || 'Australia/Sydney';
   const rollover = Math.max(0, Math.min(6, parseInt(url.searchParams.get('rollover') || '0', 10) || 0));
 
   const base = { tz, rollover };
+   console.log('[apiMetricsInner] sourceStatus Promise.all START t=' + (Date.now() - __t0));
   const [sAcc, sPos, sRos] = await Promise.all([
     sourceStatus(env, 'accounting'),
     sourceStatus(env, 'pos'),
     sourceStatus(env, 'rostering')
-  ]);
+     ]);
+   console.log('[apiMetricsInner] sourceStatus Promise.all END t=' + (Date.now() - __t0));
 
   const force = url.searchParams.get('refresh') === '1';
 
