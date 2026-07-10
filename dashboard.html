@@ -1318,7 +1318,7 @@ function uploadPanel(s) {
           if (out.ok && out.j.ok) {
             try { localStorage.setItem('vd_upcode', useCode); } catch (e) {}
             msg.textContent = 'Done: ' + out.j.days + ' day' + (out.j.days === 1 ? '' : 's') + ' of data added. Refreshing…';
-            fetchData();
+            fetchData(true);
           } else {
             msg.textContent = (out.j && out.j.plain) || 'That didn’t work. Try again, or show your AI.';
           }
