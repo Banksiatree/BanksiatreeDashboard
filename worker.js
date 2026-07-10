@@ -832,22 +832,28 @@ function eachDate(from, to, cap) {
 
 /* Sum stored day rows across a range. Returns { sums, daysWithData, lastDate }. */
 async function readIngested(env, source, from, to) {
-  const sums = {};
-  let daysWithData = 0, lastDate = null;
-  for (const date of eachDate(from, to)) {
-    const raw = await env.TOKENS.get('data:' + source + ':' + date);
-    if (!raw) continue;
-    daysWithData++; lastDate = date;
-    try {
-      const row = JSON.parse(raw);
-      for (const [k, v] of Object.entries(row)) {
-        if (typeof v === 'number' && isFinite(v)) sums[k] = (sums[k] || 0) + v;
-      }
-    } catch (e) { /* skip bad row */ }
-  }
-  return { sums, daysWithData, lastDate };
+   const dates = eachDate(from, to);
+   /* Parallelise the day-key reads instead of awaiting them one at a time in a
+     loop - a wide range (e.g. a 24-month trend) is hundreds of days, and doing
+       them sequentially was adding tens of seconds to every single metrics
+         request regardless of which period was picked. */
+   const raws = await Promise.all(dates.map((date) => env.TOKENS.get('data:' + source + ':' + date)));
+   const sums = {};
+   let daysWithData = 0, lastDate = null;
+   for (let i = 0; i < dates.length; i++) {
+      const raw = raws[i];
+      if (!raw) continue;
+      daysWithData++; lastDate = dates[i];
+      try {
+         const row = JSON.parse(raw);
+         for (const [k, v] of Object.entries(row)) {
+            if (typeof v === 'number' && isFinite(v)) sums[k] = (sums[k] || 0) + v;
+         }
+      } catch (e) { /* skip bad row */ }
+   }
+   return { sums, daysWithData, lastDate };
 }
-
+  
 async function monthlyIngested(env, source, fromMonth, toMonth) {
   const months = monthList(fromMonth, toMonth);
   const out = { months, byMonth: [] };
