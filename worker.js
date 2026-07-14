@@ -580,12 +580,12 @@ async function apiIngest(env, request, url) {
 
 function parseRange(s) {
   if (!s) return null;
-  const m = /^(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(s);
+  const m = /^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$/.exec(s);
   return m ? { from: m[1], to: m[2] } : null;
 }
 function parseMonthRange(s) {
   if (!s) return null;
-  const m = /^(\d{4}-\d{2}):(\d{4}-\d{2})$/.exec(s);
+  const m = /^(\d{4}-\d{2})_(\d{4}-\d{2})$/.exec(s);
   return m ? { fromMonth: m[1], toMonth: m[2] } : null;
 }
 
