@@ -79,22 +79,61 @@ const ADAPTERS = {
      'Demo Company'. Secrets: ACCOUNTING_CLIENT_ID, ACCOUNTING_CLIENT_SECRET.
   */
   accounting: {
-    configured: false,
-    auth: null, /* 'oauth' | 'token' */
+    configured: true,
+    auth: 'oauth',
     oauth: {
-      /* Example (Xero) - fill these when you wire the adapter:
-         authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
-         tokenUrl: 'https://identity.xero.com/connect/token',
-         scopes: 'offline_access accounting.reports.profitandloss.read',
-         clientIdSecret: 'ACCOUNTING_CLIENT_ID',
-         clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
-         tokenAuth: 'basic'   // Xero's token endpoint wants HTTP Basic client auth
-                              // (client_secret_basic). Use 'post' only for providers
-                              // that expect client_id/secret in the form body. */
+      authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
+      tokenUrl: 'https://identity.xero.com/connect/token',
+      scopes: 'offline_access accounting.reports.profitandloss.read',
+      clientIdSecret: 'ACCOUNTING_CLIENT_ID',
+      clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
+      tokenAuth: 'basic'
     },
-    async status(env, h) { return { connected: false }; },
-    async fetchRange(env, h, q) { throw new NotConfigured('accounting'); },
-    async fetchMonthly(env, h, q) { throw new NotConfigured('accounting'); }
+    async status(env, h) {
+      const tokens = await h.getTokens();
+      if (!tokens) return { connected: false };
+      const conns = await h.fetchJson('https://api.xero.com/connections');
+      const tenant = Array.isArray(conns) ? conns[0] : null;
+      return {
+        connected: !!tenant,
+        org: tenant ? tenant.tenantName : null,
+        sandbox: !!(tenant && /demo company/i.test(tenant.tenantName || '')),
+        lastSync: null
+      };
+    },
+    async fetchRange(env, h, q) {
+      const tenantId = await xeroTenantId(env, h);
+      const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + q.from + '&toDate=' + q.to;
+      const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+      const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+      return walkXeroPL(rows, 0);
+    },
+    async fetchMonthly(env, h, q) {
+      const tenantId = await xeroTenantId(env, h);
+      const months = monthList(q.fromMonth, q.toMonth);
+      const out = { months, revenue: [], cogs: [], wagesSuper: [], overheads: [] };
+      /* One P&L call per month, in parallel, to avoid the 12-period cap and
+         ordering ambiguity of the multi-period report. */
+      const results = await Promise.all(months.map(async (mo) => {
+        const [y, m] = mo.split('-').map(Number);
+        const from = mo + '-01';
+        const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const to = mo + '-' + String(lastDay).padStart(2, '0');
+        try {
+          const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+          const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+          const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+          return walkXeroPL(rows, 0);
+        } catch (e) { return null; }
+      }));
+      for (const r of results) {
+        out.revenue.push(r ? r.revenue : null);
+        out.cogs.push(r ? r.cogs : null);
+        out.wagesSuper.push(r ? r.wagesSuper : null);
+        out.overheads.push(r ? r.overheads : null);
+      }
+      return out;
+    }
   },
 
   /* >>> ADAPTER 2: POS
@@ -111,12 +150,56 @@ const ADAPTERS = {
      connect.squareupsandbox.com.
   */
   pos: {
-    configured: false,
+    configured: true,
     auth: null,
+    mode: 'export', /* OOLIO's Sales Feed has no self-serve API for this build - fed by CSV export (fallback ladder rung 4, guided upload) */
     oauth: {},
-    async status(env, h) { return { connected: false }; },
-    async fetchRange(env, h, q) { throw new NotConfigured('pos'); },
-    async fetchMonthly(env, h, q) { throw new NotConfigured('pos'); }
+    async status(env, h) {
+      const ls = await lastSync(env, 'pos');
+      return { connected: !!ls, org: 'OOLIO Sales Feed (CSV upload)', sandbox: false, lastSync: ls };
+    },
+    async fetchRange(env, h, q) {
+      const r = await h.readIngested(q.from, q.to);
+      return { count: r.sums.count || 0 };
+    },
+    async fetchMonthly(env, h, q) {
+      const r = await h.monthlyIngested(q.fromMonth, q.toMonth);
+      return { months: r.months, count: r.byMonth.map((m) => (m ? (m.count || 0) : null)) };
+    },
+    /* OOLIO Sales Feed CSV columns (confirmed from a real export):
+       Order No., Type, Date/Time, Store, Created By, Gross Sales, Discounts,
+       Surcharges, Net Sales, Taxes, Net Sales ex Tax, Tips, Payment Surcharges,
+       Cash Rounding, Total Collected, Receipt
+       No Status column - a transaction counts as completed unless it's an
+       exact duplicate row (re-exported overlap) or a true all-zero row
+       (Gross Sales, Net Sales and Total Collected all $0.00). */
+    async parseExport(env, h, raw) {
+      const rows = parseCsv(raw.text);
+      if (!rows.length) return [];
+      const header = rows[0].map((c) => c.trim());
+      const idx = (name) => header.indexOf(name);
+      const iDateTime = idx('Date/Time');
+      const iGross = idx('Gross Sales');
+      const iNet = idx('Net Sales');
+      const iTotal = idx('Total Collected');
+      if (iDateTime < 0 || iGross < 0 || iNet < 0 || iTotal < 0) {
+        throw new Error('unexpected OOLIO export columns');
+      }
+      const seen = new Set();
+      const byDate = {};
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.length < header.length) continue;
+        const key = r.join('\u0001');
+        if (seen.has(key)) continue; /* exact duplicate row - skip */
+        seen.add(key);
+        if (r[iGross] === '$0.00' && r[iNet] === '$0.00' && r[iTotal] === '$0.00') continue; /* all-zero row */
+        const isoDate = oolioDateToIso(r[iDateTime]);
+        if (!isoDate) continue;
+        byDate[isoDate] = (byDate[isoDate] || 0) + 1;
+      }
+      return Object.entries(byDate).map(([date, count]) => ({ date, count }));
+    }
   },
 
   /* >>> ADAPTER 3: ROSTERING (optional - only if the owner has one)
@@ -137,6 +220,117 @@ const ADAPTERS = {
     async fetchMonthly(env, h, q) { return { months: [], cost: [] }; }
   }
 };
+
+/* ----------------------------------------------------------------------------
+   Xero helpers: tenant id lookup (cached in KV - avoids a /connections call
+   on every metrics request) and the P&L section walker.
+---------------------------------------------------------------------------- */
+async function xeroTenantId(env, h) {
+  const cached = env.TOKENS ? await env.TOKENS.get('xero:tenantId') : null;
+  if (cached) return cached;
+  const conns = await h.fetchJson('https://api.xero.com/connections');
+  const tenant = Array.isArray(conns) ? conns[0] : null;
+  if (!tenant) { const e = new Error('no Xero tenant'); e.status = 401; throw e; }
+  if (env.TOKENS) await env.TOKENS.put('xero:tenantId', tenant.tenantId, { expirationTtl: 3600 });
+  return tenant.tenantId;
+}
+
+/* Wage/super keyword match, per capability-matrix.md. "Owner Wages and
+   Salaries" and "Distribution of Profit" are the owner's own equity-style
+   drawings, not operating wages or overheads, so both are excluded entirely
+   rather than counted as wagesSuper or overheads. */
+const WAGE_KEYWORD_RE = /wages|salaries|superannuation|super|payroll|annual leave|long service|workcover/i;
+const OWNER_WAGE_RE = /owner\s+wages\s+and\s+salaries/i;
+const DISTRIBUTION_OF_PROFIT_RE = /distribution\s+of\s+profit/i;
+
+function xeroCellValue(row, periodIndex) {
+  const c = row.Cells && row.Cells[periodIndex + 1];
+  if (!c) return 0;
+  const v = parseFloat(String(c.Value || '0').replace(/[^0-9.\-]/g, ''));
+  return isFinite(v) ? v : 0;
+}
+function findXeroSummary(section) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'SummaryRow') return row;
+    if (row.RowType === 'Section') { const s = findXeroSummary(row); if (s) return s; }
+  }
+  return null;
+}
+function walkXeroOpex(section, periodIndex, acc) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      const val = xeroCellValue(row, periodIndex);
+      if (DISTRIBUTION_OF_PROFIT_RE.test(label)) continue; /* excluded entirely */
+      if (OWNER_WAGE_RE.test(label)) continue; /* excluded entirely */
+      if (WAGE_KEYWORD_RE.test(label)) acc.wagesSuper += val;
+      else acc.overheads += val;
+    } else if (row.RowType === 'Section') {
+      walkXeroOpex(row, periodIndex, acc);
+    }
+  }
+}
+function walkXeroPL(reportRows, periodIndex) {
+  let revenue = 0, cogs = 0;
+  const opexAcc = { wagesSuper: 0, overheads: 0 };
+  for (const row of reportRows) {
+    if (row.RowType !== 'Section') continue;
+    const title = (row.Title || '').toLowerCase();
+    if ((title === 'income' || title === 'revenue' || title === 'trading income') && !title.includes('other')) {
+      const s = findXeroSummary(row);
+      revenue += s ? xeroCellValue(s, periodIndex) : 0;
+    } else if (title.includes('cost of sales')) {
+      const s = findXeroSummary(row);
+      cogs += s ? xeroCellValue(s, periodIndex) : 0;
+    } else if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
+      walkXeroOpex(row, periodIndex, opexAcc);
+    }
+  }
+  return { revenue, cogs, wagesSuper: opexAcc.wagesSuper, overheads: opexAcc.overheads };
+}
+
+/* ----------------------------------------------------------------------------
+   OOLIO helpers: a small quoted-CSV line parser (commas can appear inside
+   quoted fields, e.g. the "30 June 2026, 02:54 pm" Date/Time column) and the
+   "30 June 2026" -> "2026-06-30" date converter.
+---------------------------------------------------------------------------- */
+function parseCsv(text) {
+  const clean = text.replace(/^\uFEFF/, ''); /* strip BOM */
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < clean.length; i++) {
+    const c = clean[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (clean[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\r') {
+      /* skip - handled by \n */
+    } else if (c === '\n') {
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0] !== ''));
+}
+const OOLIO_MONTHS = { january: '01', february: '02', march: '03', april: '04', may: '05', june: '06', july: '07', august: '08', september: '09', october: '10', november: '11', december: '12' };
+function oolioDateToIso(dateTimeStr) {
+  /* "30 June 2026, 02:54 pm" -> "2026-06-30" (date only - the trading-day
+     rollover, if any, is applied by the caller via q.rollover). */
+  const m = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec((dateTimeStr || '').trim());
+  if (!m) return null;
+  const mo = OOLIO_MONTHS[m[2].toLowerCase()];
+  if (!mo) return null;
+  return m[3] + '-' + mo + '-' + m[1].padStart(2, '0');
+}
 
 /* ============================================================================
    Everything below is the shell. You should rarely need to edit it.
