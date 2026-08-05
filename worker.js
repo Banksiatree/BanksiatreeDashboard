@@ -152,7 +152,10 @@ const ADAPTERS = {
   pos: {
     configured: true,
     auth: null,
-    mode: 'export', /* OOLIO's Sales Feed has no self-serve API for this build - fed by CSV export (fallback ladder rung 4, guided upload) */
+    mode: 'export', /* OOLIO has no self-serve GET/reporting API - fed by CSV export (fallback ladder rung 4, guided upload)
+                        AND, once set up in OOLIO, by their signed order.complete webhook
+                        (POST /api/webhook/oolio, see apiWebhookOolio below) - both write
+                        the same KV day-store, so fetchRange/fetchMonthly need no changes. */
     oauth: {},
     async status(env, h) {
       const ls = await lastSync(env, 'pos');
@@ -330,6 +333,126 @@ function oolioDateToIso(dateTimeStr) {
   const mo = OOLIO_MONTHS[m[2].toLowerCase()];
   if (!mo) return null;
   return m[3] + '-' + mo + '-' + m[1].padStart(2, '0');
+}
+
+/* ----------------------------------------------------------------------------
+   OOLIO webhook (Svix-signed, at-least-once delivery). See POST /api/webhook/oolio
+   in the router and processOolioWebhookEvent() below.
+   Secret: OOLIO_WEBHOOK_SECRET (the "whsec_..." value OOLIO/Svix issues per
+   endpoint - set via `wrangler secret put OOLIO_WEBHOOK_SECRET`).
+---------------------------------------------------------------------------- */
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function bytesToB64(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)));
+}
+const SVIX_TIMESTAMP_TOLERANCE_SECONDS = 300; /* 5 minutes, standard Svix guidance */
+
+/* Verifies svix-id / svix-timestamp / svix-signature against the raw request
+   body per Svix's scheme: HMAC-SHA256("{id}.{timestamp}.{body}") using the
+   secret after its "whsec_" prefix (base64) as the raw key, base64-encoded
+   (standard, not url-safe), compared against any of the space-delimited
+   "v1,<sig>" values in svix-signature (there can be more than one during
+   secret rotation). Returns true/false; never throws. */
+async function verifyOolioWebhook(secretRaw, svixId, svixTimestamp, rawBody, svixSignatureHeader) {
+  if (!secretRaw || !svixId || !svixTimestamp || !rawBody || !svixSignatureHeader) return false;
+  const tsNum = parseInt(svixTimestamp, 10);
+  if (!isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > SVIX_TIMESTAMP_TOLERANCE_SECONDS) return false;
+  try {
+    const secretB64 = secretRaw.replace(/^whsec_/, '');
+    const keyBytes = base64ToBytes(secretB64);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signedContent = svixId + '.' + svixTimestamp + '.' + rawBody;
+    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedContent));
+    const expected = bytesToB64(sigBuf);
+    const candidates = svixSignatureHeader.split(' ').map((p) => p.trim()).filter(Boolean);
+    for (const c of candidates) {
+      const comma = c.indexOf(',');
+      const sig = comma >= 0 ? c.slice(comma + 1) : c;
+      if (timingSafeEqual(sig, expected)) return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* Idempotency: a delivery (and its retries) share the same svix-id. Returns
+   true if this id was already processed (caller should skip re-counting but
+   still return 2xx), false the first time (and marks it seen). */
+async function webhookAlreadySeen(env, id) {
+  if (!env.TOKENS) return false;
+  const key = 'webhookseen:oolio:' + id;
+  const existing = await env.TOKENS.get(key);
+  if (existing) return true;
+  await env.TOKENS.put(key, '1', { expirationTtl: 172800 }); /* 48h - comfortably covers the ~24h retry window */
+  return false;
+}
+
+/* Read-modify-write a single numeric field for one day's stored row. Used by
+   the webhook (one event at a time) alongside saveIngestedRows (whole-day
+   overwrite, used by CSV upload) - both write the same data:<source>:<date>
+   KV row, so a later CSV upload for a day will overwrite whatever the
+   webhook had accumulated for that day (intended for backfills/corrections,
+   not routine double-entry). NOTE: KV has no atomic increment, so two
+   webhook deliveries landing in the same instant could race; at this venue's
+   volume that's an acceptable, documented limitation rather than a Durable
+   Object-backed counter. */
+async function incrementIngestedField(env, source, date, field, delta) {
+  const key = 'data:' + source + ':' + date;
+  const raw = await env.TOKENS.get(key);
+  const row = raw ? JSON.parse(raw) : {};
+  row[field] = (typeof row[field] === 'number' ? row[field] : 0) + delta;
+  await env.TOKENS.put(key, JSON.stringify(row));
+}
+
+/* Handles one already-signature-verified OOLIO webhook event. Only
+   order.complete increments the day's transaction count - order.refunded is
+   intentionally ignored (per kpi-spec.md: refunds never reduce the count),
+   and any other/unknown type is ignored too. Uses data.createdAt (order
+   creation time) for the trading date, matching how the CSV export's
+   Date/Time column was interpreted; the existing POS_TRADING_DAY_OFFSET in
+   fetchSlot still applies on read, so no adjustment is needed here. */
+async function processOolioWebhookEvent(env, evt) {
+  if (!evt || evt.type !== 'order.complete' || !evt.data) return;
+  const createdAt = evt.data.createdAt;
+  if (!createdAt || typeof createdAt !== 'string' || createdAt.length < 10) return;
+  const date = createdAt.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  await incrementIngestedField(env, 'pos', date, 'count', 1);
+}
+
+/* POST /api/webhook/oolio - public (no dashboard session), authenticated by
+   the Svix signature instead. Must ack quickly (OOLIO/Svix expects a 2xx
+   within ~15s) and be idempotent against retries. */
+async function apiWebhookOolio(env, request) {
+  const rawBody = await request.text();
+  const svixId = request.headers.get('svix-id');
+  const svixTimestamp = request.headers.get('svix-timestamp');
+  const svixSignature = request.headers.get('svix-signature');
+  const secret = env.OOLIO_WEBHOOK_SECRET;
+  if (!secret) return json({ error: 'webhook not configured' }, 501);
+  const ok = await verifyOolioWebhook(secret, svixId, svixTimestamp, rawBody, svixSignature);
+  if (!ok) return json({ error: 'invalid signature' }, 401);
+
+  if (await webhookAlreadySeen(env, svixId)) return json({ ok: true, duplicate: true });
+
+  let evt;
+  try { evt = JSON.parse(rawBody); } catch (e) { return json({ error: 'bad json' }, 400); }
+  try {
+    await processOolioWebhookEvent(env, evt);
+    await noteSync(env, 'pos');
+  } catch (e) {
+    /* Already marked "seen" above, so a processing bug here won't cause endless
+       retries to double count - but do surface a 500 so OOLIO's dashboard shows
+       the failed delivery for us to investigate. */
+    return json({ error: 'processing failed' }, 500);
+  }
+  return json({ ok: true });
 }
 
 /* ============================================================================
@@ -655,7 +778,7 @@ async function authCallback(env, source, url) {
   const gotState = url.searchParams.get('state');
   const wantState = await env.TOKENS.get('oauthstate:' + source);
   if (!code || !gotState || gotState !== wantState) {
-    return new Response('That authorisation didn’t complete cleanly. Go back to the dashboard and click Reconnect to try again.', { status: 400 });
+    return new Response('That authorisation didn\u2019t complete cleanly. Go back to the dashboard and click Reconnect to try again.', { status: 400 });
   }
   await env.TOKENS.delete('oauthstate:' + source);
   const redirectUri = url.origin + '/auth/' + source + '/callback';
@@ -665,7 +788,7 @@ async function authCallback(env, source, url) {
     redirect_uri: redirectUri
   }, env));
   if (!res.ok) {
-    return new Response('The connection couldn’t be finished (the tool said no: ' + res.status + '). Your AI will check the app settings - the usual cause is a redirect address that doesn’t match exactly.', { status: 502 });
+    return new Response('The connection couldn\u2019t be finished (the tool said no: ' + res.status + '). Your AI will check the app settings - the usual cause is a redirect address that doesn\u2019t match exactly.', { status: 502 });
   }
   const t = await res.json();
   await saveTokens(env, source, {
@@ -964,6 +1087,7 @@ export default {
     if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
     if (path === '/api/logout' && request.method === 'POST') return apiLogout();
     if (path === '/api/ingest' && request.method === 'POST') return apiIngest(env, request, url);
+    if (path === '/api/webhook/oolio' && request.method === 'POST') return apiWebhookOolio(env, request);
 
     const loggedIn = await isLoggedIn(request, env);
 
