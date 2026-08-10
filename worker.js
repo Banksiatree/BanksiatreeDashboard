@@ -402,14 +402,9 @@ async function webhookAlreadySeen(env, id) {
    not routine double-entry). NOTE: KV has no atomic increment, so two
    webhook deliveries landing in the same instant could race; at this venue's
    volume that's an acceptable, documented limitation rather than a Durable
-   Object-backed counter. */
-async function incrementIngestedField(env, source, date, field, delta) {
-  const key = 'data:' + source + ':' + date;
-  const raw = await env.TOKENS.get(key);
-  const row = raw ? JSON.parse(raw) : {};
-  row[field] = (typeof row[field] === 'number' ? row[field] : 0) + delta;
-  await env.TOKENS.put(key, JSON.stringify(row));
-}
+   Object-backed counter. (incrementIngestedField itself lives down in the
+   ingest-storage section below, alongside saveIngestedRows/monthlyIngested,
+   since it also has to keep the monthly aggregate in sync.) */
 
 /* Handles one already-signature-verified OOLIO webhook event. Only
    order.complete increments the day's transaction count - order.refunded is
@@ -806,8 +801,41 @@ async function authCallback(env, source, url) {
 /* ---------------- No-API ingest: KV day-store + endpoint ---------------- */
 
 /* Day rows live at data:<source>:<YYYY-MM-DD> as JSON objects of numeric
-   fields. Same-day re-uploads overwrite (idempotent; re-ingesting a corrected
-   export is safe and expected). */
+   fields. Same-day re-uploads/webhook-increments overwrite/adjust in place
+   (idempotent; re-ingesting a corrected export is safe and expected).
+
+   PERFORMANCE: the dashboard requests a 24-month trend on every page load
+   (see dashboard.html's trendStart calc). Summing 24 months of individual
+   day rows on every load - up to ~730 sequential KV reads - was the actual
+   cause of "the dashboard is so slow", especially on Connections/first load.
+   Fix: keep a running monthly aggregate at monthagg:<source>:<YYYY-MM>,
+   updated by the same small delta whenever a day's numbers change (whether
+   from a whole-day CSV overwrite or a single webhook increment). A 24-month
+   trend then costs 24 fast KV reads instead of hundreds. */
+
+async function getMonthAgg(env, source, monthKey) {
+  const raw = await env.TOKENS.get('monthagg:' + source + ':' + monthKey);
+  return raw ? JSON.parse(raw) : null;
+}
+async function putMonthAgg(env, source, monthKey, agg) {
+  await env.TOKENS.put('monthagg:' + source + ':' + monthKey, JSON.stringify(agg));
+}
+/* Applies a small delta to a month's running aggregate. isNewDay marks the
+   first time this date has ever had data, so the month's "has any data"
+   flag (_days) is only incremented once per date, not once per write. */
+async function adjustMonthAgg(env, source, date, isNewDay, fieldDeltas) {
+  const monthKey = date.slice(0, 7);
+  const agg = (await getMonthAgg(env, source, monthKey)) || { _days: 0 };
+  if (isNewDay) agg._days = (agg._days || 0) + 1;
+  for (const [k, v] of Object.entries(fieldDeltas)) {
+    if (typeof v === 'number' && isFinite(v) && v !== 0) agg[k] = (agg[k] || 0) + v;
+  }
+  await putMonthAgg(env, source, monthKey, agg);
+}
+
+/* Whole-day overwrite (CSV upload path). Computes the delta against
+   whatever was there before so the month aggregate stays correct even when
+   a day is re-uploaded with corrected numbers. */
 async function saveIngestedRows(env, source, rows) {
   if (!Array.isArray(rows)) return 0;
   let saved = 0;
@@ -818,10 +846,32 @@ async function saveIngestedRows(env, source, rows) {
       if (k !== 'date' && typeof v === 'number' && isFinite(v)) clean[k] = v;
     }
     if (Object.keys(clean).length === 0) continue;
-    await env.TOKENS.put('data:' + source + ':' + r.date, JSON.stringify(clean));
+    const key = 'data:' + source + ':' + r.date;
+    const oldRaw = await env.TOKENS.get(key);
+    const oldRow = oldRaw ? JSON.parse(oldRaw) : null;
+    const isNewDay = !oldRow;
+    const deltas = {};
+    for (const f of new Set([...(oldRow ? Object.keys(oldRow) : []), ...Object.keys(clean)])) {
+      const oldV = oldRow && typeof oldRow[f] === 'number' ? oldRow[f] : 0;
+      const newV = typeof clean[f] === 'number' ? clean[f] : 0;
+      if (newV !== oldV) deltas[f] = newV - oldV;
+    }
+    await env.TOKENS.put(key, JSON.stringify(clean));
+    await adjustMonthAgg(env, source, r.date, isNewDay, deltas);
     saved++;
   }
   return saved;
+}
+
+/* Single-field increment (webhook path). */
+async function incrementIngestedField(env, source, date, field, delta) {
+  const key = 'data:' + source + ':' + date;
+  const raw = await env.TOKENS.get(key);
+  const isNewDay = !raw;
+  const row = raw ? JSON.parse(raw) : {};
+  row[field] = (typeof row[field] === 'number' ? row[field] : 0) + delta;
+  await env.TOKENS.put(key, JSON.stringify(row));
+  await adjustMonthAgg(env, source, date, isNewDay, { [field]: delta });
 }
 
 function eachDate(from, to, cap) {
@@ -835,13 +885,18 @@ function eachDate(from, to, cap) {
   return out;
 }
 
-/* Sum stored day rows across a range. Returns { sums, daysWithData, lastDate }. */
+/* Sum stored day rows across a range. Used for single-period queries (This
+   week, Last month, etc - typically <=31 days), so reads all days in the
+   range IN PARALLEL rather than one at a time. Returns
+   { sums, daysWithData, lastDate }. */
 async function readIngested(env, source, from, to) {
+  const dates = eachDate(from, to);
+  const raws = await Promise.all(dates.map((date) => env.TOKENS.get('data:' + source + ':' + date)));
   const sums = {};
   let daysWithData = 0, lastDate = null;
-  for (const date of eachDate(from, to)) {
-    const raw = await env.TOKENS.get('data:' + source + ':' + date);
-    if (!raw) continue;
+  dates.forEach((date, i) => {
+    const raw = raws[i];
+    if (!raw) return;
     daysWithData++; lastDate = date;
     try {
       const row = JSON.parse(raw);
@@ -849,21 +904,24 @@ async function readIngested(env, source, from, to) {
         if (typeof v === 'number' && isFinite(v)) sums[k] = (sums[k] || 0) + v;
       }
     } catch (e) { /* skip bad row */ }
-  }
+  });
   return { sums, daysWithData, lastDate };
 }
 
+/* Trend queries (up to 24 months, see dashboard.html): reads the monthly
+   aggregate directly - one fast KV read per month - instead of re-summing
+   every day in every month on every dashboard load. */
 async function monthlyIngested(env, source, fromMonth, toMonth) {
   const months = monthList(fromMonth, toMonth);
-  const out = { months, byMonth: [] };
-  for (const mo of months) {
-    const [y, m] = mo.split('-').map(Number);
-    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-    const r = await readIngested(env, source, mo + '-01', mo + '-' + String(lastDay).padStart(2, '0'));
-    out.byMonth.push(r.daysWithData ? r.sums : null);
-  }
-  return out;
+  const aggs = await Promise.all(months.map((mo) => getMonthAgg(env, source, mo)));
+  const byMonth = aggs.map((agg) => {
+    if (!agg || !agg._days) return null;
+    const { _days, ...rest } = agg;
+    return rest;
+  });
+  return { months, byMonth };
 }
+
 
 /* POST /api/ingest?source=pos|accounting|rostering
    Authorization: Bearer <INGEST_TOKEN>. Body: the exported file's text.
@@ -1013,9 +1071,17 @@ async function apiMetrics(env, url) {
   }
   if (!data) {
     const periods = {};
-    periods.cur = await fetchSlot(env, { ...base, ...cur });
-    periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
-    periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
+    /* These three were previously awaited one after another - each one doing
+       a live Xero call plus KV reads - which serialised their latency. They
+       don't depend on each other, so run them concurrently. */
+    const [curOut, prevOut, yoyOut] = await Promise.all([
+      fetchSlot(env, { ...base, ...cur }),
+      prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
+      yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
+    ]);
+    periods.cur = curOut;
+    periods.prev = prevOut;
+    periods.yoy = yoyOut;
 
     let trendOut = null;
     if (trend) {
