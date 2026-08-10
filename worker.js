@@ -324,13 +324,14 @@ function parseCsv(text) {
   if (field.length || row.length) { row.push(field); rows.push(row); }
   return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0] !== ''));
 }
-const OOLIO_MONTHS = { january: '01', february: '02', march: '03', april: '04', may: '05', june: '06', july: '07', august: '08', september: '09', october: '10', november: '11', december: '12' };
+const OOLIO_MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
 function oolioDateToIso(dateTimeStr) {
-  /* "30 June 2026, 02:54 pm" -> "2026-06-30" (date only - the trading-day
-     rollover, if any, is applied by the caller via q.rollover). */
+  /* Handles both "30 June 2026, 02:54 pm" and "09 Aug 2026, 03:04 pm" -
+     OOLIO exports use full month names in some reports and abbreviated
+     3-letter names in others, so match on the first 3 letters either way. */
   const m = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec((dateTimeStr || '').trim());
   if (!m) return null;
-  const mo = OOLIO_MONTHS[m[2].toLowerCase()];
+  const mo = OOLIO_MONTHS[m[2].slice(0, 3).toLowerCase()];
   if (!mo) return null;
   return m[3] + '-' + mo + '-' + m[1].padStart(2, '0');
 }
