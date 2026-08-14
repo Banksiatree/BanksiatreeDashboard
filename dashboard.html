@@ -1288,8 +1288,11 @@ function repairPanel(s) {
       .then(function (out) {
         btn.disabled = false;
         if (out.ok && out.j.ok) {
-          msg.textContent = 'Done - rebuilt ' + out.j.monthsRebuilt + ' month' + (out.j.monthsRebuilt === 1 ? '' : 's') + ' of totals. Refreshing…';
-          fetchData(true);
+          msg.textContent = 'Done - rebuilt ' + out.j.monthsRebuilt + ' month' + (out.j.monthsRebuilt === 1 ? '' : 's') + ' of totals.';
+          /* fetchData() calls render() immediately, which rebuilds this whole
+             screen and would wipe this message out before it's readable -
+             give it a few seconds on screen first. */
+          setTimeout(function () { fetchData(true); }, 3000);
         } else {
           msg.textContent = (out.j && out.j.message) ? ('Failed: ' + out.j.message) : 'That didn’t work. Try again, or show your AI.';
         }
