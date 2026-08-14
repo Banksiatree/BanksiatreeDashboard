@@ -1,1713 +1,1310 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Your venue dashboard</title>
-<!-- ============================================================
-  Dashboard scaffold (ships in the FC Member Dashboard Kit).
-  Built for the owner's AI to wire data into - do not rebuild it.
-  - All metric maths follows kpi-spec.md (locked definitions).
-  - The Worker (worker.js) supplies raw source data; THIS file computes
-    the metrics, so the locked definitions live in exactly one place.
-  - No FC identity anywhere: this is the owner's own tool.
-  - JS rules: no template literals, apostrophes as ’ in JS strings,
-    dynamic screens built with DOM methods.
-============================================================ -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Khand:wght@500;600;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Montserrat:wght@500;600;700;800&display=swap" rel="stylesheet">
-<style>
-:root {
-  --gold:        #F2A900;
-  --gold-dim:    rgba(242,169,0,0.10);
-  --black:       #0D0D0D;
-  --cream:       #FAF7F2;
-  --cream2:      #F2EDE4;
-  --cream3:      #E8E0D4;
-  --muted:       #8C8075;
-  --text:        #2A2420;
-  --border:      rgba(13,13,13,0.08);
-  --border-med:  rgba(13,13,13,0.14);
-  --c-teal:        #0E8A6E;
-  --c-teal-bg:     #E6F5F1;
-  --c-teal-border: rgba(14,138,110,0.15);
-  --c-teal-text:   #0a4a3a;
-  --c-blue:        #1A5FB4;
-  --c-blue-bg:     #E8F0FB;
-  --c-blue-border: rgba(26,95,180,0.15);
-  --c-blue-text:   #0f3470;
-  --c-coral:        #C04B28;
-  --c-coral-bg:     #FAECE7;
-  --c-coral-border: rgba(192,75,40,0.15);
-  --c-purple:        #5C3DB0;
-  --c-purple-bg:     #EDE8FA;
-  --c-purple-border: rgba(92,61,176,0.15);
-  --c-purple-text:   #33216b;
-  --c-amber:        #9E6800;
-  --c-amber-bg:     #FDF3DC;
-  --c-amber-border: rgba(158,104,0,0.15);
-  --c-green:        #1A7A3C;
-  --c-green-bg:     #E8F5EE;
-  --c-green-border: rgba(26,122,60,0.15);
-  --accent: var(--gold);
-  --accent-dim: rgba(242,169,0,0.12);
-}
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; }
-body {
-  min-height: 100vh;
-  background: var(--cream);
-  font-family: 'DM Sans', sans-serif;
-  color: var(--text);
-  background-image:
-    radial-gradient(ellipse at 0% 0%, rgba(242,169,0,0.07) 0%, transparent 55%),
-    radial-gradient(ellipse at 100% 100%, rgba(242,169,0,0.04) 0%, transparent 50%);
-}
-#app { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 4rem; }
+/* ============================================================================
+   Venue dashboard - Worker shell (ships in the FC Member Dashboard Kit)
 
-/* Top bar: the owner's name for the venue, no other identity */
-.topbar { display: flex; align-items: center; gap: 1rem; padding: 2rem 0 0.4rem; flex-wrap: wrap; }
-.venue-logo { height: 54px; width: auto; display: block; border-radius: 6px; }
-.venue-name-wrap { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
-.venue-name { font-family: 'Montserrat', sans-serif; font-size: 34px; font-weight: 700; color: var(--black); line-height: 1; letter-spacing: -0.01em; }
-.topbar-sub { font-size: 13px; color: var(--muted); font-weight: 300; }
-.top-rule { width: 48px; height: 3px; background: var(--accent); border-radius: 2px; margin: 0.4rem 0 1rem; }
+   You are the AI running this build. This file is YOURS to finish; the owner
+   never sees it. The shell already does the hard plumbing:
 
-/* Nav tabs */
-.nav { display: flex; gap: 6px; margin-bottom: 1.1rem; flex-wrap: wrap; }
-.nav-tab {
-  font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 500;
-  padding: 9px 18px; border-radius: 50px; border: 1px solid var(--border-med);
-  background: transparent; color: var(--text); cursor: pointer; transition: all .15s;
-}
-.nav-tab:hover { background: var(--cream2); }
-.nav-tab.active { background: var(--black); color: #fff; border-color: var(--black); }
-.nav-tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c-coral); margin-left: 7px; vertical-align: 1px; }
+     - serves the dashboard page
+     - a metrics API with a fixed contract the page already understands
+     - an OAuth2 begin/callback flow with token storage
+     - automatic access-token refresh, INCLUDING rotating refresh tokens
+       (Xero rotates the refresh token on every refresh - the store persists
+       the new one every time; never cache tokens outside the store)
+     - plain-English connection status for the Connections screen
+     - the no-API rungs built in: POST /api/ingest (file/export data in),
+       an email() handler stub for emailed reports, a scheduled() cron hook,
+       and a KV day-store the export-fed adapters read from
 
-/* Banners */
-.banner { border-radius: 12px; padding: 0.85rem 1.1rem; font-size: 14px; line-height: 1.55; margin-bottom: 0.9rem; border: 1px solid transparent; }
-.banner b { font-weight: 500; }
-.banner-amber { background: var(--c-amber-bg); border-color: var(--c-amber-border); color: var(--c-amber-text, #5a3c00); }
-.banner-coral { background: var(--c-coral-bg); border-color: var(--c-coral-border); color: #6b2510; }
-.banner-link { color: inherit; font-weight: 500; text-decoration: underline; cursor: pointer; }
+   What you fill in: the three ADAPTERS (accounting / pos / rostering), each
+   marked with  >>> ADAPTER ...  blocks. Wire them against the provider's
+   CURRENT documentation, per capability-matrix.md and playbook.md.
 
-/* Period bar */
-.period-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 0.4rem; }
-.period-label { font-family: 'Khand', sans-serif; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-right: 2px; }
-.pchip {
-  font-size: 13px; font-weight: 400; padding: 8px 15px; border-radius: 50px;
-  border: 1px solid var(--border-med); background: #fffdf9; color: var(--text);
-  cursor: pointer; transition: all .15s; user-select: none;
-}
-.pchip:hover { border-color: var(--accent); background: var(--accent-dim); }
-.pchip.on { background: var(--black); color: #fff; border-color: var(--black); font-weight: 500; }
-.custom-wrap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0.5rem 0; }
-.custom-wrap input[type=date] {
-  font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 10px;
-  border: 1px solid var(--border-med); border-radius: 9px; background: #fff; color: var(--text);
-}
-.btn-small {
-  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; padding: 8px 16px;
-  border-radius: 9px; border: none; background: var(--accent); color: var(--black); cursor: pointer;
-}
-.btn-small:disabled { opacity: 0.5; cursor: default; }
-.btn-plain {
-  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; padding: 8px 16px;
-  border-radius: 9px; border: 1px solid var(--border-med); background: transparent; color: var(--text); cursor: pointer;
-}
-.btn-plain:hover { background: var(--cream2); }
+   Rules that bind every adapter (kpi-spec.md is the law):
+     - accounting supplies EVERY money figure, always ex GST/sales tax
+     - pos supplies ONE number: completed transaction count (no voids/refunds)
+     - rostering supplies rostered cost only (projected wage %)
+     - read-only scopes/permissions everywhere
+     - secrets ONLY via Worker secrets (wrangler secret put NAME) - never in
+       this file, never in the repo, never echoed to the owner
 
-/* Freshness row */
-.fresh-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin: 0.2rem 0 1.1rem; flex-wrap: wrap; }
-.fresh-row .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(242,169,0,0.25); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -2px; }
-@keyframes spin { to { transform: rotate(360deg); } }
+   Bindings expected (wrangler.toml): TOKENS (KV). Secrets: see each adapter.
+============================================================================ */
 
-/* Period heading */
-.period-heading { font-family: 'Khand', sans-serif; font-size: 21px; font-weight: 600; color: var(--black); margin: 0 0 0.9rem; }
-.period-heading span { color: var(--muted); font-weight: 500; }
+import dashboardHtml from './dashboard.html';
 
-/* Metric cards */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
-.mcard {
-  background: #fffdf9; border: 1px solid var(--border); border-radius: 16px;
-  padding: 1.25rem 1.35rem 1.1rem; position: relative; overflow: hidden;
-}
-.mcard.needs-check { border-color: var(--c-coral-border); box-shadow: inset 4px 0 0 var(--c-coral); }
-.mcard.not-conf { background: var(--cream2); border-style: dashed; }
-.m-label { font-family: 'Khand', sans-serif; font-size: 13px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem; }
-.m-value { font-family: 'Khand', sans-serif; font-size: 42px; font-weight: 700; color: var(--black); line-height: 1; margin-bottom: 0.15rem; }
-.m-value.dim { color: var(--muted); font-size: 30px; }
-.m-sub { font-size: 13px; color: var(--muted); margin-bottom: 0.55rem; }
-.m-def { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.55; border-top: 1px solid var(--border); padding-top: 0.55rem; margin-top: 0.55rem; }
-.m-tag { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; padding: 3px 9px; border-radius: 4px; margin-bottom: 8px; }
-.tag-check { background: var(--c-coral-bg); color: var(--c-coral); border: 1px solid var(--c-coral-border); }
-.tag-unverified { background: var(--c-amber-bg); color: var(--c-amber); border: 1px solid var(--c-amber-border); }
-.tag-proj { background: var(--c-purple-bg); color: var(--c-purple); border: 1px solid var(--c-purple-border); }
-.cmp-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; padding: 3px 0; }
-.cmp-lab { color: var(--muted); font-weight: 300; }
-.cmp-val { font-weight: 500; }
-.good { color: var(--c-green); } .bad { color: var(--c-coral); } .flat { color: var(--muted); }
-.sparkwrap { margin-top: 0.6rem; }
-.spark-cap { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
-.notconf-msg { font-size: 13px; color: var(--muted); line-height: 1.6; }
-.mcard.alert { border-color: var(--c-amber-border); box-shadow: inset 4px 0 0 var(--c-amber); }
-.tag-alert { background: var(--c-amber-bg); color: var(--c-amber); border: 1px solid var(--c-amber-border); }
-.m-alert { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--c-amber); font-weight: 500; margin: 0 0 0.5rem; }
-.m-decision { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.55; margin-top: 0.45rem; }
-.m-decision b { color: var(--text); font-weight: 500; }
+/* ----------------------------------------------------------------------------
+   Provider adapters - THE PART YOU BUILD.
+   Flip `configured: true` per source as you wire it. Until then the
+   dashboard honestly shows "not configured" (never a fake zero).
+---------------------------------------------------------------------------- */
+/* OPTIONAL no-API hooks any adapter may add (the fallback-ladder rungs):
+     mode: 'export'           - source is fed by exports, not a live API
+     parseExport(env, h, raw) - raw = { text, contentType }: parse the tool's
+                                exported CSV/report into day rows:
+                                  pos:        [{ date:'YYYY-MM-DD', count }]
+                                  accounting: [{ date, revenue, cogs, wagesSuper, overheads }]
+                                  rostering:  [{ date, cost }]
+                                Adding parseExport makes the dashboard's
+                                Connections screen offer a file-upload panel
+                                for this source (the guided-upload rung).
+     scheduledPull(env, h)    - cron hook (uncomment [triggers] in
+                                wrangler.toml): fetch the tool's own export
+                                (its report scheduler's output, a saved export
+                                URL) and h.saveIngestedRows(rows).
+   In export mode, implement fetchRange/fetchMonthly via h.readIngested /
+   h.monthlyIngested instead of provider calls. Emailed reports: complete the
+   email() handler at the bottom (needs the owner's domain on their Cloudflare
+   with Email Routing pointed at this Worker). Ingest auth: the INGEST_TOKEN
+   secret; if the owner uploads by hand, that same value is their upload code. */
+const ADAPTERS = {
 
-/* Sections shared */
-.screen-title { font-family: 'Khand', sans-serif; font-size: 26px; font-weight: 600; color: var(--black); margin: 0.4rem 0 0.3rem; }
-.screen-sub { font-size: 14px; color: var(--muted); font-weight: 300; line-height: 1.7; max-width: 640px; margin-bottom: 1.2rem; }
-
-/* Connections */
-.conn-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
-.conn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 0.3rem; }
-.conn-name { font-family: 'Khand', sans-serif; font-size: 19px; font-weight: 600; color: var(--black); }
-.conn-pill { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 10px; border-radius: 20px; }
-.pill-ok { background: var(--c-green-bg); color: var(--c-green); border: 1px solid var(--c-green-border); }
-.pill-off { background: var(--cream2); color: var(--muted); border: 1px dashed var(--border-med); }
-.pill-warn { background: var(--c-coral-bg); color: var(--c-coral); border: 1px solid var(--c-coral-border); }
-.conn-line { font-size: 13px; color: var(--muted); line-height: 1.65; }
-.conn-org { background: var(--c-blue-bg); border: 1px solid var(--c-blue-border); color: var(--c-blue-text); border-radius: 10px; padding: 0.65rem 0.9rem; font-size: 13px; margin: 0.6rem 0; line-height: 1.6; }
-.conn-actions { display: flex; gap: 8px; margin-top: 0.6rem; flex-wrap: wrap; }
-.cb-url { font-size: 12px; color: var(--muted); word-break: break-all; background: var(--cream2); border-radius: 8px; padding: 0.5rem 0.7rem; margin-top: 0.55rem; }
-
-/* Reconciliation */
-.recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
-.recon-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.recon-metric { font-family: 'Khand', sans-serif; font-size: 19px; font-weight: 600; color: var(--black); }
-.recon-fig { font-family: 'Khand', sans-serif; font-size: 24px; font-weight: 700; color: var(--black); }
-.recon-inst { font-size: 13.5px; color: var(--text); font-weight: 300; line-height: 1.7; margin: 0.5rem 0 0.7rem; }
-.recon-state { font-size: 12px; font-weight: 500; }
-.diag { background: var(--c-coral-bg); border: 1px solid var(--c-coral-border); border-radius: 10px; padding: 0.8rem 1rem; margin-top: 0.7rem; font-size: 13px; color: #6b2510; line-height: 1.7; }
-.diag ol { margin: 0.3rem 0 0 1.1rem; }
-
-/* Settings */
-.set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; max-width: 760px; }
-.set-cell { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1.2rem; }
-.set-label { font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem; }
-.set-cell input[type=text], .set-cell select, .set-cell input[type=number] {
-  width: 100%; font-family: 'DM Sans', sans-serif; font-size: 14px; padding: 9px 11px;
-  border: 1px solid var(--border-med); border-radius: 9px; background: #fff; color: var(--text);
-}
-.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
-.swatch { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
-.swatch.on { border-color: var(--black); }
-.set-note { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.6; margin-top: 0.5rem; }
-.tag-manual { background: var(--c-blue-bg); color: var(--c-blue-text); border: 1px solid var(--c-blue-border); }
-.mode-wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; max-width: 760px; margin-bottom: 1.6rem; }
-.mode-card { background: #fffdf9; border: 1px solid var(--border-med); border-radius: 14px; padding: 1rem 1.2rem; cursor: pointer; transition: all 0.15s; }
-.mode-card:hover { border-color: var(--accent); }
-.mode-card.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-dim); }
-.mode-t { font-family: 'Khand', sans-serif; font-size: 17px; font-weight: 600; color: var(--black); margin-bottom: 3px; }
-.mode-d { font-size: 12.5px; color: var(--muted); line-height: 1.55; font-weight: 300; }
-.manual-dates { font-size: 14px; color: var(--text); font-weight: 400; margin: 0.2rem 0 1.1rem; }
-.manual-attest { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; color: var(--text); margin: 1.1rem 0; max-width: 760px; line-height: 1.5; }
-.manual-attest input { margin-top: 3px; flex-shrink: 0; }
-.err-line { color: var(--c-coral); font-size: 13px; margin: 0.5rem 0; }
-.btn-primary-dash { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; font-size: 15px; font-weight: 500; font-family: 'DM Sans', sans-serif; color: var(--black); background: var(--accent); border: none; border-radius: 10px; cursor: pointer; }
-.section-sub { font-family: 'Khand', sans-serif; font-size: 16px; font-weight: 600; color: var(--black); margin: 1.8rem 0 0.5rem; }
-.manual-row { font-size: 13px; color: var(--muted); padding: 6px 0; border-bottom: 1px solid var(--border); }
-
-/* Footer */
-.dash-footer { margin-top: 2.4rem; padding-top: 1.3rem; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); font-weight: 300; }
-.dash-footer a { color: var(--muted); }
-
-.fade-in { animation: fadeUp 0.45s cubic-bezier(0.4,0,0.2,1) both; }
-@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-@media (max-width: 640px) {
-  .venue-name { font-size: 26px; }
-  .venue-logo { height: 40px; }
-  .m-value { font-size: 34px; }
-}
-/* ---- §1 dashboard upgrade: dual headline, meters, trend bars ---- */
-.m-figs { display: flex; align-items: flex-end; gap: 1.6rem; flex-wrap: wrap; margin-bottom: 0.15rem; }
-.m-fig { display: flex; flex-direction: column; }
-.m-pri { font-family: 'Khand', sans-serif; font-size: 42px; font-weight: 700; color: var(--black); line-height: 0.95; }
-.m-fig.sec .m-pri { font-size: 32px; color: var(--text); }
-.m-pri.loss { color: var(--c-coral); }
-.m-unit { font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
-.meter { margin: 0.55rem 0 0.5rem; }
-.meter-track { position: relative; height: 8px; border-radius: 5px; background: var(--cream3); }
-.meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; min-width: 2px; }
-.meter-fill.good { background: var(--c-green); }
-.meter-fill.bad { background: var(--c-coral); }
-.meter-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--black); border-radius: 2px; }
-.meter-cap { font-size: 12px; color: var(--muted); margin-top: 6px; }
-.meter-cap b { color: var(--text); font-weight: 600; }
-.meter-cap .good { color: var(--c-green); font-weight: 500; }
-.meter-cap .bad { color: var(--c-coral); font-weight: 500; }
-.tbars { margin-top: 0.7rem; }
-.tbars-cap { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 5px; }
-.tbars svg { display: block; width: 100%; height: 46px; }
-.tbar { fill: var(--accent); }
-.tbar.good { fill: var(--c-green); }
-.tbar.bad { fill: var(--c-coral); }
-.tbar.amber { fill: var(--c-amber); }
-.tbar.cur { stroke: var(--black); stroke-width: 0.8; }
-.tbar { cursor: default; }
-.tbar:hover { opacity: 0.78; }
-.mcard.alert { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
-</style>
-</head>
-<body>
-<div id="app">
-  <noscript><p style="padding:2rem 0">This dashboard needs JavaScript turned on.</p></noscript>
-</div>
-<script>
-'use strict';
-
-/* ============================================================
-   KIT CONFIG - filled by the kit when it was built.
-   The defaults below are only for previewing the scaffold.
-============================================================ */
-/*KIT_CONFIG_START*/
-var KIT_CONFIG = {
-  "region": "AU",
-  "fyStartMonth": 7,
-  "fyLabel": "1 July to 30 June",
-  "taxLabel": "ex-GST",
-  "currency": "$",
-  "providers": {
-    "accounting": "Xero",
-    "pos": "OOLIO",
-    "rostering": "Urhere"
-  },
-  "metrics": [
-    "revenue",
-    "transactions",
-    "acs",
-    "cogs",
-    "wage",
-    "overheads",
-    "profit"
-  ],
-  "startLevel": "live",
-  "kitDate": "July 2026",
-  "feedbackUrl": ""
-};
-/*KIT_CONFIG_END*/
-
-/* The venue's logo, embedded as a data URI so the dashboard stays a single
-   self-contained file - no separate image asset for the Worker to serve. */
-var VENUE_LOGO_DATA_URI = 'data:image/jpeg;base64,/9j/4QC8RXhpZgAASUkqAAgAAAAGABIBAwABAAAAAQAAABoBBQABAAAAVgAAABsBBQABAAAAXgAAACgBAwABAAAAAgAAABMCAwABAAAAAQAAAGmHBAABAAAAZgAAAAAAAABgAAAAAQAAAGAAAAABAAAABgAAkAcABAAAADAyMTABkQcABAAAAAECAwAAoAcABAAAADAxMDABoAMAAQAAAP//AAACoAQAAQAAAPQBAAADoAQAAQAAAPQBAAAAAAAA/+EN8Gh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8APD94cGFja2V0IGJlZ2luPSfvu78nIGlkPSdXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQnPz4KPHg6eG1wbWV0YSB4bWxuczp4PSdhZG9iZTpuczptZXRhLyc+CjxyZGY6UkRGIHhtbG5zOnJkZj0naHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyc+CgogPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9JycKICB4bWxuczpBdHRyaWI9J2h0dHA6Ly9ucy5hdHRyaWJ1dGlvbi5jb20vYWRzLzEuMC8nPgogIDxBdHRyaWI6QWRzPgogICA8cmRmOlNlcT4KICAgIDxyZGY6bGkgcmRmOnBhcnNlVHlwZT0nUmVzb3VyY2UnPgogICAgIDxBdHRyaWI6Q3JlYXRlZD4yMDI0LTA2LTI1PC9BdHRyaWI6Q3JlYXRlZD4KICAgICA8QXR0cmliOkV4dElkPjJkZjk5NTVhLWFiMTUtNDQzYi1hNWZkLTc3ZjQ1NDM4ZDE5NjwvQXR0cmliOkV4dElkPgogICAgIDxBdHRyaWI6RmJJZD41MjUyNjU5MTQxNzk1ODA8L0F0dHJpYjpGYklkPgogICAgIDxBdHRyaWI6VG91Y2hUeXBlPjI8L0F0dHJpYjpUb3VjaFR5cGU+CiAgICA8L3JkZjpsaT4KICAgPC9yZGY6U2VxPgogIDwvQXR0cmliOkFkcz4KIDwvcmRmOkRlc2NyaXB0aW9uPgoKIDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PScnCiAgeG1sbnM6ZGM9J2h0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvJz4KICA8ZGM6dGl0bGU+CiAgIDxyZGY6QWx0PgogICAgPHJkZjpsaSB4bWw6bGFuZz0neC1kZWZhdWx0Jz5MSVRUTEUgLSAyMDI0IFJFQlJBTkQ8L3JkZjpsaT4KICAgPC9yZGY6QWx0PgogIDwvZGM6dGl0bGU+CiA8L3JkZjpEZXNjcmlwdGlvbj4KCiA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0nJwogIHhtbG5zOnBkZj0naHR0cDovL25zLmFkb2JlLmNvbS9wZGYvMS4zLyc+CiAgPHBkZjpBdXRob3I+RmFiaWFuPC9wZGY6QXV0aG9yPgogPC9yZGY6RGVzY3JpcHRpb24+CgogPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9JycKICB4bWxuczp4bXA9J2h0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8nPgogIDx4bXA6Q3JlYXRvclRvb2w+Q2FudmE8L3htcDpDcmVhdG9yVG9vbD4KIDwvcmRmOkRlc2NyaXB0aW9uPgo8L3JkZjpSREY+CjwveDp4bXBtZXRhPgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAo8P3hwYWNrZXQgZW5kPSd3Jz8+/9sAQwAGBAUGBQQGBgUGBwcGCAoQCgoJCQoUDg8MEBcUGBgXFBYWGh0lHxobIxwWFiAsICMmJykqKRkfLTAtKDAlKCko/9sAQwEHBwcKCAoTCgoTKBoWGigoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo/8AAEQgB9AH0AwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/aAAwDAQACEQMRAD8A+qaKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKakiSFwjqxQ7Wwc4PoffkUAOoorhNc+JVnpvia/0G00DxFq+oWKRPONNtFkVBIu5MsXXGRn8jQB3dFcb4f8AGOqaxq8FrJ4K1/TbSTdvvL4wIseFJGVWRmOSAOB3rsqACiiigAorB8ReMPDvhu7tbXxBrNjps10rNCLqURhwCATk8DqOprS0zVNP1WHztLvrW9i/v28yyL+ak0AXKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACoL68trC1kur64htraMbnlmcIij1JPArB8Yp4sna1tvCMuk2iSBvtN7fK8rQjjHlxLgMTk/eYAY715Zo3hWE/GS70X4j3c3imWWxj1HSJ9Q4hBUlZ0EAPlBtxDAbeFoA9ztbiG7tYbm1lSa3mQSRyRsGV1IyGBHUEHOa4/4reJL/wAJ6Npeq2XlC0XVbWHUDIm7FtI+xivocsvNdnDGkMSRQoscaKFVFGAoHQAdhXK/FnRP+Ei+GviTS1XfLNYyGIesijen/jyrQB1leW/DuaLTPi58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HlNbtyM49wDSjxZ43CEt8NrotkAKms2p/Hlh/k0Ad/RXn58TePpVHkfD2GJiSP8ASddiXHv8iNQJ/ijdOpSy8H6dEcZE09xcuPX7qoP1oA9AoJABJOBXn6eGPHV42dU8epbxsCGh0vSY4sZHZ5Gc8delJ/wqfQrsY8RX+veIuQduqalI6Z/65oVTHtjFAGpr3xH8IaFIItQ1+y+0scLbW7G4mY+gjj3N+lZR8Z+JdacR+E/Bt4sLY/0/XHFlEueciPmVx7YWut0Lw7ougQiLQ9JsNPjxjFrbrHn64HNatAHni+BNX19ZP+E/8Ry6jbSjDaVpqGztByDgkEyyDjuwHXiuz0PRdM0GwSy0XT7WwtF6RW8QjXPqQOp960KKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAP/Z';
-
-/* ============================================================
-   Settings (owner-editable in the Settings screen, never in code)
-============================================================ */
-var TZ_DEFAULTS = { AU: 'Australia/Sydney', NZ: 'Pacific/Auckland', US: 'America/New_York' };
-var TZ_CHOICES = {
-  AU: ['Australia/Sydney','Australia/Melbourne','Australia/Brisbane','Australia/Adelaide','Australia/Perth','Australia/Hobart','Australia/Darwin'],
-  NZ: ['Pacific/Auckland','Pacific/Chatham'],
-  US: ['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','Pacific/Honolulu','America/Anchorage']
-};
-var ACCENTS = [
-  { key: 'banksia', c: '#629239', dim: 'rgba(98,146,57,0.12)' },
-  { key: 'gold',   c: '#F2A900', dim: 'rgba(242,169,0,0.12)' },
-  { key: 'teal',   c: '#0E8A6E', dim: 'rgba(14,138,110,0.12)' },
-  { key: 'blue',   c: '#1A5FB4', dim: 'rgba(26,95,180,0.12)' },
-  { key: 'coral',  c: '#C04B28', dim: 'rgba(192,75,40,0.12)' },
-  { key: 'purple', c: '#5C3DB0', dim: 'rgba(92,61,176,0.12)' },
-  { key: 'green',  c: '#1A7A3C', dim: 'rgba(26,122,60,0.12)' }
-];
-
-function defaultSettings() {
-  return {
-    venueName: 'The Banksia Tree',
-    defaultPeriod: 'thisMonth',
-    weekStart: 1,            /* 1 = Monday */
-    rolloverHour: 0,         /* sales before this hour count to the previous trading day */
-    timezone: TZ_DEFAULTS[KIT_CONFIG.region] || 'Australia/Sydney',
-    accent: 'banksia',
-    dataMode: KIT_CONFIG.startLevel === 'manual' ? 'manual' : 'live',
-    /* acs holds the GREEN threshold (at/above this = green); acsLow holds the
-       RED threshold (below this = red); between the two = amber. Set from
-       the owner's own numbers: below $30 red, $30-$31.50 amber, above green. */
-    targets: { cogs: 30, wage: 30, overheads: 30, profit: 10, acs: 31.5, acsLow: 30 }
-  };
-}
-function loadSettings() {
-  try {
-    var raw = localStorage.getItem('vd_settings');
-    if (!raw) return defaultSettings();
-    var s = JSON.parse(raw);
-    var d = defaultSettings();
-    for (var k in d) { if (!(k in s)) s[k] = d[k]; }
-    return s;
-  } catch (e) { return defaultSettings(); }
-}
-function saveSettings() { try { localStorage.setItem('vd_settings', JSON.stringify(SETTINGS)); } catch (e) {} }
-var SETTINGS = loadSettings();
-
-function loadJson(key, fallback) {
-  try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch (e) { return fallback; }
-}
-var RECON = loadJson('vd_recon', {});          /* metricKey -> 'confirmed' | 'flagged' */
-var ORG_OK = loadJson('vd_orgok', {});         /* sourceKey -> true */
-var MANUAL = loadJson('vd_manual', {});        /* rangeKey -> { from,to,period,values,attested,enteredAt } */
-function saveRecon() { try { localStorage.setItem('vd_recon', JSON.stringify(RECON)); } catch (e) {} }
-function saveOrgOk() { try { localStorage.setItem('vd_orgok', JSON.stringify(ORG_OK)); } catch (e) {} }
-function saveManual() { try { localStorage.setItem('vd_manual', JSON.stringify(MANUAL)); } catch (e) {} }
-function isManual() { return SETTINGS.dataMode === 'manual'; }
-function rangeKey(from, to) { return iso(from) + '_' + iso(to); }
-
-/* ============================================================
-   Metric catalogue - mirrors kpi-spec.md (locked definitions).
-   Values are computed HERE from raw source data, in one place.
-============================================================ */
-var P = KIT_CONFIG.providers;
-var METRIC_DEFS = {
-  revenue:      { label: 'Revenue', fmt: 'money', needs: ['accounting'], goodDir: 'up', benchmark: true,
-                  def: 'All trading income, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
-                  decision: 'Is the top line growing? Sets the base every other number is judged against.' },
-  transactions: { label: 'Number of transactions', fmt: 'int', needs: ['pos'], goodDir: 'up',
-                  def: 'Completed transactions, voids and refunds excluded · from ' + P.pos,
-                  decision: 'Busier or quieter? Points you at footfall versus spend per visit.' },
-  acs:          { label: 'Average customer spend', fmt: 'money2', needs: ['accounting', 'pos'], goodDir: 'up',
-                  def: 'Revenue (' + P.accounting + ', ' + KIT_CONFIG.taxLabel + ') ÷ transactions (' + P.pos + ')',
-                  decision: 'Are upsells and pricing working? Move it with specials, bundles and staff prompts.' },
-  cogs:         { label: 'Cost of goods', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Everything in your Cost of Sales accounts, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
-                  decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
-  wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Wages plus super ÷ revenue · from ' + P.accounting,
-                  decision: 'Rostered to your trade? Over target means trim hours or lift sales per shift.' },
-  overheads:    { label: 'Overheads', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Operating expenses excluding wages, super and cost of sales · from ' + P.accounting,
-                  decision: 'Fixed costs drifting up? Review subscriptions, utilities and new recurring spend.' },
-  profit:       { label: 'Profit', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'up',
-                  def: 'Revenue less cost of sales, wages, super and overheads · from ' + P.accounting,
-                  decision: 'What the venue keeps after the costs you control. The bottom line of the board.' }
-};
-var CHOSEN = KIT_CONFIG.metrics.filter(function (k) { return METRIC_DEFS[k]; });
-
-var SOURCES = [
-  { key: 'accounting', name: P.accounting, role: 'Money figures (' + KIT_CONFIG.taxLabel + ')' },
-  { key: 'pos',        name: P.pos,        role: 'Transaction count' }
-];
-if (P.rostering) SOURCES.push({ key: 'rostering', name: P.rostering, role: 'Projected wages (optional)' });
-
-/* ============================================================
-   Dates and periods - venue timezone, week start, rollover.
-   All maths on UTC-noon stamps so daylight saving never bites.
-============================================================ */
-function partsInTz(dateObj, tz) {
-  var fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false });
-  var parts = {};
-  fmt.formatToParts(dateObj).forEach(function (p) { parts[p.type] = p.value; });
-  return { y: +parts.year, m: +parts.month, d: +parts.day, h: +(parts.hour === '24' ? 0 : parts.hour) };
-}
-function stamp(y, m, d) { return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)); }
-function addDays(s, n) { var x = new Date(s.getTime()); x.setUTCDate(x.getUTCDate() + n); return x; }
-function addMonths(s, n) { var x = new Date(s.getTime()); x.setUTCMonth(x.getUTCMonth() + n); return x; }
-function addYears(s, n) { var x = new Date(s.getTime()); x.setUTCFullYear(x.getUTCFullYear() + n); return x; }
-function iso(s) { return s.toISOString().slice(0, 10); }
-function fromIso(str) { var p = str.split('-'); return stamp(+p[0], +p[1], +p[2]); }
-function monthKey(s) { return iso(s).slice(0, 7); }
-
-/* Today as a TRADING day: before the rollover hour, it is still yesterday. */
-function tradingToday() {
-  var p = partsInTz(new Date(), SETTINGS.timezone);
-  var t = stamp(p.y, p.m, p.d);
-  if (p.h < (+SETTINGS.rolloverHour || 0)) t = addDays(t, -1);
-  return t;
-}
-function startOfWeek(s) {
-  var dow = s.getUTCDay();                       /* 0 Sun .. 6 Sat */
-  var diff = (dow - SETTINGS.weekStart + 7) % 7;
-  return addDays(s, -diff);
-}
-function fyStart(forDate) {
-  var sm = KIT_CONFIG.fyStartMonth;
-  var y = forDate.getUTCFullYear();
-  var thisYears = stamp(y, sm, 1);
-  return (forDate.getTime() >= thisYears.getTime()) ? thisYears : stamp(y - 1, sm, 1);
-}
-
-var PERIODS = [
-  { key: 'thisWeek',  label: 'This week' },
-  { key: 'lastWeek',  label: 'Last week' },
-  { key: 'thisMonth', label: 'This month' },
-  { key: 'lastMonth', label: 'Last month' },
-  { key: 'thisFY',    label: 'This financial year' },
-  { key: 'lastFY',    label: 'Last financial year' },
-  { key: 'custom',    label: 'Custom…' }
-];
-
-/* Returns { from, to, prev:{from,to}, yoy:{from,to}|null, label, prevLabel, yoyLabel } */
-function resolvePeriod(key, customFrom, customTo) {
-  var today = tradingToday();
-  var from, to, prev, yoy, prevLabel, yoyLabel;
-  if (key === 'thisWeek' || key === 'lastWeek') {
-    var ws = startOfWeek(today);
-    if (key === 'lastWeek') ws = addDays(ws, -7);
-    from = ws; to = (key === 'thisWeek') ? today : addDays(ws, 6);
-    prev = { from: addDays(from, -7), to: addDays(to, -7) };
-    yoy = { from: addDays(from, -364), to: addDays(to, -364) };   /* weekday-aligned */
-    prevLabel = 'vs week before'; yoyLabel = 'vs same week last year';
-  } else if (key === 'thisMonth' || key === 'lastMonth') {
-    var base = (key === 'thisMonth') ? today : addMonths(stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), -1);
-    from = stamp(base.getUTCFullYear(), base.getUTCMonth() + 1, 1);
-    var endOfMonth = addDays(addMonths(from, 1), -1);
-    to = (key === 'thisMonth') ? today : endOfMonth;
-    var pf = addMonths(from, -1);
-    var pt = (key === 'thisMonth') ? addDays(addMonths(to, -1), 0) : addDays(addMonths(from, 0), -1);
-    if (key === 'thisMonth') { if (pt.getTime() < pf.getTime()) pt = pf; prev = { from: pf, to: pt }; }
-    else prev = { from: pf, to: addDays(from, -1) };
-    yoy = { from: addYears(from, -1), to: addYears(to, -1) };
-    prevLabel = 'vs month before'; yoyLabel = 'vs same month last year';
-  } else if (key === 'thisFY') {
-    from = fyStart(today); to = today;
-    prev = { from: addYears(from, -1), to: addYears(to, -1) };    /* last FY to the same date */
-    yoy = null;
-    prevLabel = 'vs last financial year to the same date'; yoyLabel = null;
-  } else if (key === 'lastFY') {
-    var curStart = fyStart(today);
-    from = addYears(curStart, -1); to = addDays(curStart, -1);
-    prev = { from: addYears(from, -1), to: addDays(from, -1) };
-    yoy = null;
-    prevLabel = 'vs the financial year before'; yoyLabel = null;
-  } else { /* custom */
-    if (!customFrom || !customTo) return resolvePeriod('thisWeek');
-    from = fromIso(customFrom); to = fromIso(customTo);
-    if (to.getTime() < from.getTime()) { var sw = from; from = to; to = sw; }
-    var len = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
-    prev = { from: addDays(from, -len), to: addDays(from, -1) };
-    yoy = { from: addYears(from, -1), to: addYears(to, -1) };
-    prevLabel = 'vs the ' + len + ' days before'; yoyLabel = 'vs same dates last year';
-  }
-  return { from: from, to: to, prev: prev, yoy: yoy, prevLabel: prevLabel, yoyLabel: yoyLabel };
-}
-
-function fmtRange(r) {
-  function f(s) {
-    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return s.getUTCDate() + ' ' + months[s.getUTCMonth()] + ' ' + s.getUTCFullYear();
-  }
-  return f(r.from) + ' to ' + f(r.to);
-}
-
-/* ============================================================
-   App state + data fetch
-============================================================ */
-var state = {
-  view: 'dashboard',           /* dashboard | connections | recon | settings */
-  period: SETTINGS.defaultPeriod === 'custom' ? 'thisWeek' : SETTINGS.defaultPeriod,
-  customFrom: null, customTo: null,
-  loading: false,
-  data: null,                  /* last /api/metrics payload */
-  fetchedAt: null,
-  fetchError: null
-};
-
-function apiUrl(force) {
-  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
-  var trendEnd = tradingToday();
-  var trendStart = addMonths(stamp(trendEnd.getUTCFullYear(), trendEnd.getUTCMonth() + 1, 1), -24);
-  var q = 'cur=' + iso(r.from) + '_' + iso(r.to)
-        + '&prev=' + iso(r.prev.from) + '_' + iso(r.prev.to)
-        + (r.yoy ? '&yoy=' + iso(r.yoy.from) + '_' + iso(r.yoy.to) : '')
-        + '&trend=' + monthKey(trendStart) + '_' + monthKey(trendEnd)
-        + '&tz=' + encodeURIComponent(SETTINGS.timezone)
-        + '&rollover=' + (+SETTINGS.rolloverHour || 0);
-  return '/api/metrics?' + q + (force ? '&refresh=1' : '');
-}
-
-/* ---------- Manual mode: build state.data from typed-in numbers ---------- */
-function manualEntry(rng) { return rng ? MANUAL[rangeKey(rng.from, rng.to)] : null; }
-function manualPeriod(entry) {
-  if (!entry) return null;
-  var v = entry.values || {};
-  return {
-    accounting: { revenue: num(v.revenue), cogs: num(v.cogs), wagesSuper: num(v.wagesSuper), overheads: num(v.overheads) },
-    pos: { count: num(v.count) },
-    rostering: { cost: num(v.rosteredCost) }
-  };
-}
-function buildManualTrend() {
-  var byMonth = {};
-  for (var k in MANUAL) {
-    var e = MANUAL[k];
-    if (e && (e.period === 'thisMonth' || e.period === 'lastMonth')) byMonth[e.from.slice(0, 7)] = e.values || {};
-  }
-  var end = tradingToday();
-  var months = [];
-  for (var i = 23; i >= 0; i--) months.push(monthKey(addMonths(stamp(end.getUTCFullYear(), end.getUTCMonth() + 1, 1), -i)));
-  function arr(field) { return months.map(function (m) { var v = byMonth[m]; return (v && typeof v[field] === 'number') ? v[field] : null; }); }
-  return { months: months, accounting: { revenue: arr('revenue'), cogs: arr('cogs'), wagesSuper: arr('wagesSuper'), overheads: arr('overheads') }, pos: { count: arr('count') } };
-}
-function buildManualData() {
-  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
-  var P2 = KIT_CONFIG.providers;
-  var sources = {
-    accounting: { configured: true, connected: true, manual: true, name: P2.accounting },
-    pos: { configured: true, connected: true, manual: true, name: P2.pos }
-  };
-  if (P2.rostering) sources.rostering = { configured: true, connected: true, manual: true, name: P2.rostering };
-  return {
-    manual: true,
-    sources: sources,
-    periods: {
-      cur: manualPeriod(manualEntry({ from: r.from, to: r.to })) || { accounting: {}, pos: {}, rostering: {} },
-      prev: manualPeriod(manualEntry(r.prev)),
-      yoy: r.yoy ? manualPeriod(manualEntry(r.yoy)) : null
+  /* >>> ADAPTER 1: ACCOUNTING (connect this FIRST - it feeds most of the board)
+     Contract:
+       auth: 'oauth' with the oauth{} block filled, or 'token' for a pasted key
+       status(env, h)        -> { connected, org, sandbox, lastSync }
+       fetchRange(env, h, q) -> { revenue, cogs, wagesSuper, overheads }
+                                 (numbers, ex GST/sales tax, for q.from..q.to
+                                  inclusive, dates in the venue's books)
+       fetchMonthly(env, h, q)-> { months:['YYYY-MM',...], revenue:[...],
+                                   cogs:[...], wagesSuper:[...], overheads:[...] }
+                                 (align arrays to months; null where no data)
+     Map the owner's P&L faithfully: Revenue/Income section (trading income
+     only - Other Income excluded), Cost of Sales section, wage + super
+     accounts, Operating Expenses less wages/super. Do not re-categorise
+     their books. See kpi-spec.md.
+     Example (Xero): oauth with tokenAuth:'basic' (the token endpoint wants
+     HTTP Basic client auth), scopes 'offline_access
+     accounting.reports.profitandloss.read', P&L report endpoint, org name
+     from the connections endpoint, sandbox = tenant name contains
+     'Demo Company'. Secrets: ACCOUNTING_CLIENT_ID, ACCOUNTING_CLIENT_SECRET.
+  */
+  accounting: {
+    configured: true,
+    auth: 'oauth',
+    oauth: {
+      authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
+      tokenUrl: 'https://identity.xero.com/connect/token',
+      scopes: 'offline_access accounting.reports.profitandloss.read',
+      clientIdSecret: 'ACCOUNTING_CLIENT_ID',
+      clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
+      tokenAuth: 'basic'
     },
-    trend: buildManualTrend()
-  };
-}
+    async status(env, h) {
+      const tokens = await h.getTokens();
+      if (!tokens) return { connected: false };
+      const conns = await h.fetchJson('https://api.xero.com/connections');
+      const tenant = Array.isArray(conns) ? conns[0] : null;
+      return {
+        connected: !!tenant,
+        org: tenant ? tenant.tenantName : null,
+        sandbox: !!(tenant && /demo company/i.test(tenant.tenantName || '')),
+        lastSync: null
+      };
+    },
+    async fetchRange(env, h, q) {
+      const tenantId = await xeroTenantId(env, h);
+      const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + q.from + '&toDate=' + q.to;
+      const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+      const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+      return walkXeroPL(rows, 0);
+    },
+    async fetchMonthly(env, h, q) {
+      const tenantId = await xeroTenantId(env, h);
+      const months = monthList(q.fromMonth, q.toMonth);
+      const out = { months, revenue: [], cogs: [], wagesSuper: [], overheads: [] };
+      /* One P&L call per month, in parallel, to avoid the 12-period cap and
+         ordering ambiguity of the multi-period report. */
+      const results = await Promise.all(months.map(async (mo) => {
+        const [y, m] = mo.split('-').map(Number);
+        const from = mo + '-01';
+        const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const to = mo + '-' + String(lastDay).padStart(2, '0');
+        try {
+          const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+          const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+          const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+          return walkXeroPL(rows, 0);
+        } catch (e) { return null; }
+      }));
+      for (const r of results) {
+        out.revenue.push(r ? r.revenue : null);
+        out.cogs.push(r ? r.cogs : null);
+        out.wagesSuper.push(r ? r.wagesSuper : null);
+        out.overheads.push(r ? r.overheads : null);
+      }
+      return out;
+    }
+  },
 
-var _fetchAbort = null;
-function fetchData(force) {
-  if (isManual()) {
-    state.data = buildManualData();
-    state.fetchedAt = new Date();
-    state.loading = false;
-    state.fetchError = null;
-    render();
-    return;
+  /* >>> ADAPTER 2: POS
+     Contract:
+       status(env, h)        -> { connected, org, sandbox, lastSync }
+       fetchRange(env, h, q) -> { count }   (completed transactions only;
+                                  exclude voided/cancelled; refunds never
+                                  reduce the count; q.rollover shifts the
+                                  trading-day boundary by that many hours)
+       fetchMonthly(env, h, q)-> { months:[...], count:[...] }
+     NEVER return a dollar figure from the POS.
+     Example (Square): pasted production personal access token (secret
+     POS_API_TOKEN); sandbox sign = token only answers on
+     connect.squareupsandbox.com.
+  */
+  pos: {
+    configured: true,
+    auth: null,
+    mode: 'export', /* OOLIO has no self-serve GET/reporting API - fed by CSV export (fallback ladder rung 4, guided upload)
+                        AND, once set up in OOLIO, by their signed order.complete webhook
+                        (POST /api/webhook/oolio, see apiWebhookOolio below) - both write
+                        the same KV day-store, so fetchRange/fetchMonthly need no changes. */
+    oauth: {},
+    async status(env, h) {
+      const ls = await lastSync(env, 'pos');
+      return { connected: !!ls, org: 'OOLIO Sales Feed (CSV upload)', sandbox: false, lastSync: ls };
+    },
+    async fetchRange(env, h, q) {
+      const r = await h.readIngested(q.from, q.to);
+      return { count: r.sums.count || 0 };
+    },
+    async fetchMonthly(env, h, q) {
+      const r = await h.monthlyIngested(q.fromMonth, q.toMonth);
+      return { months: r.months, count: r.byMonth.map((m) => (m ? (m.count || 0) : null)) };
+    },
+    /* OOLIO Sales Feed CSV columns (confirmed from a real export):
+       Order No., Type, Date/Time, Store, Created By, Gross Sales, Discounts,
+       Surcharges, Net Sales, Taxes, Net Sales ex Tax, Tips, Payment Surcharges,
+       Cash Rounding, Total Collected, Receipt
+       No Status column - a transaction counts as completed unless it's an
+       exact duplicate row (re-exported overlap) or a true all-zero row
+       (Gross Sales, Net Sales and Total Collected all $0.00). */
+    async parseExport(env, h, raw) {
+      const rows = parseCsv(raw.text);
+      if (!rows.length) return [];
+      const header = rows[0].map((c) => c.trim());
+      const idx = (name) => header.indexOf(name);
+      const iDateTime = idx('Date/Time');
+      const iGross = idx('Gross Sales');
+      const iNet = idx('Net Sales');
+      const iTotal = idx('Total Collected');
+      if (iDateTime < 0 || iGross < 0 || iNet < 0 || iTotal < 0) {
+        throw new Error('unexpected OOLIO export columns');
+      }
+      const seen = new Set();
+      const byDate = {};
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.length < header.length) continue;
+        const key = r.join('\u0001');
+        if (seen.has(key)) continue; /* exact duplicate row - skip */
+        seen.add(key);
+        if (r[iGross] === '$0.00' && r[iNet] === '$0.00' && r[iTotal] === '$0.00') continue; /* all-zero row */
+        const isoDate = oolioDateToIso(r[iDateTime]);
+        if (!isoDate) continue;
+        byDate[isoDate] = (byDate[isoDate] || 0) + 1;
+      }
+      return Object.entries(byDate).map(([date, count]) => ({ date, count }));
+    }
+  },
+
+  /* >>> ADAPTER 3: ROSTERING (optional - only if the owner has one)
+     Contract:
+       status(env, h)        -> { connected, org, sandbox, lastSync }
+       fetchRange(env, h, q) -> { cost }    (rostered labour cost for the
+                                  period; powers the PROJECTED wage % only)
+     If this source is gated or absent, leave configured:false - the actual
+     Wage % from accounting already covers the board (fallback ladder).
+     Example (Deputy): pasted permanent token (secret ROSTERING_API_TOKEN).
+  */
+  rostering: {
+    configured: false,
+    auth: null,
+    oauth: {},
+    async status(env, h) { return { connected: false }; },
+    async fetchRange(env, h, q) { throw new NotConfigured('rostering'); },
+    async fetchMonthly(env, h, q) { return { months: [], cost: [] }; }
   }
-  if (_fetchAbort) { try { _fetchAbort.abort(); } catch (e) {} }
-  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  _fetchAbort = ctrl;
-  state.loading = true; state.fetchError = null;
-  render();
-  fetch(apiUrl(force), ctrl ? { signal: ctrl.signal } : {}).then(function (res) {
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
-  }).then(function (json) {
-    state.data = json; state.fetchedAt = json.generatedAt ? new Date(json.generatedAt) : new Date(); state.loading = false;
-    render();
-  }).catch(function (err) {
-    if (err && err.name === 'AbortError') return; /* superseded by a newer request - say nothing, the new one owns the UI now */
-    state.loading = false;
-    state.fetchError = 'The dashboard couldn’t fetch data just now. Check the Connections screen, or try refresh.';
-    render();
-  });
+};
+
+/* ----------------------------------------------------------------------------
+   Xero helpers: tenant id lookup (cached in KV - avoids a /connections call
+   on every metrics request) and the P&L section walker.
+---------------------------------------------------------------------------- */
+async function xeroTenantId(env, h) {
+  const cached = env.TOKENS ? await env.TOKENS.get('xero:tenantId') : null;
+  if (cached) return cached;
+  const conns = await h.fetchJson('https://api.xero.com/connections');
+  const tenant = Array.isArray(conns) ? conns[0] : null;
+  if (!tenant) { const e = new Error('no Xero tenant'); e.status = 401; throw e; }
+  if (env.TOKENS) await env.TOKENS.put('xero:tenantId', tenant.tenantId, { expirationTtl: 3600 });
+  return tenant.tenantId;
 }
 
-/* ============================================================
-   Metric computation from raw source data (kpi-spec.md rules)
-============================================================ */
-function srcStatus(key) {
-  var d = state.data;
-  if (!d || !d.sources || !d.sources[key]) return { configured: false };
-  return d.sources[key];
-}
-function isConfigured(key) { var s = srcStatus(key); return !!s.configured; }
+/* Wage/super keyword match, per capability-matrix.md. "Owner Wages and
+   Salaries" and "Distribution of Profit" are the owner's own equity-style
+   drawings, not operating wages or overheads, so both are excluded entirely
+   rather than counted as wagesSuper or overheads. */
+const WAGE_KEYWORD_RE = /wages|salaries|superannuation|super|payroll|annual leave|long service|workcover/i;
+const OWNER_WAGE_RE = /owner\s+wages\s+and\s+salaries/i;
+const DISTRIBUTION_OF_PROFIT_RE = /distribution\s+of\s+profit/i;
 
-function periodValues(slot) {  /* slot: 'cur' | 'prev' | 'yoy' */
-  var d = state.data;
-  if (!d || !d.periods || !d.periods[slot]) return {};
-  var p = d.periods[slot];
-  var acc = p.accounting || null;
-  var pos = p.pos || null;
-  var ros = p.rostering || null;
-  var out = {};
-  if (acc) {
-    out.revenue = num(acc.revenue);
-    out.cogs = num(acc.cogs);
-    out.wagesSuper = num(acc.wagesSuper);
-    out.overheads = num(acc.overheads);
+function xeroCellValue(row, periodIndex) {
+  const c = row.Cells && row.Cells[periodIndex + 1];
+  if (!c) return 0;
+  const v = parseFloat(String(c.Value || '0').replace(/[^0-9.\-]/g, ''));
+  return isFinite(v) ? v : 0;
+}
+function findXeroSummary(section) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'SummaryRow') return row;
+    if (row.RowType === 'Section') { const s = findXeroSummary(row); if (s) return s; }
   }
-  if (pos) out.count = num(pos.count);
-  if (ros) out.rosteredCost = num(ros.cost);
+  return null;
+}
+function walkXeroOpex(section, periodIndex, acc) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      const val = xeroCellValue(row, periodIndex);
+      if (DISTRIBUTION_OF_PROFIT_RE.test(label)) continue; /* excluded entirely */
+      if (OWNER_WAGE_RE.test(label)) continue; /* excluded entirely */
+      if (WAGE_KEYWORD_RE.test(label)) acc.wagesSuper += val;
+      else acc.overheads += val;
+    } else if (row.RowType === 'Section') {
+      walkXeroOpex(row, periodIndex, acc);
+    }
+  }
+}
+function walkXeroPL(reportRows, periodIndex) {
+  let revenue = 0, cogs = 0;
+  const opexAcc = { wagesSuper: 0, overheads: 0 };
+  for (const row of reportRows) {
+    if (row.RowType !== 'Section') continue;
+    const title = (row.Title || '').toLowerCase();
+    if ((title === 'income' || title === 'revenue' || title === 'trading income') && !title.includes('other')) {
+      const s = findXeroSummary(row);
+      revenue += s ? xeroCellValue(s, periodIndex) : 0;
+    } else if (title.includes('cost of sales')) {
+      const s = findXeroSummary(row);
+      cogs += s ? xeroCellValue(s, periodIndex) : 0;
+    } else if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
+      walkXeroOpex(row, periodIndex, opexAcc);
+    }
+  }
+  return { revenue, cogs, wagesSuper: opexAcc.wagesSuper, overheads: opexAcc.overheads };
+}
+
+/* ----------------------------------------------------------------------------
+   OOLIO helpers: a small quoted-CSV line parser (commas can appear inside
+   quoted fields, e.g. the "30 June 2026, 02:54 pm" Date/Time column) and the
+   "30 June 2026" -> "2026-06-30" date converter.
+---------------------------------------------------------------------------- */
+function parseCsv(text) {
+  const clean = text.replace(/^\uFEFF/, ''); /* strip BOM */
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < clean.length; i++) {
+    const c = clean[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (clean[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\r') {
+      /* skip - handled by \n */
+    } else if (c === '\n') {
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0] !== ''));
+}
+const OOLIO_MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+function oolioDateToIso(dateTimeStr) {
+  /* Handles both "30 June 2026, 02:54 pm" and "09 Aug 2026, 03:04 pm" -
+     OOLIO exports use full month names in some reports and abbreviated
+     3-letter names in others, so match on the first 3 letters either way. */
+  const m = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec((dateTimeStr || '').trim());
+  if (!m) return null;
+  const mo = OOLIO_MONTHS[m[2].slice(0, 3).toLowerCase()];
+  if (!mo) return null;
+  return m[3] + '-' + mo + '-' + m[1].padStart(2, '0');
+}
+
+/* ----------------------------------------------------------------------------
+   OOLIO webhook (Svix-signed, at-least-once delivery). See POST /api/webhook/oolio
+   in the router and processOolioWebhookEvent() below.
+   Secret: OOLIO_WEBHOOK_SECRET (the "whsec_..." value OOLIO/Svix issues per
+   endpoint - set via `wrangler secret put OOLIO_WEBHOOK_SECRET`).
+---------------------------------------------------------------------------- */
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
+function bytesToB64(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)));
+}
+const SVIX_TIMESTAMP_TOLERANCE_SECONDS = 300; /* 5 minutes, standard Svix guidance */
 
-/* Profit = Revenue − Cost of Sales − (wages+super) − Overheads, for the period.
-   Needs all four; a missing component returns null (never a part-figure). */
-function profitDollars(vals) {
-  if (vals.revenue == null || vals.cogs == null || vals.wagesSuper == null || vals.overheads == null) return null;
-  return vals.revenue - vals.cogs - vals.wagesSuper - vals.overheads;
-}
-/* The dollar amount behind a dual (share-of-revenue) metric. */
-function shareDollars(key, vals) {
-  if (key === 'cogs') return vals.cogs;
-  if (key === 'overheads') return vals.overheads;
-  if (key === 'wage') return vals.wagesSuper;
-  if (key === 'profit') return profitDollars(vals);
-  return null;
-}
-/* The % of revenue a dual metric represents (its primary headline figure). */
-function sharePct(key, vals) {
-  if (vals.revenue == null || vals.revenue === 0) return null;
-  var d = shareDollars(key, vals);
-  if (d == null) return null;
-  return (d / vals.revenue) * 100;
-}
-/* The figure a target/meter applies to: the % for dual metrics, the value
-   otherwise. Revenue has no target (it uses a benchmark). */
-function primaryFigure(key, vals) {
-  return METRIC_DEFS[key].dual ? sharePct(key, vals) : metricValue(key, vals);
-}
-function fmtPctVal(v) { return (v == null) ? '—' : v.toFixed(1) + '%'; }
-function fmtTarget(key, t) {
-  if (METRIC_DEFS[key].dual) return t + '%';
-  if (METRIC_DEFS[key].fmt === 'int') return Math.round(t).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return fmtMoney(t, false);
-}
-
-/* metric value for a slot; null = no data; 'zero-count' handled by caller */
-function metricValue(key, vals) {
-  if (key === 'revenue') return vals.revenue;
-  if (key === 'transactions') return vals.count;
-  if (key === 'cogs') return vals.cogs;
-  if (key === 'overheads') return vals.overheads;
-  if (key === 'profit') return profitDollars(vals);
-  if (key === 'wage') {
-    if (vals.wagesSuper == null || vals.revenue == null || vals.revenue === 0) return null;
-    return (vals.wagesSuper / vals.revenue) * 100;
+/* Verifies svix-id / svix-timestamp / svix-signature against the raw request
+   body per Svix's scheme: HMAC-SHA256("{id}.{timestamp}.{body}") using the
+   secret after its "whsec_" prefix (base64) as the raw key, base64-encoded
+   (standard, not url-safe), compared against any of the space-delimited
+   "v1,<sig>" values in svix-signature (there can be more than one during
+   secret rotation). Returns true/false; never throws. */
+async function verifyOolioWebhook(secretRaw, svixId, svixTimestamp, rawBody, svixSignatureHeader) {
+  if (!secretRaw || !svixId || !svixTimestamp || !rawBody || !svixSignatureHeader) return false;
+  const tsNum = parseInt(svixTimestamp, 10);
+  if (!isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > SVIX_TIMESTAMP_TOLERANCE_SECONDS) return false;
+  try {
+    const secretB64 = secretRaw.replace(/^whsec_/, '');
+    const keyBytes = base64ToBytes(secretB64);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signedContent = svixId + '.' + svixTimestamp + '.' + rawBody;
+    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedContent));
+    const expected = bytesToB64(sigBuf);
+    const candidates = svixSignatureHeader.split(' ').map((p) => p.trim()).filter(Boolean);
+    for (const c of candidates) {
+      const comma = c.indexOf(',');
+      const sig = comma >= 0 ? c.slice(comma + 1) : c;
+      if (timingSafeEqual(sig, expected)) return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
   }
-  if (key === 'acs') {
-    if (vals.revenue == null || vals.count == null) return null;
-    if (vals.count === 0) return 'dash';
-    return vals.revenue / vals.count;
-  }
-  return null;
 }
 
-function fmtMoney(v, cents) {
-  var neg = v < 0; v = Math.abs(v);
-  var s = cents ? v.toFixed(2) : Math.round(v).toString();
-  var parts = cents ? s.split('.') : [s];
-  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return (neg ? '−' : '') + KIT_CONFIG.currency + parts.join('.');
+/* Idempotency: a delivery (and its retries) share the same svix-id. Returns
+   true if this id was already processed (caller should skip re-counting but
+   still return 2xx), false the first time (and marks it seen). */
+async function webhookAlreadySeen(env, id) {
+  if (!env.TOKENS) return false;
+  const key = 'webhookseen:oolio:' + id;
+  const existing = await env.TOKENS.get(key);
+  if (existing) return true;
+  await env.TOKENS.put(key, '1', { expirationTtl: 172800 }); /* 48h - comfortably covers the ~24h retry window */
+  return false;
 }
-function fmtValue(key, v) {
-  if (v === 'dash') return '—';
-  if (v == null) return '—';
-  var f = METRIC_DEFS[key].fmt;
-  if (f === 'money') return fmtMoney(v, true);
-  if (f === 'money2') return fmtMoney(v, true);
-  if (f === 'int') return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  if (f === 'pct') return v.toFixed(1) + '%';
-  return '' + v;
+
+/* Read-modify-write a single numeric field for one day's stored row. Used by
+   the webhook (one event at a time) alongside saveIngestedRows (whole-day
+   overwrite, used by CSV upload) - both write the same data:<source>:<date>
+   KV row, so a later CSV upload for a day will overwrite whatever the
+   webhook had accumulated for that day (intended for backfills/corrections,
+   not routine double-entry). NOTE: KV has no atomic increment, so two
+   webhook deliveries landing in the same instant could race; at this venue's
+   volume that's an acceptable, documented limitation rather than a Durable
+   Object-backed counter. (incrementIngestedField itself lives down in the
+   ingest-storage section below, alongside saveIngestedRows/monthlyIngested,
+   since it also has to keep the monthly aggregate in sync.) */
+
+/* Handles one already-signature-verified OOLIO webhook event. Only
+   order.complete increments the day's transaction count - order.refunded is
+   intentionally ignored (per kpi-spec.md: refunds never reduce the count),
+   and any other/unknown type is ignored too. Uses data.createdAt (order
+   creation time) for the trading date, matching how the CSV export's
+   Date/Time column was interpreted; the existing POS_TRADING_DAY_OFFSET in
+   fetchSlot still applies on read, so no adjustment is needed here. */
+async function processOolioWebhookEvent(env, evt) {
+  if (!evt || evt.type !== 'order.complete' || !evt.data) return;
+  const createdAt = evt.data.createdAt;
+  if (!createdAt || typeof createdAt !== 'string' || createdAt.length < 10) return;
+  const date = createdAt.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  await incrementIngestedField(env, 'pos', date, 'count', 1);
 }
-/* Comparison: % change for money/count, percentage-point change for ratios */
-function compare(key, cur, base) {
-  if (cur == null || base == null || cur === 'dash' || base === 'dash') return null;
-  var dir, text;
-  if (METRIC_DEFS[key].fmt === 'pct') {
-    var diff = cur - base;
-    dir = diff > 0.049 ? 'up' : diff < -0.049 ? 'down' : 'flat';
-    text = Math.abs(diff).toFixed(1) + ' pts';
+
+/* POST /api/webhook/oolio - public (no dashboard session).
+   OOLIO's support first described Svix-signed delivery (svix-id/timestamp/
+   signature + a whsec_ secret), but when this endpoint was actually
+   configured they confirmed THIS integration sends unsigned - "it doesn't
+   need a signing key, data flows direct". So verification here is
+   opportunistic, not required: if a secret is configured AND the request
+   carries svix headers, the signature is checked and bad ones are rejected;
+   otherwise the payload is trusted and processed as-is (this endpoint's
+   only real protection, absent signing, is that its URL isn't published
+   anywhere public). Idempotency falls back to data.id + data.status (per
+   OOLIO's own suggestion) when there's no svix-id to key off.
+   Must ack quickly (a slow non-2xx risks OOLIO treating it as failed) and
+   be safe against being called more than once for the same event. */
+async function apiWebhookOolio(env, request) {
+  const rawBody = await request.text();
+  const svixId = request.headers.get('svix-id');
+  const svixTimestamp = request.headers.get('svix-timestamp');
+  const svixSignature = request.headers.get('svix-signature');
+  const secret = env.OOLIO_WEBHOOK_SECRET;
+
+  if (secret && svixId && svixTimestamp && svixSignature) {
+    const ok = await verifyOolioWebhook(secret, svixId, svixTimestamp, rawBody, svixSignature);
+    if (!ok) return json({ error: 'invalid signature' }, 401);
+  }
+
+  let evt;
+  try { evt = JSON.parse(rawBody); } catch (e) { return json({ error: 'bad json' }, 400); }
+
+  const dedupeId = svixId || ((evt && evt.data && evt.data.id) ? (evt.data.id + ':' + evt.data.status) : null);
+  if (dedupeId && (await webhookAlreadySeen(env, dedupeId))) return json({ ok: true, duplicate: true });
+
+  try {
+    await processOolioWebhookEvent(env, evt);
+    await noteSync(env, 'pos');
+  } catch (e) {
+    /* Already marked "seen" above (when we had a dedupeId), so a processing
+       bug here won't cause endless retries to double count - but do surface
+       a 500 so OOLIO's dashboard shows the failed delivery for us to
+       investigate. */
+    return json({ error: 'processing failed' }, 500);
+  }
+  return json({ ok: true });
+}
+
+/* ============================================================================
+   Everything below is the shell. You should rarely need to edit it.
+============================================================================ */
+
+class NotConfigured extends Error {
+  constructor(source) { super('not configured: ' + source); this.source = source; }
+}
+
+const PLAIN_ERRORS = {
+  401: 'This connection needs reconnecting. Click Reconnect and log in again.',
+  403: 'This connection is missing a permission it needs. Your AI will sort out the access.',
+  429: 'The tool is asking us to slow down. Wait a few minutes, then refresh.',
+  500: 'The tool had a problem at its end. Try refresh in a little while.'
+};
+function plainError(status) {
+  return PLAIN_ERRORS[status] || ('Something went wrong talking to this tool (code ' + status + '). Try refresh; if it persists, tell your AI.');
+}
+
+/* ---------------- Token store (KV) with refresh built in ---------------- */
+
+async function getTokens(env, source) {
+  const raw = await env.TOKENS.get('tokens:' + source);
+  return raw ? JSON.parse(raw) : null;
+}
+async function saveTokens(env, source, tokens) {
+  await env.TOKENS.put('tokens:' + source, JSON.stringify(tokens));
+}
+async function clearTokens(env, source) {
+  await env.TOKENS.delete('tokens:' + source);
+}
+async function noteSync(env, source) {
+  await env.TOKENS.put('lastSync:' + source, new Date().toISOString());
+}
+async function lastSync(env, source) {
+  return await env.TOKENS.get('lastSync:' + source);
+}
+
+/* Build the POST to an OAuth token endpoint, honouring the adapter's client-auth
+   method. tokenAuth:'basic' -> client id+secret in an HTTP Basic Authorization
+   header, NOT in the body (Xero and most OpenID providers expect this); 'post'
+   (or unset, for back-compat) -> client_id/client_secret in the form body. */
+function tokenRequestInit(cfg, params, env) {
+  const id = env[cfg.clientIdSecret] || '';
+  const secret = env[cfg.clientSecretSecret] || '';
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const body = new URLSearchParams(params);
+  if ((cfg.tokenAuth || 'post') === 'basic') {
+    headers['Authorization'] = 'Basic ' + btoa(id + ':' + secret);
   } else {
-    if (base === 0) return null;
-    var pc = ((cur - base) / Math.abs(base)) * 100;
-    dir = pc > 0.049 ? 'up' : pc < -0.049 ? 'down' : 'flat';
-    text = Math.abs(pc).toFixed(1) + '%';
+    body.set('client_id', id);
+    body.set('client_secret', secret);
   }
-  /* Colour by whether the move is GOOD for this metric, not just its direction:
-     a rising cost is bad (coral), a falling cost is good (green). The arrow still
-     shows the real direction. goodDir is 'up' or 'down' per metric. */
-  var good = dir === 'flat' ? null : (dir === METRIC_DEFS[key].goodDir);
-  return { dir: dir, text: text, good: good };
+  return { method: 'POST', headers: headers, body: body.toString() };
 }
 
-/* Targets and alerts: the owner sets a target per metric in Settings; a card
-   flags when its value sits on the wrong side of that target. */
-function metricTarget(key) {
-  var t = SETTINGS.targets && SETTINGS.targets[key];
-  return (typeof t === 'number' && isFinite(t)) ? t : null;
-}
-function targetBreached(key, v) {
-  if (v == null || v === 'dash') return false;
-  var t = metricTarget(key);
-  if (t == null) return false;
-  return METRIC_DEFS[key].goodDir === 'down' ? (v > t) : (v < t);
-}
+/* Coalesces concurrent refresh attempts for the same source. Xero (and most
+   OAuth providers that rotate refresh tokens) invalidates the old refresh
+   token the instant it's used - so if two callers both see an expiring
+   token and both fire a refresh with the SAME refresh_token, only one can
+   succeed; the other gets rejected and (before this fix) would surface as a
+   broken/incorrect period. This became reachable once apiMetrics started
+   fetching cur/prev/yoy concurrently instead of one-at-a-time. */
+const _refreshInFlight = new Map(); /* source -> Promise<accessToken> */
 
-/* ============================================================
-   Rendering
-============================================================ */
-function app() { return document.getElementById('app'); }
-function el(tag, cls, html) {
-  var n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (html != null) n.innerHTML = html;
-  return n;
-}
-function applyAccent() {
-  var a = ACCENTS.filter(function (x) { return x.key === SETTINGS.accent; })[0] || ACCENTS[0];
-  document.documentElement.style.setProperty('--accent', a.c);
-  document.documentElement.style.setProperty('--accent-dim', a.dim);
-}
+/* Returns a valid access token for an OAuth source, refreshing (and
+   persisting the ROTATED refresh token) when needed. */
+async function getValidAccessToken(env, source) {
+  const adapter = ADAPTERS[source];
+  const tokens = await getTokens(env, source);
+  if (!tokens || !tokens.access_token) { const e = new Error('no tokens'); e.status = 401; throw e; }
+  const skewMs = 60 * 1000;
+  if (!tokens.expires_at || Date.now() < tokens.expires_at - skewMs) return tokens.access_token;
 
-function unconfirmedConnectedMetrics() {
-  return CHOSEN.filter(function (k) {
-    var ready = METRIC_DEFS[k].needs.every(isConfigured);
-    return ready && RECON[k] !== 'confirmed';
-  });
-}
-function anyFlagged() {
-  return CHOSEN.some(function (k) { return RECON[k] === 'flagged'; });
-}
-function anyConfiguredSource() { return SOURCES.some(function (s) { return isConfigured(s.key); }); }
-function unconfirmedOrgs() {
-  return SOURCES.filter(function (s) {
-    var st = srcStatus(s.key);
-    return st.configured && st.connected && !ORG_OK[s.key];
-  });
-}
+  if (_refreshInFlight.has(source)) return _refreshInFlight.get(source);
 
-function render() {
-  applyAccent();
-  var root = app();
-  root.innerHTML = '';
-  var _bt = document.getElementById('vd-bartip'); if (_bt) _bt.style.opacity = '0';
-
-  /* Topbar */
-  var top = el('div', 'topbar');
-  if (VENUE_LOGO_DATA_URI) {
-    var logoImg = document.createElement('img');
-    logoImg.className = 'venue-logo';
-    logoImg.src = VENUE_LOGO_DATA_URI;
-    logoImg.alt = SETTINGS.venueName;
-    top.appendChild(logoImg);
-  }
-  var nameWrap = el('div', 'venue-name-wrap');
-  nameWrap.appendChild(el('div', 'venue-name', esc(SETTINGS.venueName)));
-  nameWrap.appendChild(el('div', 'topbar-sub', 'Your numbers · ' + esc(KIT_CONFIG.taxLabel) + ' · financial year ' + esc(KIT_CONFIG.fyLabel)));
-  top.appendChild(nameWrap);
-  root.appendChild(top);
-  root.appendChild(el('div', 'top-rule'));
-
-  /* Nav */
-  var nav = el('div', 'nav');
-  var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
-  tabs.forEach(function (t) {
-    var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
-    b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
-    b.onclick = function () { state.view = t.key; render(); };
-    nav.appendChild(b);
-  });
-  root.appendChild(nav);
-
-  /* Banners */
-  if (!isManual() && anyConfiguredSource() && unconfirmedOrgs().length) {
-    var ub = el('div', 'banner banner-amber');
-    ub.innerHTML = '<b>New connection.</b> Confirm the connected account is your business on the <span class="banner-link" id="go-conn">Connections screen</span>.';
-    root.appendChild(ub);
-  }
-  if (!isManual() && anyConfiguredSource() && unconfirmedConnectedMetrics().length) {
-    var b = el('div', 'banner banner-amber');
-    b.innerHTML = '<b>Not verified yet.</b> Before trusting these numbers, check them against your own records on the <span class="banner-link" id="go-recon">Check your numbers screen</span>. Money figures should match your accounting to the cent.';
-    root.appendChild(b);
-  }
-  if (!isManual() && anyFlagged()) {
-    var fb = el('div', 'banner banner-coral');
-    fb.innerHTML = '<b>A number needs checking.</b> One or more figures didn’t match your records. They’re marked below while your AI works through the fix.';
-    root.appendChild(fb);
-  }
-  if (state.fetchError) root.appendChild(el('div', 'banner banner-coral', esc(state.fetchError)));
-  if (!isManual() && state.data && state.data.protected === false) {
-    var pwb = el('div', 'banner banner-coral');
-    pwb.innerHTML = '<b>No password set yet.</b> Anyone with this link can see your numbers. Ask your AI to set a dashboard password.';
-    root.appendChild(pwb);
-  }
-
-  if (isManual() && (state.view === 'connections' || state.view === 'recon')) state.view = 'dashboard';
-  if (state.view === 'dashboard') renderDashboard(root);
-  else if (state.view === 'enter') renderManualEntry(root);
-  else if (state.view === 'connections') renderConnections(root);
-  else if (state.view === 'recon') renderRecon(root);
-  else renderSettings(root);
-
-  /* Footer */
-  var foot = el('div', 'dash-footer');
-  var left = el('div', null, 'Kit built ' + esc(KIT_CONFIG.kitDate) + ' · every connection is read-only');
-  foot.appendChild(left);
-  if (KIT_CONFIG.feedbackUrl) {
-    var right = el('div');
-    right.innerHTML = '<a href="' + esc(KIT_CONFIG.feedbackUrl) + '" target="_blank" rel="noopener">How’s it going? Report a snag</a>';
-    foot.appendChild(right);
-  }
-  root.appendChild(foot);
-
-  var goR = document.getElementById('go-recon');
-  if (goR) goR.onclick = function () { state.view = 'recon'; render(); };
-  var goC = document.getElementById('go-conn');
-  if (goC) goC.onclick = function () { state.view = 'connections'; render(); };
-}
-
-function esc(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/* ---------- Dashboard view ---------- */
-function renderDashboard(root) {
-  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
-
-  /* Period selector */
-  var bar = el('div', 'period-bar');
-  bar.appendChild(el('span', 'period-label', 'Period'));
-  PERIODS.forEach(function (p) {
-    var c = el('button', 'pchip' + (state.period === p.key ? ' on' : ''), p.label);
-    c.onclick = function () {
-      if (p.key === 'custom') { state.period = 'custom'; render(); return; }
-      state.period = p.key; fetchData();
+  const doRefresh = (async () => {
+    /* Re-check under the "lock" - another concurrent caller may have already
+       completed the refresh while we were waiting our turn. */
+    const latest = await getTokens(env, source);
+    if (latest && latest.access_token && latest.expires_at && Date.now() < latest.expires_at - skewMs) {
+      return latest.access_token;
+    }
+    const cfg = adapter.oauth || {};
+    if (!latest || !latest.refresh_token || !cfg.tokenUrl) { const e = new Error('cannot refresh'); e.status = 401; throw e; }
+    const res = await fetch(cfg.tokenUrl, tokenRequestInit(cfg, {
+      grant_type: 'refresh_token',
+      refresh_token: latest.refresh_token
+    }, env));
+    if (!res.ok) {
+      /* refresh failed: force a reconnect rather than silently serving stale data */
+      const e = new Error('refresh failed'); e.status = 401; throw e;
+    }
+    const fresh = await res.json();
+    const updated = {
+      ...latest,
+      access_token: fresh.access_token,
+      /* CRITICAL: many providers (Xero!) rotate the refresh token - always keep the new one */
+      refresh_token: fresh.refresh_token || latest.refresh_token,
+      expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000)
     };
-    bar.appendChild(c);
-  });
-  root.appendChild(bar);
+    await saveTokens(env, source, updated);
+    return updated.access_token;
+  })();
 
-  if (state.period === 'custom') {
-    var cw = el('div', 'custom-wrap');
-    var f = document.createElement('input'); f.type = 'date'; f.id = 'cfrom'; if (state.customFrom) f.value = state.customFrom;
-    var t = document.createElement('input'); t.type = 'date'; t.id = 'cto'; if (state.customTo) t.value = state.customTo;
-    var go = el('button', 'btn-small', 'Show this range');
-    go.onclick = function () {
-      var fv = document.getElementById('cfrom').value, tv = document.getElementById('cto').value;
-      if (!fv || !tv) return;
-      state.customFrom = fv; state.customTo = tv; fetchData();
-    };
-    cw.appendChild(el('span', 'cmp-lab', 'From'));
-    cw.appendChild(f);
-    cw.appendChild(el('span', 'cmp-lab', 'to'));
-    cw.appendChild(t);
-    cw.appendChild(go);
-    root.appendChild(cw);
-    if (!state.customFrom || !state.customTo) { root.appendChild(el('p', 'screen-sub', 'Pick a start and end date.')); return; }
+  _refreshInFlight.set(source, doRefresh);
+  try {
+    return await doRefresh;
+  } finally {
+    _refreshInFlight.delete(source);
   }
-
-  /* Freshness (or, in manual mode, an edit prompt) */
-  var fr = el('div', 'fresh-row');
-  if (isManual()) {
-    fr.innerHTML = 'Showing the numbers you entered.';
-    var eb = el('button', 'btn-plain', 'Add or edit numbers');
-    eb.style.padding = '5px 12px'; eb.style.fontSize = '12px';
-    eb.onclick = function () { state.view = 'enter'; render(); };
-    fr.appendChild(eb);
-  } else if (state.loading) {
-    var bigRange = (state.period === 'thisFY' || state.period === 'lastFY' || state.period === 'custom');
-    var waitMsg = bigRange
-      ? 'Fetching your latest numbers… a full financial year is a big report, this can take up to a minute or so.'
-      : 'Fetching your latest numbers… this can take up to a minute the first time.';
-    fr.innerHTML = '<span class="spin"></span> ' + waitMsg;
-  } else {
-    var when = state.fetchedAt ? state.fetchedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
-    fr.innerHTML = 'Updated ' + when + ' · updates when you open or refresh this page';
-    var rb = el('button', 'btn-plain', 'Refresh');
-    rb.style.padding = '5px 12px'; rb.style.fontSize = '12px';
-    rb.onclick = function () { fetchData(true); };
-    fr.appendChild(rb);
-  }
-  root.appendChild(fr);
-
-  root.appendChild(el('div', 'period-heading', periodLabel() + ' <span>· ' + fmtRange(r) + '</span>'));
-
-  if (isManual() && !manualEntry({ from: r.from, to: r.to })) {
-    var mb = el('div', 'banner banner-amber');
-    mb.innerHTML = '<b>No numbers entered for this period yet.</b> Add them and your dashboard fills in straight away.';
-    mb.appendChild(document.createElement('br'));
-    var mbtn = el('button', 'btn-plain', 'Enter numbers for ' + periodLabel().toLowerCase());
-    mbtn.style.marginTop = '8px';
-    mbtn.onclick = function () { state.enterPeriod = state.period; state.view = 'enter'; render(); };
-    mb.appendChild(mbtn);
-    root.appendChild(mb);
-  }
-
-  /* Cards */
-  var grid = el('div', 'cards');
-  var cur = periodValues('cur'), prev = periodValues('prev'), yoy = periodValues('yoy');
-  CHOSEN.forEach(function (k) { grid.appendChild(metricCard(k, cur, prev, yoy, r)); });
-  root.appendChild(grid);
 }
 
-function periodLabel() {
-  var p = PERIODS.filter(function (x) { return x.key === state.period; })[0];
-  return p ? p.label.replace('…', '') : '';
-}
-
-function metricCard(key, cur, prev, yoy, r) {
-  var def = METRIC_DEFS[key];
-  var ready = def.needs.every(isConfigured);
-  var card = el('div', 'mcard fade-in');
-
-  if (!ready) {
-    card.className += ' not-conf';
-    card.appendChild(el('div', 'm-label', esc(def.label)));
-    card.appendChild(el('div', 'm-value dim', 'Not configured'));
-    var missing = def.needs.filter(function (s) { return !isConfigured(s); })
-      .map(function (s) { return sourceName(s); }).join(' and ');
-    card.appendChild(el('div', 'notconf-msg', esc(missing) + ' isn’t connected yet. This card lights up when it is – nothing here shows a made-up zero.'));
-    card.appendChild(el('div', 'm-def', esc(def.def)));
-    return card;
-  }
-
-  if (state.data && state.data.manual) {
-    if (manualEntry({ from: r.from, to: r.to })) card.appendChild(el('span', 'm-tag tag-manual', 'Entered by you'));
-  } else if (RECON[key] === 'flagged') {
-    card.className += ' needs-check';
-    card.appendChild(el('span', 'm-tag tag-check', 'Needs checking'));
-  } else if (RECON[key] !== 'confirmed') {
-    card.appendChild(el('span', 'm-tag tag-unverified', 'Unverified'));
-  }
-
-  card.appendChild(el('div', 'm-label', esc(def.label)));
-
-  var v = metricValue(key, cur);
-  if (state.loading && state.data == null) {
-    card.appendChild(el('div', 'm-value dim', '…'));
-  } else {
-    card.appendChild(headline(key, cur, v));
-    if (key === 'acs' && v === 'dash') card.appendChild(el('div', 'm-sub', 'No transactions in this period'));
-    if (key === 'wage' && P.rostering && cur.rosteredCost != null && cur.revenue != null && cur.revenue !== 0) {
-      var pj = ((cur.rosteredCost / cur.revenue) * 100).toFixed(1);
-      var ps = el('div', 'm-sub');
-      ps.innerHTML = '<span class="m-tag tag-proj" style="margin:0 6px 0 0">Projected</span>' + pj + '% from ' + esc(P.rostering) + ' roster';
-      card.appendChild(ps);
-    }
-
-    /* Meter: target for most metrics, recent-average benchmark for revenue */
-    var pf = primaryFigure(key, cur);
-    if (targetBreached(key, pf)) card.className += ' alert';
-    var meter = def.benchmark ? revenueBenchmark(cur) : targetMeter(key, pf);
-    if (meter) card.appendChild(meter);
-
-    /* Comparisons */
-    var cmp1 = compare(key, v, metricValue(key, prev));
-    var row1 = el('div', 'cmp-row');
-    row1.appendChild(el('span', 'cmp-lab', esc(r.prevLabel)));
-    row1.appendChild(cmpVal(cmp1));
-    card.appendChild(row1);
-    if (r.yoy) {
-      var cmp2 = compare(key, v, metricValue(key, yoy));
-      var row2 = el('div', 'cmp-row');
-      row2.appendChild(el('span', 'cmp-lab', esc(r.yoyLabel)));
-      row2.appendChild(cmpVal(cmp2));
-      card.appendChild(row2);
-    }
-    card.appendChild(trendBars(key, r));
-  }
-
-  card.appendChild(el('div', 'm-def', esc(def.def)));
-  if (def.decision) {
-    var dec = el('div', 'm-decision');
-    dec.appendChild(el('b', null, 'Drives: '));
-    dec.appendChild(document.createTextNode(def.decision));
-    card.appendChild(dec);
-  }
-  return card;
-}
-
-function sourceName(key) {
-  var s = SOURCES.filter(function (x) { return x.key === key; })[0];
-  return s ? s.name : key;
-}
-function cmpVal(cmp) {
-  var n = el('span', 'cmp-val');
-  if (!cmp) { n.className += ' flat'; n.textContent = 'no data yet'; return n; }
-  n.className += ' ' + (cmp.good == null ? 'flat' : (cmp.good ? 'good' : 'bad'));
-  n.textContent = (cmp.dir === 'up' ? '▲ ' : cmp.dir === 'down' ? '▼ ' : '● ') + cmp.text;
-  return n;
-}
-
-/* Trend per metric, in the card's PRIMARY unit: % of revenue for dual metrics,
-   the value otherwise. One value per month, null where data is missing. */
-function trendSeries(key) {
-  var d = state.data;
-  if (!d || !d.trend || !d.trend.months) return null;
-  var months = d.trend.months;
-  var acc = d.trend.accounting || {};
-  var pos = d.trend.pos || {};
-  function at(arr, i) { return (arr && arr[i] != null) ? arr[i] : null; }
-  function val(i) {
-    var rev = at(acc.revenue, i);
-    if (key === 'revenue') return rev;
-    if (key === 'transactions') return at(pos.count, i);
-    if (key === 'acs') { var c = at(pos.count, i); return (rev == null || c == null || c === 0) ? null : rev / c; }
-    if (rev == null || rev === 0) return null;
-    var cg = at(acc.cogs, i), wg = at(acc.wagesSuper, i), oh = at(acc.overheads, i);
-    if (key === 'cogs') return (cg == null) ? null : (cg / rev) * 100;
-    if (key === 'overheads') return (oh == null) ? null : (oh / rev) * 100;
-    if (key === 'wage') return (wg == null) ? null : (wg / rev) * 100;
-    if (key === 'profit') return (cg == null || wg == null || oh == null) ? null : ((rev - cg - wg - oh) / rev) * 100;
-    return null;
-  }
-  var series = months.map(function (m, i) { return val(i); });
-  if (!series.some(function (x) { return x != null; })) return null;
-  return { months: months, values: series };
-}
-/* Card headline: dual %/$ for share metrics, single value otherwise. */
-function headline(key, vals, v) {
-  var wrap = el('div', 'm-figs');
-  if (METRIC_DEFS[key].dual) {
-    var pct = sharePct(key, vals);
-    var dollars = shareDollars(key, vals);
-    var loss = (dollars != null && dollars < 0);
-    var f1 = el('div', 'm-fig');
-    f1.appendChild(el('div', 'm-pri' + (loss ? ' loss' : ''), fmtPctVal(pct)));
-    f1.appendChild(el('div', 'm-unit', 'of revenue'));
-    wrap.appendChild(f1);
-    var f2 = el('div', 'm-fig sec');
-    f2.appendChild(el('div', 'm-pri' + (loss ? ' loss' : ''), (dollars == null ? '—' : fmtMoney(dollars, false))));
-    f2.appendChild(el('div', 'm-unit', 'dollars'));
-    wrap.appendChild(f2);
-  } else {
-    var f = el('div', 'm-fig');
-    f.appendChild(el('div', 'm-pri', fmtValue(key, v)));
-    wrap.appendChild(f);
-  }
-  return wrap;
-}
-
-/* Target meter: fill to the value, a marker at the target, coloured by whether
-   the value is on the good side. Null when no target is set. */
-function targetMeter(key, pf) {
-  var t = metricTarget(key);
-  if (t == null || pf == null || pf === 'dash') return null;
-  var def = METRIC_DEFS[key];
-  var bad = (def.goodDir === 'down') ? (pf > t) : (pf < t);
-  var scale = Math.max(pf, t) * 1.4; if (!(scale > 0)) scale = 1;
-  var wrap = el('div', 'meter');
-  var track = el('div', 'meter-track');
-  var fl = el('div', 'meter-fill ' + (bad ? 'bad' : 'good'));
-  fl.style.width = Math.max(0, Math.min(100, (pf / scale) * 100)).toFixed(1) + '%';
-  var mk = el('div', 'meter-mark');
-  mk.style.left = Math.max(0, Math.min(100, (t / scale) * 100)).toFixed(1) + '%';
-  track.appendChild(fl); track.appendChild(mk);
-  wrap.appendChild(track);
-  var status = bad ? (def.goodDir === 'down' ? 'over target' : 'below target') : 'on track';
-  var cap = el('div', 'meter-cap');
-  cap.innerHTML = 'Target ' + esc(fmtTarget(key, t)) + ' · <span class="' + (bad ? 'bad' : 'good') + '">' + status + '</span>';
-  wrap.appendChild(cap);
-  return wrap;
-}
-
-/* Revenue benchmark: this period vs the trailing monthly average. Shown only for
-   single-month periods, where the monthly history is a like-for-like comparison. */
-function revenueBenchmark(cur) {
-  if (state.period !== 'thisMonth' && state.period !== 'lastMonth') return null;
-  var rev = cur.revenue;
-  if (rev == null) return null;
-  var t = trendSeries('revenue');
-  if (!t) return null;
-  var vals = t.values.slice(Math.max(0, t.values.length - 12)).filter(function (x) { return x != null; });
-  if (vals.length < 2) return null;
-  var avg = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
-  if (!(avg > 0)) return null;
-  var below = rev < avg * 0.999;
-  var above = rev > avg * 1.001;
-  var scale = Math.max(rev, avg) * 1.4;
-  var wrap = el('div', 'meter');
-  var track = el('div', 'meter-track');
-  var fl = el('div', 'meter-fill ' + (below ? 'bad' : 'good'));
-  fl.style.width = Math.max(0, Math.min(100, (rev / scale) * 100)).toFixed(1) + '%';
-  var mk = el('div', 'meter-mark');
-  mk.style.left = Math.max(0, Math.min(100, (avg / scale) * 100)).toFixed(1) + '%';
-  track.appendChild(fl); track.appendChild(mk);
-  wrap.appendChild(track);
-  var word = below ? 'below' : (above ? 'above' : 'in line');
-  var cap = el('div', 'meter-cap');
-  cap.innerHTML = 'Period average <b>' + esc(fmtMoney(avg, false)) + '</b> · <span class="' + (below ? 'bad' : 'good') + '">' + word + '</span>';
-  wrap.appendChild(cap);
-  return wrap;
-}
-
-/* 12-month history as bars, in the card's primary unit. Bars colour good/bad
-   against the target where set (accent otherwise); the viewed month is outlined;
-   hover shows the month and value. Zero-baselined so a high cost reads as a tall bar. */
-/* Instant hover tooltip for the trend bars - a native <title> is delayed and
-   often doesn't show. One shared, pointer-events-none element at the cursor. */
-function barTipEl() {
-  var t = document.getElementById('vd-bartip');
-  if (!t) {
-    t = document.createElement('div');
-    t.id = 'vd-bartip';
-    t.style.cssText = 'position:fixed;z-index:60;pointer-events:none;background:#0D0D0D;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:12px;line-height:1.3;padding:5px 9px;border-radius:7px;white-space:nowrap;opacity:0;transform:translate(-50%,calc(-100% - 10px));transition:opacity .07s;box-shadow:0 4px 14px rgba(0,0,0,0.18)';
-    document.body.appendChild(t);
-  }
-  return t;
-}
-function attachBarTip(holder) {
-  holder.addEventListener('mousemove', function (e) {
-    var tg = e.target, lab = (tg && tg.getAttribute) ? tg.getAttribute('data-lab') : null;
-    var tip = barTipEl();
-    if (lab) { tip.textContent = lab; tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY + 'px'; tip.style.opacity = '1'; }
-    else { tip.style.opacity = '0'; }
-  });
-  holder.addEventListener('mouseleave', function () { barTipEl().style.opacity = '0'; });
-}
-
-/* 12-month history as bars, built as real namespaced SVG nodes (not via innerHTML)
-   with explicit inline sizing, so the chart can't collapse or balloon to the
-   browser default. Bars colour good/bad vs target (or, for Average customer
-   spend, a three-way red/amber/green band against the owner's two thresholds);
-   the viewed month is outlined; hover shows month + value instantly. */
-function trendBars(key, r) {
-  var wrap = el('div', 'tbars');
-  wrap.appendChild(el('div', 'tbars-cap', 'Trend · last 12 months · hover a bar for detail'));
-  var t = trendSeries(key);
-  var nums = t ? t.values.filter(function (x) { return x != null; }) : [];
-  if (!t || !nums.length) {
-    wrap.appendChild(el('div', 'notconf-msg', 'The trend fills in as monthly history comes in.'));
-    return wrap;
-  }
-  var n = t.values.length, start = Math.max(0, n - 12);
-  var months = t.months.slice(start), vals = t.values.slice(start);
-  var shown = vals.filter(function (x) { return x != null; });
-  var maxv = Math.max.apply(null, shown.concat([0]));
-  var minv = Math.min.apply(null, shown.concat([0]));
-  var span = (maxv - minv) || 1;
-  var def = METRIC_DEFS[key], tgt = metricTarget(key), curMonth = monthKey(r.from);
-  /* Average customer spend: a three-band colour (red below acsLow, amber
-     between acsLow and the acs target, green at/above it) instead of the
-     usual binary good/bad - set by the owner in Settings > Targets and alerts. */
-  var acsLow = (key === 'acs') ? (SETTINGS.targets && SETTINGS.targets.acsLow) : null;
-  var acsBand = (key === 'acs' && typeof acsLow === 'number' && tgt != null);
-  var W = 280, H = 46, gap = 3, NS = 'http://www.w3.org/2000/svg';
-  var bw = (W - gap * (vals.length - 1)) / vals.length;
-  var zeroY = H - ((0 - minv) / span) * H;
-  var svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.setAttribute('role', 'img');
-  svg.style.cssText = 'display:block;width:100%;height:46px';
-  for (var i = 0; i < vals.length; i++) {
-    if (vals[i] == null) continue;
-    var x = i * (bw + gap);
-    var vy = H - ((vals[i] - minv) / span) * H;
-    var top = Math.min(vy, zeroY), h = Math.max(1.5, Math.abs(zeroY - vy));
-    var cls = 'tbar';
-    if (acsBand) {
-      cls += (vals[i] < acsLow) ? ' bad' : (vals[i] < tgt ? ' amber' : ' good');
-    } else if (tgt != null) {
-      cls += ((def.goodDir === 'down') ? (vals[i] > tgt) : (vals[i] < tgt)) ? ' bad' : ' good';
-    }
-    if (months[i] === curMonth) cls += ' cur';
-    var rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('class', cls);
-    rect.setAttribute('x', x.toFixed(1));
-    rect.setAttribute('y', top.toFixed(1));
-    rect.setAttribute('width', bw.toFixed(1));
-    rect.setAttribute('height', h.toFixed(1));
-    rect.setAttribute('rx', '1.5');
-    rect.setAttribute('data-lab', months[i] + ' · ' + trendLabel(key, vals[i]));
-    svg.appendChild(rect);
-  }
-  var holder = el('div', 'tbars-svg');
-  holder.appendChild(svg);
-  attachBarTip(holder);
-  wrap.appendChild(holder);
-  return wrap;
-}
-function trendLabel(key, v) {
-  if (METRIC_DEFS[key].dual) return v.toFixed(1) + '%';
-  if (METRIC_DEFS[key].fmt === 'int') return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return fmtMoney(v, false);
-}
-
-/* ---------- Connections view ---------- */
-function renderConnections(root) {
-  root.appendChild(el('div', 'screen-title', 'Connections'));
-  root.appendChild(el('p', 'screen-sub', 'Each of your tools connects here, read-only: the dashboard can look at the numbers, it can never change anything in your till or your books.'));
-
-  SOURCES.forEach(function (s) {
-    var st = srcStatus(s.key);
-    var card = el('div', 'conn-card fade-in');
-    var head = el('div', 'conn-head');
-    head.appendChild(el('span', 'conn-name', esc(s.name)));
-    if (!st.configured) head.appendChild(el('span', 'conn-pill pill-off', 'Not connected'));
-    else if (st.error) head.appendChild(el('span', 'conn-pill pill-warn', 'Needs attention'));
-    else if (st.connected) head.appendChild(el('span', 'conn-pill pill-ok', 'Connected'));
-    else head.appendChild(el('span', 'conn-pill pill-off', 'Set up, not linked yet'));
-    card.appendChild(head);
-    card.appendChild(el('div', 'conn-line', esc(s.role) + (st.lastSync ? ' · last synced ' + esc(st.lastSync) : '')));
-
-    if (st.sandbox) {
-      var sb = el('div', 'banner banner-coral');
-      sb.style.margin = '0.6rem 0 0';
-      sb.innerHTML = '<b>This looks like a test environment.</b> The data here may be fake. Your AI will switch the connection to the live one before any number is trusted.';
-      card.appendChild(sb);
-    }
-
-    if (st.configured && st.connected && st.org) {
-      var ob = el('div', 'conn-org');
-      if (ORG_OK[s.key]) {
-        ob.innerHTML = 'Connected to <b>' + esc(st.org) + '</b> · confirmed as your business';
-      } else {
-        ob.innerHTML = 'Connected to <b>' + esc(st.org) + '</b>. Is that your business (not a personal account, and not someone else’s file)?';
-        var okBtn = el('button', 'btn-small', 'Yes, that’s my business');
-        okBtn.style.marginTop = '8px';
-        okBtn.onclick = function () { ORG_OK[s.key] = true; saveOrgOk(); render(); };
-        ob.appendChild(document.createElement('br'));
-        ob.appendChild(okBtn);
-      }
-      card.appendChild(ob);
-    }
-
-    if (st.error && st.error.plain) {
-      var eb = el('div', 'conn-line');
-      eb.style.color = '#6b2510';
-      eb.style.marginTop = '0.5rem';
-      eb.textContent = st.error.plain;
-      card.appendChild(eb);
-    }
-
-    var act = el('div', 'conn-actions');
-    if (st.configured) {
-      var rec = el('button', 'btn-plain', st.connected ? 'Reconnect' : 'Connect');
-      rec.onclick = function () { window.location.href = '/auth/' + s.key + '/start'; };
-      act.appendChild(rec);
-    } else {
-      act.appendChild(el('span', 'conn-line', 'Your AI sets this up with you during the build.'));
-    }
-    card.appendChild(act);
-
-    var cb = el('div', 'cb-url');
-    cb.innerHTML = 'Callback address for this connection (your AI may ask for it): <b>' + esc(location.origin + '/auth/' + s.key + '/callback') + '</b>';
-    card.appendChild(cb);
-
-    if (st.ingest) card.appendChild(uploadPanel(s));
-    if (st.ingest) card.appendChild(repairPanel(s));
-
-    root.appendChild(card);
-  });
-}
-
-/* ---------- One-off repair: rebuild monthly totals from the real daily data ---------- */
-function repairPanel(s) {
-  var wrap = el('div', 'conn-org');
-  wrap.style.marginTop = '0.6rem';
-  wrap.innerHTML = '<b>Fixing wrong monthly/trend numbers?</b> This rebuilds the monthly totals for '
-    + esc(s.name) + ' from your actual day-by-day records - safe to run anytime, it never changes or loses data, only recalculates.';
-  var row = el('div', 'conn-actions');
-  var btn = el('button', 'btn-small', 'Repair transaction history');
-  var msg = el('div', 'conn-line');
-  msg.style.marginTop = '0.4rem';
-  btn.onclick = function () {
-    btn.disabled = true;
-    msg.textContent = 'Rebuilding…';
-    fetch('/api/backfill-monthagg?source=' + s.key, { method: 'POST' })
-      .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, j: j }; }); })
-      .then(function (out) {
-        btn.disabled = false;
-        if (out.ok && out.j.ok) {
-          msg.textContent = 'Done - rebuilt ' + out.j.monthsRebuilt + ' month' + (out.j.monthsRebuilt === 1 ? '' : 's') + ' of totals. Refreshing…';
-          fetchData(true);
-        } else {
-          msg.textContent = (out.j && out.j.message) ? ('Failed: ' + out.j.message) : 'That didn’t work. Try again, or show your AI.';
+/* Helpers handed to every adapter call */
+function makeHelpers(env, source) {
+  return {
+    getValidAccessToken: () => getValidAccessToken(env, source),
+    getTokens: () => getTokens(env, source),
+    saveTokens: (t) => saveTokens(env, source, t),
+    noteSync: () => noteSync(env, source),
+    saveIngestedRows: (rows) => saveIngestedRows(env, source, rows),
+    readIngested: (from, to) => readIngested(env, source, from, to),
+    monthlyIngested: (fromMonth, toMonth) => monthlyIngested(env, source, fromMonth, toMonth),
+    /* fetch JSON with one automatic refresh-and-retry on 401 (OAuth sources) */
+    fetchJson: async (url, init, opts) => {
+      const useAuth = !opts || opts.auth !== false;
+      const doFetch = async () => {
+        const headers = new Headers((init && init.headers) || {});
+        if (useAuth && ADAPTERS[source].auth === 'oauth') {
+          headers.set('Authorization', 'Bearer ' + await getValidAccessToken(env, source));
         }
-      })
-      .catch(function (err) { btn.disabled = false; msg.textContent = 'That didn’t work: ' + (err && err.message ? err.message : 'check your connection and try again.'); });
-  };
-  row.appendChild(btn);
-  wrap.appendChild(row);
-  wrap.appendChild(msg);
-  return wrap;
-}
-
-/* ---------- File upload (the guided-upload rung) ---------- */
-function uploadPanel(s) {
-  var wrap = el('div', 'conn-org');
-  wrap.style.background = 'var(--c-purple-bg)';
-  wrap.style.borderColor = 'var(--c-purple-border)';
-  wrap.style.color = 'var(--c-purple-text)';
-  wrap.innerHTML = '<b>Add data from a file.</b> Export the usual report from '
-    + esc(s.name) + ' (or use the one it emails you), then drop it here. Your AI told you the upload code the first time.';
-
-  var row = el('div', 'conn-actions');
-  var file = document.createElement('input');
-  file.type = 'file';
-  file.accept = '.csv,.txt,.json,.tsv';
-  file.style.fontSize = '12px';
-  row.appendChild(file);
-
-  var code = null;
-  try { code = localStorage.getItem('vd_upcode'); } catch (e) {}
-  var codeInput = null;
-  if (!code) {
-    codeInput = document.createElement('input');
-    codeInput.type = 'password';
-    codeInput.placeholder = 'Upload code';
-    codeInput.style.cssText = 'font-family:DM Sans,sans-serif;font-size:13px;padding:7px 10px;border:1px solid var(--border-med);border-radius:8px;';
-    row.appendChild(codeInput);
-  }
-
-  var btn = el('button', 'btn-small', 'Upload');
-  var msg = el('div', 'conn-line');
-  msg.style.marginTop = '0.4rem';
-  btn.onclick = function () {
-    var f = file.files && file.files[0];
-    if (!f) { msg.textContent = 'Pick the exported file first.'; return; }
-    var useCode = code || (codeInput && codeInput.value);
-    if (!useCode) { msg.textContent = 'Enter the upload code your AI gave you.'; return; }
-    btn.disabled = true;
-    msg.textContent = 'Uploading…';
-    var reader = new FileReader();
-    reader.onload = function () {
-      fetch('/api/ingest?source=' + s.key, {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + useCode, 'Content-Type': 'text/plain' },
-        body: reader.result
-      }).then(function (res) { return res.json().then(function (j) { return { ok: res.ok, j: j }; }); })
-        .then(function (out) {
-          btn.disabled = false;
-          if (out.ok && out.j.ok) {
-            try { localStorage.setItem('vd_upcode', useCode); } catch (e) {}
-            msg.textContent = 'Done: ' + out.j.days + ' day' + (out.j.days === 1 ? '' : 's') + ' of data added. Refreshing…';
-            fetchData();
-          } else {
-            msg.textContent = (out.j && out.j.plain) || 'That didn’t work. Try again, or show your AI.';
-          }
-        })
-        .catch(function () { btn.disabled = false; msg.textContent = 'That didn’t work. Check your connection and try again.'; });
-    };
-    reader.readAsText(f);
-  };
-  row.appendChild(btn);
-  wrap.appendChild(row);
-  wrap.appendChild(msg);
-  return wrap;
-}
-
-/* ---------- Check your numbers (reconciliation) ---------- */
-function renderRecon(root) {
-  root.appendChild(el('div', 'screen-title', 'Check your numbers'));
-  root.appendChild(el('p', 'screen-sub',
-    'Before you trust this dashboard, check it against your own records for the same dates: your '
-    + esc(P.accounting) + ' profit and loss for the money figures, and ' + esc(P.pos)
-    + ' for the transaction count. Money figures come straight from ' + esc(P.accounting)
-    + ', so they should match to the cent. Any gap is a build problem for your AI to fix, not something to shrug at.'));
-
-  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
-  root.appendChild(el('p', 'screen-sub', 'Checking period: <b>' + fmtRange(r) + '</b> (change it with the period buttons on the Dashboard).'));
-
-  var cur = periodValues('cur');
-  var anyReady = false;
-
-  CHOSEN.forEach(function (k) {
-    var def = METRIC_DEFS[k];
-    if (!def.needs.every(isConfigured)) return;
-    anyReady = true;
-    var card = el('div', 'recon-card fade-in');
-    var head = el('div', 'recon-head');
-    head.appendChild(el('span', 'recon-metric', esc(def.label)));
-    head.appendChild(el('span', 'recon-fig', fmtValue(k, metricValue(k, cur))));
-    card.appendChild(head);
-
-    var inst;
-    if (k === 'transactions') {
-      inst = 'Open ' + P.pos + ' reporting for exactly these dates. Does the number of completed transactions match the figure above?';
-    } else if (k === 'acs') {
-      inst = 'This one is worked out from two numbers you’ve already checked: revenue (from ' + P.accounting + ') divided by transactions (from ' + P.pos + '). If both inputs match, this is right by definition.';
-    } else if (k === 'wage') {
-      inst = 'In your ' + P.accounting + ' profit and loss for these dates, add the wages and super lines, then divide by the revenue figure you verified. Does it come to the percentage above?';
-    } else {
-      inst = 'Open ' + P.accounting + ' and run your profit and loss for exactly these dates. Does ' + def.label + ' there match the figure above, to the cent?';
-    }
-    card.appendChild(el('div', 'recon-inst', esc(inst)));
-
-    var stateLine = el('div', 'recon-state');
-    if (RECON[k] === 'confirmed') { stateLine.innerHTML = '<span class="up">✓ Confirmed against your records</span>'; }
-    else if (RECON[k] === 'flagged') { stateLine.innerHTML = '<span class="down">Marked as needing a check</span>'; }
-    else { stateLine.innerHTML = '<span class="flat">Not checked yet</span>'; }
-    card.appendChild(stateLine);
-
-    var act = el('div', 'conn-actions');
-    var yes = el('button', 'btn-small', 'It matches');
-    yes.onclick = function () { RECON[k] = 'confirmed'; saveRecon(); render(); };
-    var no = el('button', 'btn-plain', 'It doesn’t match');
-    no.onclick = function () { RECON[k] = 'flagged'; saveRecon(); render(); };
-    act.appendChild(yes); act.appendChild(no);
-    card.appendChild(act);
-
-    if (RECON[k] === 'flagged') {
-      var dg = el('div', 'diag');
-      dg.innerHTML = '<b>Tell your AI it doesn’t match.</b> It will work through the usual culprits, in order:'
-        + '<ol>'
-        + '<li>Wrong accounts mapped (an account included that shouldn’t be, or one missed)</li>'
-        + '<li>Wrong dates, timezone, week start or trading-day rollover</li>'
-        + '<li>Report basis: cash vs accrual, matched to the report you actually ran</li>'
-        + '<li>' + esc(KIT_CONFIG.taxLabel === 'ex-GST' ? 'GST left in, or taken out twice' : 'Sales tax left in, or taken out twice') + '</li>'
-        + '<li>A missing or extra sales channel, or other income bleeding into revenue</li>'
-        + '</ol>';
-      card.appendChild(dg);
-    }
-    root.appendChild(card);
-  });
-
-  if (!anyReady) {
-    root.appendChild(el('p', 'screen-sub', 'Nothing to check yet: no data source is connected. As each tool connects, its numbers appear here for you to verify.'));
-  }
-}
-
-/* ---------- Settings ---------- */
-var TAX_WORD = (KIT_CONFIG.taxLabel || 'ex-GST').replace('ex-', '');
-var MANUAL_FIELDS = [
-  { key: 'revenue',    label: 'Revenue (' + KIT_CONFIG.taxLabel + ')', kind: 'money',
-    help: 'The total trading income on your profit and loss for these dates, before ' + TAX_WORD + '.' },
-  { key: 'count',      label: 'Number of transactions', kind: 'int',
-    help: 'How many completed sales your POS report shows for these dates. Just the count, not dollars.' },
-  { key: 'cogs',       label: 'Cost of goods (Cost of Sales)', kind: 'money',
-    help: 'Your Cost of Sales total on the profit and loss for these dates.' },
-  { key: 'wagesSuper', label: 'Wages plus super', kind: 'money',
-    help: 'Your wages and super total on the profit and loss for these dates.' },
-  { key: 'overheads',  label: 'Overheads', kind: 'money',
-    help: 'Operating expenses on the profit and loss for these dates, not counting wages, super or cost of sales.' },
-  { key: 'rosteredCost', label: 'Rostered wage cost (optional)', kind: 'money',
-    help: 'The rostered wage cost from your roster for these dates. Optional, it powers a projected wage percentage.' }
-];
-var MANUAL_DEP = { revenue: ['revenue'], transactions: ['count'], acs: ['revenue', 'count'], cogs: ['cogs', 'revenue'], wage: ['wagesSuper', 'revenue'], overheads: ['overheads', 'revenue'], profit: ['revenue', 'cogs', 'wagesSuper', 'overheads'] };
-function manualNeededFieldKeys() {
-  var set = {};
-  CHOSEN.forEach(function (k) { (MANUAL_DEP[k] || []).forEach(function (f) { set[f] = true; }); });
-  var keys = [];
-  ['revenue', 'count', 'cogs', 'wagesSuper', 'overheads'].forEach(function (f) { if (set[f]) keys.push(f); });
-  if (KIT_CONFIG.providers.rostering && CHOSEN.indexOf('wage') >= 0) keys.push('rosteredCost');
-  return keys;
-}
-
-function renderManualEntry(root) {
-  root.appendChild(el('div', 'screen-title', 'Enter your numbers'));
-  root.appendChild(el('p', 'screen-sub', 'Type the figures from your own profit and loss and POS report. No accounts to connect and no code. Your dashboard fills in the moment you save, and it takes a couple of minutes each week.'));
-
-  var ep = state.enterPeriod || (state.period === 'custom' ? 'lastWeek' : state.period);
-  state.enterPeriod = ep;
-  var pbar = el('div', 'period-bar');
-  pbar.appendChild(el('span', 'period-label', 'Which dates'));
-  PERIODS.forEach(function (p) {
-    if (p.key === 'custom') return;
-    var c = el('button', 'pchip' + (ep === p.key ? ' on' : ''), p.label);
-    c.onclick = function () { state.enterPeriod = p.key; render(); };
-    pbar.appendChild(c);
-  });
-  root.appendChild(pbar);
-
-  var r = resolvePeriod(ep);
-  root.appendChild(el('p', 'manual-dates', 'You are entering numbers for ' + fmtRange(r) + '.'));
-
-  var existing = manualEntry({ from: r.from, to: r.to });
-  var vals = (existing && existing.values) ? existing.values : {};
-  var fields = manualNeededFieldKeys();
-  var inputs = {};
-  var grid = el('div', 'set-grid');
-  fields.forEach(function (fk) {
-    var fdef = MANUAL_FIELDS.filter(function (x) { return x.key === fk; })[0];
-    var cell = el('div', 'set-cell');
-    cell.appendChild(el('div', 'set-label', esc(fdef.label)));
-    var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.min = '0';
-    if (typeof vals[fk] === 'number') inp.value = vals[fk];
-    inp.placeholder = fdef.kind === 'int' ? 'e.g. 540' : (KIT_CONFIG.currency + ' amount');
-    inputs[fk] = inp;
-    cell.appendChild(inp);
-    cell.appendChild(el('div', 'set-note', esc(fdef.help)));
-    grid.appendChild(cell);
-  });
-  root.appendChild(grid);
-
-  var att = el('div', 'manual-attest');
-  var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'attest';
-  if (existing && existing.attested) cb.checked = true;
-  var lab = document.createElement('label'); lab.htmlFor = 'attest';
-  lab.textContent = 'These figures are from my own profit and loss and POS report for these dates.';
-  att.appendChild(cb); att.appendChild(lab);
-  root.appendChild(att);
-
-  var errLine = el('div', 'err-line'); errLine.style.display = 'none';
-  root.appendChild(errLine);
-
-  var saveBtn = el('button', 'btn-primary-dash', 'Save these numbers');
-  saveBtn.onclick = function () {
-    if (!cb.checked) { errLine.textContent = 'Please tick the box to confirm these are your own figures.'; errLine.style.display = 'block'; return; }
-    var newVals = {}; var any = false;
-    fields.forEach(function (fk) {
-      var raw = inputs[fk].value;
-      if (raw !== '' && isFinite(parseFloat(raw))) { newVals[fk] = parseFloat(raw); any = true; }
-    });
-    if (!any) { errLine.textContent = 'Enter at least one number before saving.'; errLine.style.display = 'block'; return; }
-    MANUAL[rangeKey(r.from, r.to)] = { from: iso(r.from), to: iso(r.to), period: ep, values: newVals, attested: true, enteredAt: new Date().toISOString() };
-    saveManual();
-    state.period = ep;
-    state.view = 'dashboard';
-    fetchData();
-  };
-  root.appendChild(saveBtn);
-  root.appendChild(el('p', 'set-note', 'After you save, open the Dashboard tab to see these numbers, how they compare to the period before, and where they need your attention.'));
-
-  var keys = Object.keys(MANUAL).sort().reverse();
-  if (keys.length) {
-    root.appendChild(el('div', 'section-sub', 'Saved so far'));
-    keys.forEach(function (k) {
-      var e = MANUAL[k];
-      root.appendChild(el('div', 'manual-row', esc(fmtRange({ from: fromIso(e.from), to: fromIso(e.to) })) + ' · saved'));
-    });
-  }
-}
-
-function renderSettings(root) {
-  root.appendChild(el('div', 'screen-title', 'Settings'));
-  root.appendChild(el('p', 'screen-sub', 'The bits you might want to change, with no code anywhere. Your AI set the rest up during the build.'));
-
-  root.appendChild(el('div', 'set-label', 'Where your numbers come from'));
-  var modeWrap = el('div', 'mode-wrap');
-  [ { k: 'manual', t: 'I type them in', d: 'Enter the numbers from your profit and loss and POS report each week. Works straight away, with nothing to connect.' },
-    { k: 'live', t: 'Connect my software', d: 'Your AI links your accounting and POS so the numbers update on their own. More to set up.' }
-  ].forEach(function (m) {
-    var mc = el('div', 'mode-card' + (SETTINGS.dataMode === m.k ? ' on' : ''));
-    mc.appendChild(el('div', 'mode-t', m.t));
-    mc.appendChild(el('div', 'mode-d', m.d));
-    mc.onclick = function () { SETTINGS.dataMode = m.k; saveSettings(); state.view = (m.k === 'manual' ? 'enter' : 'dashboard'); fetchData(); };
-    modeWrap.appendChild(mc);
-  });
-  root.appendChild(modeWrap);
-
-  var grid = el('div', 'set-grid');
-
-  var c1 = el('div', 'set-cell');
-  c1.appendChild(el('div', 'set-label', 'Venue name'));
-  var vn = document.createElement('input'); vn.type = 'text'; vn.value = SETTINGS.venueName; vn.maxLength = 60;
-  vn.onchange = function () { SETTINGS.venueName = vn.value || 'Your venue'; saveSettings(); render(); };
-  c1.appendChild(vn);
-  grid.appendChild(c1);
-
-  var c2 = el('div', 'set-cell');
-  c2.appendChild(el('div', 'set-label', 'Default period'));
-  var sel = document.createElement('select');
-  PERIODS.forEach(function (p) {
-    if (p.key === 'custom') return;
-    var o = document.createElement('option'); o.value = p.key; o.textContent = p.label;
-    if (SETTINGS.defaultPeriod === p.key) o.selected = true;
-    sel.appendChild(o);
-  });
-  sel.onchange = function () { SETTINGS.defaultPeriod = sel.value; saveSettings(); };
-  c2.appendChild(sel);
-  c2.appendChild(el('div', 'set-note', 'What the dashboard opens on.'));
-  grid.appendChild(c2);
-
-  var c3 = el('div', 'set-cell');
-  c3.appendChild(el('div', 'set-label', 'Week starts on'));
-  var ws = document.createElement('select');
-  var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  days.forEach(function (d, i) {
-    var o = document.createElement('option'); o.value = i; o.textContent = d;
-    if (+SETTINGS.weekStart === i) o.selected = true;
-    ws.appendChild(o);
-  });
-  ws.onchange = function () { SETTINGS.weekStart = +ws.value; saveSettings(); fetchData(); };
-  c3.appendChild(ws);
-  grid.appendChild(c3);
-
-  var c4 = el('div', 'set-cell');
-  c4.appendChild(el('div', 'set-label', 'Trading day rolls over at'));
-  var ro = document.createElement('select');
-  for (var h = 0; h <= 6; h++) {
-    var o2 = document.createElement('option'); o2.value = h;
-    o2.textContent = (h === 0) ? 'Midnight (no rollover)' : (h + 'am');
-    if (+SETTINGS.rolloverHour === h) o2.selected = true;
-    ro.appendChild(o2);
-  }
-  ro.onchange = function () { SETTINGS.rolloverHour = +ro.value; saveSettings(); fetchData(); };
-  c4.appendChild(ro);
-  c4.appendChild(el('div', 'set-note', 'If you trade past midnight, sales before this hour count to the previous day.'));
-  grid.appendChild(c4);
-
-  var c5 = el('div', 'set-cell');
-  c5.appendChild(el('div', 'set-label', 'Timezone'));
-  var tzSel = document.createElement('select');
-  (TZ_CHOICES[KIT_CONFIG.region] || [SETTINGS.timezone]).forEach(function (z) {
-    var o = document.createElement('option'); o.value = z; o.textContent = z.split('/')[1].replace('_', ' ');
-    if (SETTINGS.timezone === z) o.selected = true;
-    tzSel.appendChild(o);
-  });
-  tzSel.onchange = function () { SETTINGS.timezone = tzSel.value; saveSettings(); fetchData(); };
-  c5.appendChild(tzSel);
-  grid.appendChild(c5);
-
-  var c6 = el('div', 'set-cell');
-  c6.appendChild(el('div', 'set-label', 'Accent colour'));
-  var sw = el('div', 'swatches');
-  ACCENTS.forEach(function (a) {
-    var s = el('div', 'swatch' + (SETTINGS.accent === a.key ? ' on' : ''));
-    s.style.background = a.c;
-    s.title = a.key;
-    s.onclick = function () { SETTINGS.accent = a.key; saveSettings(); render(); };
-    sw.appendChild(s);
-  });
-  c6.appendChild(sw);
-  grid.appendChild(c6);
-
-  root.appendChild(grid);
-
-  /* Targets and alerts (Monday-review thresholds) */
-  root.appendChild(el('div', 'screen-title', 'Targets and alerts'));
-  root.appendChild(el('p', 'screen-sub', 'Set the level you want each number to stay on the right side of. Cost and profit targets are a share of revenue (30 means 30% of revenue); transaction and spend targets are a plain number. A card flags amber when it slips to the wrong side. Revenue is shown against its own recent average instead of a fixed target.'));
-  var tgrid = el('div', 'set-grid');
-  CHOSEN.forEach(function (k) {
-    var mdef = METRIC_DEFS[k];
-    if (mdef.benchmark) return;
-    if (k === 'acs') {
-      /* Average customer spend gets its own red/amber/green pair instead of a
-         single target: acsLow is the red line, acs (reused) is the green line. */
-      var cellLow = el('div', 'set-cell');
-      cellLow.appendChild(el('div', 'set-label', 'Average customer spend · red below'));
-      var inpLow = document.createElement('input'); inpLow.type = 'number'; inpLow.step = 'any';
-      inpLow.value = (SETTINGS.targets && typeof SETTINGS.targets.acsLow === 'number') ? SETTINGS.targets.acsLow : '';
-      inpLow.placeholder = 'e.g. 30';
-      inpLow.onchange = function () {
-        if (!SETTINGS.targets) SETTINGS.targets = {};
-        var val = parseFloat(inpLow.value);
-        if (isFinite(val)) SETTINGS.targets.acsLow = val; else delete SETTINGS.targets.acsLow;
-        saveSettings(); render();
+        return fetch(url, { ...(init || {}), headers });
       };
-      cellLow.appendChild(inpLow);
-      cellLow.appendChild(el('div', 'set-note', 'Below this ' + KIT_CONFIG.currency + ' amount, the trend bar shows red.'));
-      tgrid.appendChild(cellLow);
-
-      var cellHigh = el('div', 'set-cell');
-      cellHigh.appendChild(el('div', 'set-label', 'Average customer spend · green at/above'));
-      var inpHigh = document.createElement('input'); inpHigh.type = 'number'; inpHigh.step = 'any';
-      inpHigh.value = (SETTINGS.targets && typeof SETTINGS.targets.acs === 'number') ? SETTINGS.targets.acs : '';
-      inpHigh.placeholder = 'e.g. 31.5';
-      inpHigh.onchange = function () {
-        if (!SETTINGS.targets) SETTINGS.targets = {};
-        var val = parseFloat(inpHigh.value);
-        if (isFinite(val)) SETTINGS.targets.acs = val; else delete SETTINGS.targets.acs;
-        saveSettings(); render();
-      };
-      cellHigh.appendChild(inpHigh);
-      cellHigh.appendChild(el('div', 'set-note', 'Between the two, the bar shows amber. At or above this, green.'));
-      tgrid.appendChild(cellHigh);
-      return;
+      let res = await doFetch();
+      if (res.status === 401 && useAuth && ADAPTERS[source].auth === 'oauth') {
+        const t = await getTokens(env, source);
+        if (t) { t.expires_at = 0; await saveTokens(env, source, t); } /* force refresh */
+        res = await doFetch();
+      }
+      if (!res.ok) { const e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
+      return res.json();
     }
-    var cell = el('div', 'set-cell');
-    cell.appendChild(el('div', 'set-label', esc(mdef.label) + (mdef.dual ? ' (% of revenue)' : '')));
-    var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
-    inp.value = (SETTINGS.targets && typeof SETTINGS.targets[k] === 'number') ? SETTINGS.targets[k] : '';
-    inp.placeholder = (mdef.goodDir === 'down' ? 'alert if above' : 'alert if below');
-    inp.onchange = function () {
-      if (!SETTINGS.targets) SETTINGS.targets = {};
-      var val = parseFloat(inp.value);
-      if (isFinite(val)) SETTINGS.targets[k] = val; else delete SETTINGS.targets[k];
-      saveSettings(); render();
-    };
-    cell.appendChild(inp);
-    var unit = mdef.dual ? 'percent of revenue' : (mdef.fmt === 'int' ? 'count' : KIT_CONFIG.currency);
-    cell.appendChild(el('div', 'set-note', (mdef.goodDir === 'down' ? 'Alerts when above this ' : 'Alerts when below this ') + unit + '.'));
-    tgrid.appendChild(cell);
-  });
-  root.appendChild(tgrid);
+  };
+}
 
-  if (!isManual()) {
-    root.appendChild(el('div', 'section-sub', 'Session'));
-    var logoutBtn = el('button', 'btn-plain', 'Log out');
-    logoutBtn.onclick = function () { fetch('/api/logout', { method: 'POST' }).then(function () { location.reload(); }); };
-    root.appendChild(logoutBtn);
+/* ---------------- OAuth begin + callback (generic, per-source) ---------- */
+
+function randomState() {
+  const a = new Uint8Array(16);
+  crypto.getRandomValues(a);
+  return Array.from(a).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ---------------- Owner login: one passcode + a signed session cookie ----
+   The owner sets the dashboard password on the dashboard's own FIRST-RUN screen;
+   it is stored PBKDF2-hashed in KV (sys:passcode_hash) - no Cloudflare Variables
+   step. (env.DASHBOARD_PASSCODE still works as an override, e.g. when the
+   one-click button collected it in its wizard.) The session-signing key is
+   generated and stored in KV on first run (env.SESSION_SECRET overrides if set).
+   Until a password exists the dashboard shows the SET-PASSWORD screen, never an
+   open page; once set, the page and every data route require a valid session. */
+const SESSION_TTL = 60 * 60 * 24 * 30;
+/* A password exists if the owner set one (first-run -> KV) or the deploy provided
+   one as an env override (the one-click button's wizard). */
+async function passcodeSet(env) {
+  if (env.DASHBOARD_PASSCODE) return true;
+  if (env.TOKENS) return !!(await env.TOKENS.get('sys:passcode_hash'));
+  return false;
+}
+/* PBKDF2-SHA256 of a passcode with a hex salt -> base64url (at-rest hashing). */
+async function pbkdf2B64(passcode, saltHex) {
+  const salt = Uint8Array.from((saltHex.match(/.{2}/g) || []).map((h) => parseInt(h, 16)));
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(passcode), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' }, km, 256);
+  return b64url(bits);
+}
+let _sessionKeyCache = null;
+async function getSessionKey(env) {
+  if (env.SESSION_SECRET) return env.SESSION_SECRET;
+  if (_sessionKeyCache) return _sessionKeyCache;
+  if (env.TOKENS) {
+    let k = await env.TOKENS.get('sys:session_secret');
+    if (!k) {
+      const b = new Uint8Array(32);
+      crypto.getRandomValues(b);
+      k = Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join('');
+      await env.TOKENS.put('sys:session_secret', k);
+    }
+    _sessionKeyCache = k;
+    return k;
+  }
+  return env.DASHBOARD_PASSCODE || 'unset';
+}
+function b64url(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function hmacB64(secret, msg) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64url(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg)));
+}
+async function shaB64(s) {
+  return b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+}
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+async function makeSession(env) {
+  const payload = 'v1.' + Math.floor(Date.now() / 1000);
+  return payload + '.' + await hmacB64(await getSessionKey(env), payload);
+}
+async function validSession(env, token) {
+  if (!token) return false;
+  const i = token.lastIndexOf('.');
+  if (i < 0) return false;
+  const payload = token.slice(0, i);
+  if (!timingSafeEqual(token.slice(i + 1), await hmacB64(await getSessionKey(env), payload))) return false;
+  const issued = parseInt(payload.split('.')[1], 10);
+  return !!issued && (Date.now() / 1000 - issued) <= SESSION_TTL;
+}
+function getCookie(request, name) {
+  const m = (request.headers.get('Cookie') || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+async function isLoggedIn(request, env) {
+  return await validSession(env, getCookie(request, 'vd_session'));
+}
+function htmlResponse(html) {
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' } });
+}
+async function apiLogin(env, request) {
+  if (!(await passcodeSet(env))) return json({ ok: false, error: 'no_passcode' }, 400);
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const passcode = String((body && body.passcode) || '');
+  let okPass = false;
+  if (env.DASHBOARD_PASSCODE) {
+    okPass = timingSafeEqual(await shaB64(passcode), await shaB64(env.DASHBOARD_PASSCODE));
+  } else if (env.TOKENS) {
+    const stored = await env.TOKENS.get('sys:passcode_hash');
+    if (stored) {
+      const dot = stored.indexOf('.');
+      okPass = timingSafeEqual(await pbkdf2B64(passcode, stored.slice(0, dot)), stored.slice(dot + 1));
+    }
+  }
+  if (!okPass) return json({ ok: false }, 401);
+  const token = await makeSession(env);
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=' + SESSION_TTL } });
+}
+
+/* First-run (or authenticated change): set the dashboard password. Allowed only
+   when none is set yet, OR when the caller already holds a valid session - so a
+   stranger can never overwrite an existing password. Stored PBKDF2-hashed in KV. */
+async function apiSetup(env, request) {
+  if (!env.TOKENS) return json({ ok: false, error: 'no_store' }, 400);
+  if ((await passcodeSet(env)) && !(await isLoggedIn(request, env))) return json({ ok: false, error: 'exists' }, 403);
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const passcode = String((body && body.passcode) || '');
+  if (passcode.length < 6) return json({ ok: false, error: 'too_short' }, 400);
+  const saltB = new Uint8Array(16); crypto.getRandomValues(saltB);
+  const saltHex = Array.from(saltB).map((x) => x.toString(16).padStart(2, '0')).join('');
+  await env.TOKENS.put('sys:passcode_hash', saltHex + '.' + (await pbkdf2B64(passcode, saltHex)));
+  const token = await makeSession(env);
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=' + SESSION_TTL } });
+}
+function apiLogout() {
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0' } });
+}
+function loginPage() {
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in</title>'
+    + '<link href="https://fonts.googleapis.com/css2?family=Khand:wght@600;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">'
+    + '<style>'
+    + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF7F2;font-family:"DM Sans",sans-serif;color:#2A2420}'
+    + '.box{width:90%;max-width:360px;background:#fffdf9;border:1px solid rgba(13,13,13,0.08);border-radius:16px;padding:2rem 1.75rem}'
+    + 'h1{font-family:"Khand",sans-serif;font-size:30px;font-weight:700;color:#0D0D0D;margin:0 0 0.4rem}'
+    + 'p{font-size:14px;color:#8C8075;margin:0 0 1.25rem;line-height:1.6}'
+    + 'input{width:100%;font-family:"DM Sans",sans-serif;font-size:15px;padding:12px 14px;border:1px solid rgba(13,13,13,0.14);border-radius:10px;background:#fff;color:#2A2420;box-sizing:border-box}'
+    + 'input:focus{outline:none;border-color:#F2A900}'
+    + 'button{width:100%;margin-top:12px;padding:13px;font-size:15px;font-weight:500;font-family:"DM Sans",sans-serif;color:#0D0D0D;background:#F2A900;border:none;border-radius:10px;cursor:pointer}'
+    + '.err{color:#C04B28;font-size:13px;margin-top:10px;min-height:16px}'
+    + '</style></head><body>'
+    + '<div class="box"><h1>Your dashboard</h1><p>Enter the password for this dashboard.</p>'
+    + '<form id="f"><input id="p" type="password" autocomplete="current-password" placeholder="Password" autofocus>'
+    + '<button type="submit">Sign in</button><div class="err" id="e"></div></form></div>'
+    + '<script>'
+    + 'var f=document.getElementById("f");'
+    + 'f.onsubmit=function(ev){ev.preventDefault();var e=document.getElementById("e");e.textContent="";'
+    + 'fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({passcode:document.getElementById("p").value})})'
+    + '.then(function(r){if(r.ok){location.reload();}else{e.textContent="That password did not match. Try again.";}})'
+    + '.catch(function(){e.textContent="Something went wrong. Try again.";});};'
+    + '</script></body></html>';
+}
+
+function setupPage() {
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set your password</title>'
+    + '<link href="https://fonts.googleapis.com/css2?family=Khand:wght@600;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">'
+    + '<style>'
+    + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF7F2;font-family:"DM Sans",sans-serif;color:#2A2420}'
+    + '.box{width:90%;max-width:360px;background:#fffdf9;border:1px solid rgba(13,13,13,0.08);border-radius:16px;padding:2rem 1.75rem}'
+    + 'h1{font-family:"Khand",sans-serif;font-size:30px;font-weight:700;color:#0D0D0D;margin:0 0 0.4rem}'
+    + 'p{font-size:14px;color:#8C8075;margin:0 0 1.25rem;line-height:1.6}'
+    + 'input{width:100%;font-family:"DM Sans",sans-serif;font-size:15px;padding:12px 14px;border:1px solid rgba(13,13,13,0.14);border-radius:10px;background:#fff;color:#2A2420;box-sizing:border-box}'
+    + 'input:focus{outline:none;border-color:#F2A900}'
+    + 'button{width:100%;margin-top:12px;padding:13px;font-size:15px;font-weight:500;font-family:"DM Sans",sans-serif;color:#0D0D0D;background:#F2A900;border:none;border-radius:10px;cursor:pointer}'
+    + '.err{color:#C04B28;font-size:13px;margin-top:10px;min-height:16px}'
+    + '</style></head><body>'
+    + '<div class="box"><h1>Set your password</h1><p>Choose a password for your dashboard. You\u2019ll type it each time you open it - pick something only you and your team know, at least 6 characters.</p>'
+    + '<form id="f"><input id="p" type="password" autocomplete="new-password" placeholder="New password" autofocus>'
+    + '<input id="p2" type="password" autocomplete="new-password" placeholder="Confirm password" style="margin-top:10px">'
+    + '<button type="submit">Save and open my dashboard</button><div class="err" id="e"></div></form></div>'
+    + '<script>'
+    + 'var f=document.getElementById("f");'
+    + 'f.onsubmit=function(ev){ev.preventDefault();var e=document.getElementById("e");e.textContent="";'
+    + 'var p=document.getElementById("p").value,p2=document.getElementById("p2").value;'
+    + 'if(p.length<6){e.textContent="Use at least 6 characters.";return;}'
+    + 'if(p!==p2){e.textContent="The two passwords do not match.";return;}'
+    + 'fetch("/api/setup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({passcode:p})})'
+    + '.then(function(r){if(r.ok){location.reload();}else{e.textContent="Could not save that. Try again.";}})'
+    + '.catch(function(){e.textContent="Something went wrong. Try again.";});};'
+    + '</script></body></html>';
+}
+
+async function authStart(env, source, url) {
+  const adapter = ADAPTERS[source];
+  if (!adapter || adapter.auth !== 'oauth' || !adapter.oauth.authorizeUrl) {
+    return new Response('This connection is not set up for browser authorisation yet.', { status: 404 });
+  }
+  const cfg = adapter.oauth;
+  const state = randomState();
+  await env.TOKENS.put('oauthstate:' + source, state, { expirationTtl: 600 });
+  const redirectUri = url.origin + '/auth/' + source + '/callback';
+  const p = new URLSearchParams({
+    response_type: 'code',
+    client_id: env[cfg.clientIdSecret] || '',
+    redirect_uri: redirectUri,
+    scope: cfg.scopes || '',
+    state
+  });
+  return Response.redirect(cfg.authorizeUrl + '?' + p.toString(), 302);
+}
+
+async function authCallback(env, source, url) {
+  const adapter = ADAPTERS[source];
+  const cfg = (adapter && adapter.oauth) || {};
+  const code = url.searchParams.get('code');
+  const gotState = url.searchParams.get('state');
+  const wantState = await env.TOKENS.get('oauthstate:' + source);
+  if (!code || !gotState || gotState !== wantState) {
+    return new Response('That authorisation didn\u2019t complete cleanly. Go back to the dashboard and click Reconnect to try again.', { status: 400 });
+  }
+  await env.TOKENS.delete('oauthstate:' + source);
+  const redirectUri = url.origin + '/auth/' + source + '/callback';
+  const res = await fetch(cfg.tokenUrl, tokenRequestInit(cfg, {
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri
+  }, env));
+  if (!res.ok) {
+    return new Response('The connection couldn\u2019t be finished (the tool said no: ' + res.status + '). Your AI will check the app settings - the usual cause is a redirect address that doesn\u2019t match exactly.', { status: 502 });
+  }
+  const t = await res.json();
+  await saveTokens(env, source, {
+    access_token: t.access_token,
+    refresh_token: t.refresh_token || null,
+    token_type: t.token_type || 'Bearer',
+    expires_at: Date.now() + ((t.expires_in || 1800) * 1000),
+    obtained_at: new Date().toISOString()
+  });
+  /* After token storage, adapters' status() should resolve org name etc. */
+  return Response.redirect(url.origin + '/', 302);
+}
+
+/* ---------------- No-API ingest: KV day-store + endpoint ---------------- */
+
+/* Day rows live at data:<source>:<YYYY-MM-DD> as JSON objects of numeric
+   fields. Same-day re-uploads/webhook-increments overwrite/adjust in place
+   (idempotent; re-ingesting a corrected export is safe and expected).
+
+   PERFORMANCE: the dashboard requests a 24-month trend on every page load
+   (see dashboard.html's trendStart calc). Summing 24 months of individual
+   day rows on every load - up to ~730 sequential KV reads - was the actual
+   cause of "the dashboard is so slow", especially on Connections/first load.
+   Fix: keep a running monthly aggregate at monthagg:<source>:<YYYY-MM>,
+   updated by the same small delta whenever a day's numbers change (whether
+   from a whole-day CSV overwrite or a single webhook increment). A 24-month
+   trend then costs 24 fast KV reads instead of hundreds. */
+
+async function getMonthAgg(env, source, monthKey) {
+  const raw = await env.TOKENS.get('monthagg:' + source + ':' + monthKey);
+  return raw ? JSON.parse(raw) : null;
+}
+async function putMonthAgg(env, source, monthKey, agg) {
+  await env.TOKENS.put('monthagg:' + source + ':' + monthKey, JSON.stringify(agg));
+}
+/* Applies a small delta to a month's running aggregate. isNewDay marks the
+   first time this date has ever had data, so the month's "has any data"
+   flag (_days) is only incremented once per date, not once per write. */
+async function adjustMonthAgg(env, source, date, isNewDay, fieldDeltas) {
+  const monthKey = date.slice(0, 7);
+  const agg = (await getMonthAgg(env, source, monthKey)) || { _days: 0 };
+  if (isNewDay) agg._days = (agg._days || 0) + 1;
+  for (const [k, v] of Object.entries(fieldDeltas)) {
+    if (typeof v === 'number' && isFinite(v) && v !== 0) agg[k] = (agg[k] || 0) + v;
+  }
+  await putMonthAgg(env, source, monthKey, agg);
+}
+
+/* One-time (or safe-to-rerun) repair: rebuilds EVERY month's aggregate from
+   the actual stored daily rows, by listing all data:<source>:* keys. Needed
+   because monthagg only started being maintained going forward from when it
+   was introduced - any day rows written before that deploy have no matching
+   aggregate contribution until this runs. Safe to run anytime (e.g. after a
+   bulk CSV upload) since it always recomputes from the real daily data
+   rather than trusting whatever aggregate currently exists. */
+async function backfillMonthAgg(env, source) {
+  const prefix = 'data:' + source + ':';
+  const totals = {}; /* monthKey -> { _days, ...fields } */
+  let cursor;
+  do {
+    const listOpts = cursor ? { prefix, cursor } : { prefix };
+    const page = await env.TOKENS.list(listOpts);
+    const validKeys = page.keys
+      .map((k) => ({ name: k.name, date: k.name.slice(prefix.length) }))
+      .filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k.date));
+    /* Read every day's value in this page IN PARALLEL - reading them one at
+       a time here was the actual reason the repair button used to hang. */
+    const raws = await Promise.all(validKeys.map((k) => env.TOKENS.get(k.name)));
+    validKeys.forEach((k, i) => {
+      const raw = raws[i];
+      if (!raw) return;
+      let row;
+      try { row = JSON.parse(raw); } catch (e) { return; }
+      const monthKey = k.date.slice(0, 7);
+      if (!totals[monthKey]) totals[monthKey] = { _days: 0 };
+      totals[monthKey]._days++;
+      for (const [f, v] of Object.entries(row)) {
+        if (typeof v === 'number' && isFinite(v)) totals[monthKey][f] = (totals[monthKey][f] || 0) + v;
+      }
+    });
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  const months = Object.keys(totals);
+  await Promise.all(months.map((mo) => putMonthAgg(env, source, mo, totals[mo])));
+  return { source, monthsRebuilt: months.length, months };
+}
+
+
+/* Whole-day overwrite (CSV upload path). Computes the delta against
+   whatever was there before so the month aggregate stays correct even when
+   a day is re-uploaded with corrected numbers. */
+async function saveIngestedRows(env, source, rows) {
+  if (!Array.isArray(rows)) return 0;
+  let saved = 0;
+  for (const r of rows) {
+    if (!r || !/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) continue;
+    const clean = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (k !== 'date' && typeof v === 'number' && isFinite(v)) clean[k] = v;
+    }
+    if (Object.keys(clean).length === 0) continue;
+    const key = 'data:' + source + ':' + r.date;
+    const oldRaw = await env.TOKENS.get(key);
+    const oldRow = oldRaw ? JSON.parse(oldRaw) : null;
+    const isNewDay = !oldRow;
+    const deltas = {};
+    for (const f of new Set([...(oldRow ? Object.keys(oldRow) : []), ...Object.keys(clean)])) {
+      const oldV = oldRow && typeof oldRow[f] === 'number' ? oldRow[f] : 0;
+      const newV = typeof clean[f] === 'number' ? clean[f] : 0;
+      if (newV !== oldV) deltas[f] = newV - oldV;
+    }
+    await env.TOKENS.put(key, JSON.stringify(clean));
+    await adjustMonthAgg(env, source, r.date, isNewDay, deltas);
+    saved++;
+  }
+  return saved;
+}
+
+/* Single-field increment (webhook path). */
+async function incrementIngestedField(env, source, date, field, delta) {
+  const key = 'data:' + source + ':' + date;
+  const raw = await env.TOKENS.get(key);
+  const isNewDay = !raw;
+  const row = raw ? JSON.parse(raw) : {};
+  row[field] = (typeof row[field] === 'number' ? row[field] : 0) + delta;
+  await env.TOKENS.put(key, JSON.stringify(row));
+  await adjustMonthAgg(env, source, date, isNewDay, { [field]: delta });
+}
+
+function eachDate(from, to, cap) {
+  const out = [];
+  const d = new Date(from + 'T12:00:00Z');
+  const end = new Date(to + 'T12:00:00Z');
+  while (d.getTime() <= end.getTime() && out.length < (cap || 400)) {
+    out.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/* Sum stored day rows across a range. Used for single-period queries (This
+   week, Last month, etc - typically <=31 days), so reads all days in the
+   range IN PARALLEL rather than one at a time. Returns
+   { sums, daysWithData, lastDate }. */
+async function readIngested(env, source, from, to) {
+  const dates = eachDate(from, to);
+  const raws = await Promise.all(dates.map((date) => env.TOKENS.get('data:' + source + ':' + date)));
+  const sums = {};
+  let daysWithData = 0, lastDate = null;
+  dates.forEach((date, i) => {
+    const raw = raws[i];
+    if (!raw) return;
+    daysWithData++; lastDate = date;
+    try {
+      const row = JSON.parse(raw);
+      for (const [k, v] of Object.entries(row)) {
+        if (typeof v === 'number' && isFinite(v)) sums[k] = (sums[k] || 0) + v;
+      }
+    } catch (e) { /* skip bad row */ }
+  });
+  return { sums, daysWithData, lastDate };
+}
+
+/* Trend queries (up to 24 months, see dashboard.html): reads the monthly
+   aggregate directly - one fast KV read per month - instead of re-summing
+   every day in every month on every dashboard load. */
+async function monthlyIngested(env, source, fromMonth, toMonth) {
+  const months = monthList(fromMonth, toMonth);
+  const aggs = await Promise.all(months.map((mo) => getMonthAgg(env, source, mo)));
+  const byMonth = aggs.map((agg) => {
+    if (!agg || !agg._days) return null;
+    const { _days, ...rest } = agg;
+    return rest;
+  });
+  return { months, byMonth };
+}
+
+
+/* POST /api/ingest?source=pos|accounting|rostering
+   Authorization: Bearer <INGEST_TOKEN>. Body: the exported file's text.
+   The source's adapter.parseExport() turns it into day rows. */
+async function apiIngest(env, request, url) {
+  const source = url.searchParams.get('source');
+  if (!['accounting', 'pos', 'rostering'].includes(source)) return json({ error: 'unknown source' }, 400);
+  const auth = request.headers.get('Authorization') || '';
+  if (!env.INGEST_TOKEN || auth !== 'Bearer ' + env.INGEST_TOKEN) {
+    return json({ error: 'not authorised', plain: 'That upload code didn\u2019t match. Check it with your AI and try again.' }, 401);
+  }
+  const adapter = ADAPTERS[source];
+  if (!adapter || typeof adapter.parseExport !== 'function') {
+    return json({ error: 'no parser', plain: 'This source isn\u2019t set up for file uploads yet. Your AI adds that when this path is chosen.' }, 501);
+  }
+  const text = await request.text();
+  if (text.length > 2000000) return json({ error: 'too big', plain: 'That file is too large. Export a shorter date range and try again.' }, 413);
+  try {
+    const rows = await adapter.parseExport(env, makeHelpers(env, source), {
+      text, contentType: request.headers.get('Content-Type') || ''
+    });
+    const saved = await saveIngestedRows(env, source, rows);
+    if (!saved) return json({ error: 'nothing parsed', plain: 'No usable rows were found in that file. Check it\u2019s the right report, or show it to your AI.' }, 422);
+    await noteSync(env, source);
+    return json({ ok: true, days: saved });
+  } catch (e) {
+    return json({ error: 'parse failed', plain: 'That file couldn\u2019t be read. Check it\u2019s the right report, or show it to your AI.' }, 422);
   }
 }
 
-/* ============================================================
-   Boot
-============================================================ */
-state.period = SETTINGS.defaultPeriod || 'thisWeek';
-render();
-fetchData();
-</script>
-</body>
-</html>
-<!-- EOF dashboard.html -->
+/* ---------------- Metrics API ---------------- */
+
+function parseRange(s) {
+  if (!s) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$/.exec(s);
+  return m ? { from: m[1], to: m[2] } : null;
+}
+function parseMonthRange(s) {
+  if (!s) return null;
+  const m = /^(\d{4}-\d{2})_(\d{4}-\d{2})$/.exec(s);
+  return m ? { fromMonth: m[1], toMonth: m[2] } : null;
+}
+
+async function sourceStatus(env, source) {
+  const adapter = ADAPTERS[source];
+  if (!adapter || !adapter.configured) return { configured: false };
+  try {
+    const h = makeHelpers(env, source);
+    const st = await adapter.status(env, h);
+    return {
+      configured: true,
+      ingest: typeof adapter.parseExport === 'function',
+      connected: !!(st && st.connected),
+      org: (st && st.org) || null,
+      sandbox: !!(st && st.sandbox),
+      lastSync: (st && st.lastSync) || (await lastSync(env, source)) || null,
+      error: null
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      ingest: typeof adapter.parseExport === 'function',
+      connected: false,
+      org: null,
+      sandbox: false,
+      lastSync: (await lastSync(env, source)) || null,
+      error: { code: err.status || 0, plain: plainError(err.status || 500) }
+    };
+  }
+}
+
+/* Fixed reconciliation offset: the owner's bank deposits land in Xero one
+   trading day after the OOLIO sale (e.g. a Monday's trading shows as a
+   Tuesday deposit). So for the SAME trading week, Xero (accounting) is
+   queried on the dashboard's own date range (owner sets week start to
+   Tuesday so that range is Tue-Mon), while OOLIO (pos) is queried one day
+   earlier so it always covers the actual Mon-Sun trading days. This is a
+   fixed, hand-confirmed offset (not a setting) - see kpi-spec.md rule 4 on
+   why every figure must stay on its correct trading-day basis. */
+const POS_TRADING_DAY_OFFSET = -1;
+
+function shiftIsoDate(s, days) {
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+async function fetchSlot(env, q) {
+  /* One period slot: pull each configured source; null where unavailable. */
+  const out = {};
+  for (const source of ['accounting', 'pos', 'rostering']) {
+    const adapter = ADAPTERS[source];
+    if (!adapter || !adapter.configured) { out[source] = null; continue; }
+    try {
+      const h = makeHelpers(env, source);
+      let sourceQ = q;
+      if (source === 'pos' && q.from && q.to) {
+        sourceQ = {
+          ...q,
+          from: shiftIsoDate(q.from, POS_TRADING_DAY_OFFSET),
+          to: shiftIsoDate(q.to, POS_TRADING_DAY_OFFSET)
+        };
+      }
+      out[source] = await adapter.fetchRange(env, h, sourceQ);
+      await noteSync(env, source);
+    } catch (err) {
+      out[source] = null; /* per-source failure never breaks the whole payload */
+    }
+  }
+  return out;
+}
+
+const METRICS_CACHE_TTL = 120; /* seconds: brief cache for live provider data */
+
+async function apiMetrics(env, url) {
+  const cur = parseRange(url.searchParams.get('cur'));
+  if (!cur) return json({ error: 'bad cur range' }, 400);
+  const prev = parseRange(url.searchParams.get('prev'));
+  const yoy = parseRange(url.searchParams.get('yoy'));
+  const trend = parseMonthRange(url.searchParams.get('trend'));
+  const tz = url.searchParams.get('tz') || 'Australia/Sydney';
+  const rollover = Math.max(0, Math.min(6, parseInt(url.searchParams.get('rollover') || '0', 10) || 0));
+
+  const base = { tz, rollover };
+  const [sAcc, sPos, sRos] = await Promise.all([
+    sourceStatus(env, 'accounting'),
+    sourceStatus(env, 'pos'),
+    sourceStatus(env, 'rostering')
+  ]);
+
+  /* The provider calls (periods + trend) are the expensive part and the only
+     thing that brushes provider rate limits on quick reopens/refreshes. Cache
+     them briefly in KV, keyed by the requested ranges; source status stays live.
+     generatedAt is stored with the data so the dashboard's "last synced" reflects
+     the real fetch time even when served from cache. ?refresh=1 forces fresh. */
+  const cacheKey = 'metricscache:' + [
+    url.searchParams.get('cur') || '', url.searchParams.get('prev') || '',
+    url.searchParams.get('yoy') || '', url.searchParams.get('trend') || '',
+    tz, rollover
+  ].join('|');
+  const force = url.searchParams.get('refresh') === '1';
+  let data = null;
+  if (!force && env.TOKENS) {
+    const cached = await env.TOKENS.get(cacheKey);
+    if (cached) { try { data = JSON.parse(cached); } catch (e) { data = null; } }
+  }
+  if (!data) {
+    const periods = {};
+    /* These three were previously awaited one after another - each one doing
+       a live Xero call plus KV reads - which serialised their latency. They
+       don't depend on each other, so run them concurrently. */
+    const [curOut, prevOut, yoyOut] = await Promise.all([
+      fetchSlot(env, { ...base, ...cur }),
+      prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
+      yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
+    ]);
+    periods.cur = curOut;
+    periods.prev = prevOut;
+    periods.yoy = yoyOut;
+
+    let trendOut = null;
+    if (trend) {
+      trendOut = { months: monthList(trend.fromMonth, trend.toMonth) };
+      for (const source of ['accounting', 'pos']) {
+        const adapter = ADAPTERS[source];
+        if (!adapter || !adapter.configured) { trendOut[source] = null; continue; }
+        try {
+          const h = makeHelpers(env, source);
+          const series = await adapter.fetchMonthly(env, h, { ...base, ...trend });
+          trendOut[source] = alignSeries(trendOut.months, series);
+        } catch (err) { trendOut[source] = null; }
+      }
+    }
+    data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
+    if (env.TOKENS) {
+      try { await env.TOKENS.put(cacheKey, JSON.stringify(data), { expirationTtl: METRICS_CACHE_TTL }); } catch (e) {}
+    }
+  }
+
+  return json({
+    generatedAt: data.generatedAt,
+    protected: true,
+    sources: { accounting: sAcc, pos: sPos, rostering: sRos },
+    periods: data.periods,
+    trend: data.trend
+  });
+}
+
+function monthList(fromMonth, toMonth) {
+  const out = [];
+  let [y, m] = fromMonth.split('-').map(Number);
+  const [ey, em] = toMonth.split('-').map(Number);
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(y + '-' + String(m).padStart(2, '0'));
+    m++; if (m > 12) { m = 1; y++; }
+    if (out.length > 60) break;
+  }
+  return out;
+}
+/* Adapters return {months:[...], <field>:[...]} - align onto the requested grid. */
+function alignSeries(months, series) {
+  if (!series || !Array.isArray(series.months)) return null;
+  const idx = {};
+  series.months.forEach((mo, i) => { idx[mo] = i; });
+  const out = {};
+  Object.keys(series).forEach((k) => {
+    if (k === 'months') return;
+    out[k] = months.map((mo) => (mo in idx && series[k] ? (series[k][idx[mo]] ?? null) : null));
+  });
+  return out;
+}
+
+/* ---------------- Router ---------------- */
+
+function json(obj, status) {
+  return new Response(JSON.stringify(obj), {
+    status: status || 200,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+  });
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    if (path === '/favicon.ico') return new Response(null, { status: 204 });
+    if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
+    if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
+    if (path === '/api/logout' && request.method === 'POST') return apiLogout();
+    if (path === '/api/ingest' && request.method === 'POST') return apiIngest(env, request, url);
+    if (path === '/api/webhook/oolio' && request.method === 'POST') return apiWebhookOolio(env, request);
+
+    const loggedIn = await isLoggedIn(request, env);
+
+    if (path === '/' || path === '/index.html') {
+      if (loggedIn) return htmlResponse(dashboardHtml);
+      return htmlResponse((await passcodeSet(env)) ? loginPage() : setupPage());
+    }
+    if (path === '/api/metrics' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiMetrics(env, url);
+    }
+    const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
+    if (authRoute && request.method === 'GET') {
+      if (!loggedIn) return Response.redirect(url.origin + '/', 302);
+      return authRoute[2] === 'start' ? authStart(env, authRoute[1], url) : authCallback(env, authRoute[1], url);
+    }
+    if (path === '/api/disconnect' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const source = url.searchParams.get('source');
+      if (['accounting', 'pos', 'rostering'].includes(source)) {
+        await clearTokens(env, source);
+        return json({ ok: true });
+      }
+      return json({ error: 'unknown source' }, 400);
+    }
+    if (path === '/api/backfill-monthagg' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const source = url.searchParams.get('source') || 'pos';
+      if (!['accounting', 'pos', 'rostering'].includes(source)) return json({ error: 'unknown source' }, 400);
+      try {
+        const result = await backfillMonthAgg(env, source);
+        return json({ ok: true, ...result });
+      } catch (e) {
+        /* Surface the real reason instead of letting an uncaught exception
+           turn into a generic Cloudflare error page that breaks the
+           frontend's JSON parsing and shows a useless "check your
+           connection" message. */
+        return json({ ok: false, error: 'backfill failed', message: String((e && e.message) || e) }, 500);
+      }
+    }
+    return new Response('Not found', { status: 404 });
+  },
+
+  /* Cron rung: uncomment [triggers] in wrangler.toml and give any adapter a
+     scheduledPull() to fetch its tool's own export on a schedule. */
+  async scheduled(event, env, ctx) {
+    for (const source of ['accounting', 'pos', 'rostering']) {
+      const a = ADAPTERS[source];
+      if (a && typeof a.scheduledPull === 'function') {
+        try {
+          await a.scheduledPull(env, makeHelpers(env, source));
+          await noteSync(env, source);
+        } catch (e) {
+          console.log('scheduledPull failed for ' + source + ': ' + (e && e.message));
+        }
+      }
+    }
+  },
+
+  /* Email rung (Path B): the tool's own report scheduler emails its export;
+     the owner's domain on their Cloudflare routes that address here (Email
+     Routing -> this Worker). Complete when this rung is chosen:
+       1. parse the message with postal-mime (add the dependency)
+       2. find the CSV/report attachment, work out which source sent it
+          (sender address or subject)
+       3. reuse adapter.parseExport + saveIngestedRows + noteSync, exactly
+          like /api/ingest
+     Until then this logs and discards. */
+  async email(message, env, ctx) {
+    console.log('email received from ' + message.from + '; email ingest not wired yet');
+  }
+};
+// EOF worker.js
