@@ -1291,10 +1291,10 @@ function repairPanel(s) {
           msg.textContent = 'Done - rebuilt ' + out.j.monthsRebuilt + ' month' + (out.j.monthsRebuilt === 1 ? '' : 's') + ' of totals. Refreshing…';
           fetchData(true);
         } else {
-          msg.textContent = 'That didn’t work. Try again, or show your AI.';
+          msg.textContent = (out.j && out.j.message) ? ('Failed: ' + out.j.message) : 'That didn’t work. Try again, or show your AI.';
         }
       })
-      .catch(function () { btn.disabled = false; msg.textContent = 'That didn’t work. Check your connection and try again.'; });
+      .catch(function (err) { btn.disabled = false; msg.textContent = 'That didn’t work: ' + (err && err.message ? err.message : 'check your connection and try again.'); });
   };
   row.appendChild(btn);
   wrap.appendChild(row);
