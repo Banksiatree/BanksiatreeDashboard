@@ -1264,9 +1264,42 @@ function renderConnections(root) {
     card.appendChild(cb);
 
     if (st.ingest) card.appendChild(uploadPanel(s));
+    if (st.ingest) card.appendChild(repairPanel(s));
 
     root.appendChild(card);
   });
+}
+
+/* ---------- One-off repair: rebuild monthly totals from the real daily data ---------- */
+function repairPanel(s) {
+  var wrap = el('div', 'conn-org');
+  wrap.style.marginTop = '0.6rem';
+  wrap.innerHTML = '<b>Fixing wrong monthly/trend numbers?</b> This rebuilds the monthly totals for '
+    + esc(s.name) + ' from your actual day-by-day records - safe to run anytime, it never changes or loses data, only recalculates.';
+  var row = el('div', 'conn-actions');
+  var btn = el('button', 'btn-small', 'Repair transaction history');
+  var msg = el('div', 'conn-line');
+  msg.style.marginTop = '0.4rem';
+  btn.onclick = function () {
+    btn.disabled = true;
+    msg.textContent = 'Rebuilding…';
+    fetch('/api/backfill-monthagg?source=' + s.key, { method: 'POST' })
+      .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, j: j }; }); })
+      .then(function (out) {
+        btn.disabled = false;
+        if (out.ok && out.j.ok) {
+          msg.textContent = 'Done - rebuilt ' + out.j.monthsRebuilt + ' month' + (out.j.monthsRebuilt === 1 ? '' : 's') + ' of totals. Refreshing…';
+          fetchData(true);
+        } else {
+          msg.textContent = 'That didn’t work. Try again, or show your AI.';
+        }
+      })
+      .catch(function () { btn.disabled = false; msg.textContent = 'That didn’t work. Check your connection and try again.'; });
+  };
+  row.appendChild(btn);
+  wrap.appendChild(row);
+  wrap.appendChild(msg);
+  return wrap;
 }
 
 /* ---------- File upload (the guided-upload rung) ---------- */
@@ -1318,7 +1351,7 @@ function uploadPanel(s) {
           if (out.ok && out.j.ok) {
             try { localStorage.setItem('vd_upcode', useCode); } catch (e) {}
             msg.textContent = 'Done: ' + out.j.days + ' day' + (out.j.days === 1 ? '' : 's') + ' of data added. Refreshing…';
-            fetchData(true);
+            fetchData();
           } else {
             msg.textContent = (out.j && out.j.plain) || 'That didn’t work. Try again, or show your AI.';
           }
