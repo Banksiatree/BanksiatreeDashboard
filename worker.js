@@ -886,20 +886,24 @@ async function backfillMonthAgg(env, source) {
   let cursor;
   do {
     const page = await env.TOKENS.list({ prefix, cursor });
-    for (const k of page.keys) {
-      const date = k.name.slice(prefix.length);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-      const raw = await env.TOKENS.get(k.name);
-      if (!raw) continue;
+    const validKeys = page.keys
+      .map((k) => ({ name: k.name, date: k.name.slice(prefix.length) }))
+      .filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k.date));
+    /* Read every day's value in this page IN PARALLEL - reading them one at
+       a time here was the actual reason the repair button used to hang. */
+    const raws = await Promise.all(validKeys.map((k) => env.TOKENS.get(k.name)));
+    validKeys.forEach((k, i) => {
+      const raw = raws[i];
+      if (!raw) return;
       let row;
-      try { row = JSON.parse(raw); } catch (e) { continue; }
-      const monthKey = date.slice(0, 7);
+      try { row = JSON.parse(raw); } catch (e) { return; }
+      const monthKey = k.date.slice(0, 7);
       if (!totals[monthKey]) totals[monthKey] = { _days: 0 };
       totals[monthKey]._days++;
       for (const [f, v] of Object.entries(row)) {
         if (typeof v === 'number' && isFinite(v)) totals[monthKey][f] = (totals[monthKey][f] || 0) + v;
       }
-    }
+    });
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
   const months = Object.keys(totals);
