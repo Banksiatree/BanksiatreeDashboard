@@ -113,12 +113,17 @@ const ADAPTERS = {
       const months = monthList(q.fromMonth, q.toMonth);
       const out = { months, revenue: [], cogs: [], wagesSuper: [], overheads: [] };
       /* One P&L call per month, in parallel, to avoid the 12-period cap and
-         ordering ambiguity of the multi-period report. */
+         ordering ambiguity of the multi-period report. Shifted forward by
+         the deposit lag (see ACCOUNTING_DEPOSIT_LAG_DAYS below) so e.g.
+         "August" correctly captures deposits for Aug1-Aug31 trading (which
+         land Aug2-Sep1), not the raw calendar-month deposit dates, which
+         would misattribute the month's first day to July and lose its last
+         day to September. */
       const results = await Promise.all(months.map(async (mo) => {
         const [y, m] = mo.split('-').map(Number);
-        const from = mo + '-01';
+        const from = shiftIsoDate(mo + '-01', ACCOUNTING_DEPOSIT_LAG_DAYS);
         const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-        const to = mo + '-' + String(lastDay).padStart(2, '0');
+        const to = shiftIsoDate(mo + '-' + String(lastDay).padStart(2, '0'), ACCOUNTING_DEPOSIT_LAG_DAYS);
         try {
           const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
           const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
@@ -411,8 +416,9 @@ async function webhookAlreadySeen(env, id) {
    intentionally ignored (per kpi-spec.md: refunds never reduce the count),
    and any other/unknown type is ignored too. Uses data.createdAt (order
    creation time) for the trading date, matching how the CSV export's
-   Date/Time column was interpreted; the existing POS_TRADING_DAY_OFFSET in
-   fetchSlot still applies on read, so no adjustment is needed here. */
+   Date/Time column was interpreted; pos data is stored and read on the true
+   trading date with no shift (see ACCOUNTING_DEPOSIT_LAG_DAYS in fetchSlot -
+   only Xero's query gets shifted, since only Xero has a deposit lag). */
 async function processOolioWebhookEvent(env, evt) {
   if (!evt || evt.type !== 'order.complete' || !evt.data) return;
   const createdAt = evt.data.createdAt;
@@ -1073,15 +1079,22 @@ async function sourceStatus(env, source) {
   }
 }
 
-/* Fixed reconciliation offset: the owner's bank deposits land in Xero one
-   trading day after the OOLIO sale (e.g. a Monday's trading shows as a
-   Tuesday deposit). So for the SAME trading week, Xero (accounting) is
-   queried on the dashboard's own date range (owner sets week start to
-   Tuesday so that range is Tue-Mon), while OOLIO (pos) is queried one day
-   earlier so it always covers the actual Mon-Sun trading days. This is a
-   fixed, hand-confirmed offset (not a setting) - see kpi-spec.md rule 4 on
-   why every figure must stay on its correct trading-day basis. */
-const POS_TRADING_DAY_OFFSET = -1;
+/* Reconciliation offset: Xero's bank deposits land ONE trading day after the
+   real OOLIO sale (a Monday's trading shows as a Tuesday deposit). OOLIO
+   itself has no such lag - it's the point of sale, so it always reflects the
+   true, current trading days with no adjustment needed.
+
+   So: OOLIO/pos is queried on the REAL trading-day range, unshifted, always
+   (this needs the dashboard's "Week starts on" setting to be Monday, the
+   actual trading week - not a workaround Tuesday). Xero/accounting is
+   queried SHIFTED FORWARD by the deposit lag, so its deposit dates line up
+   with the trading days they actually represent. This is symmetric and
+   period-shape-agnostic: it works the same way for weeks, months, and
+   financial years, and for a still-in-progress "this week/month" it
+   naturally tails off at whatever's actually landed in Xero so far, with no
+   need to special-case "is this a partial period". See kpi-spec.md rule 4
+   on keeping every figure on its correct trading-day basis. */
+const ACCOUNTING_DEPOSIT_LAG_DAYS = 1;
 
 function shiftIsoDate(s, days) {
   const [y, m, d] = s.split('-').map(Number);
@@ -1099,13 +1112,14 @@ async function fetchSlot(env, q) {
     try {
       const h = makeHelpers(env, source);
       let sourceQ = q;
-      if (source === 'pos' && q.from && q.to) {
+      if (source === 'accounting' && q.from && q.to) {
         sourceQ = {
           ...q,
-          from: shiftIsoDate(q.from, POS_TRADING_DAY_OFFSET),
-          to: shiftIsoDate(q.to, POS_TRADING_DAY_OFFSET)
+          from: shiftIsoDate(q.from, ACCOUNTING_DEPOSIT_LAG_DAYS),
+          to: shiftIsoDate(q.to, ACCOUNTING_DEPOSIT_LAG_DAYS)
         };
       }
+      /* pos gets q unchanged - it's already the true trading-day range. */
       out[source] = await adapter.fetchRange(env, h, sourceQ);
       await noteSync(env, source);
     } catch (err) {
