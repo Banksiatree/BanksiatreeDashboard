@@ -422,30 +422,45 @@ async function processOolioWebhookEvent(env, evt) {
   await incrementIngestedField(env, 'pos', date, 'count', 1);
 }
 
-/* POST /api/webhook/oolio - public (no dashboard session), authenticated by
-   the Svix signature instead. Must ack quickly (OOLIO/Svix expects a 2xx
-   within ~15s) and be idempotent against retries. */
+/* POST /api/webhook/oolio - public (no dashboard session).
+   OOLIO's support first described Svix-signed delivery (svix-id/timestamp/
+   signature + a whsec_ secret), but when this endpoint was actually
+   configured they confirmed THIS integration sends unsigned - "it doesn't
+   need a signing key, data flows direct". So verification here is
+   opportunistic, not required: if a secret is configured AND the request
+   carries svix headers, the signature is checked and bad ones are rejected;
+   otherwise the payload is trusted and processed as-is (this endpoint's
+   only real protection, absent signing, is that its URL isn't published
+   anywhere public). Idempotency falls back to data.id + data.status (per
+   OOLIO's own suggestion) when there's no svix-id to key off.
+   Must ack quickly (a slow non-2xx risks OOLIO treating it as failed) and
+   be safe against being called more than once for the same event. */
 async function apiWebhookOolio(env, request) {
   const rawBody = await request.text();
   const svixId = request.headers.get('svix-id');
   const svixTimestamp = request.headers.get('svix-timestamp');
   const svixSignature = request.headers.get('svix-signature');
   const secret = env.OOLIO_WEBHOOK_SECRET;
-  if (!secret) return json({ error: 'webhook not configured' }, 501);
-  const ok = await verifyOolioWebhook(secret, svixId, svixTimestamp, rawBody, svixSignature);
-  if (!ok) return json({ error: 'invalid signature' }, 401);
 
-  if (await webhookAlreadySeen(env, svixId)) return json({ ok: true, duplicate: true });
+  if (secret && svixId && svixTimestamp && svixSignature) {
+    const ok = await verifyOolioWebhook(secret, svixId, svixTimestamp, rawBody, svixSignature);
+    if (!ok) return json({ error: 'invalid signature' }, 401);
+  }
 
   let evt;
   try { evt = JSON.parse(rawBody); } catch (e) { return json({ error: 'bad json' }, 400); }
+
+  const dedupeId = svixId || ((evt && evt.data && evt.data.id) ? (evt.data.id + ':' + evt.data.status) : null);
+  if (dedupeId && (await webhookAlreadySeen(env, dedupeId))) return json({ ok: true, duplicate: true });
+
   try {
     await processOolioWebhookEvent(env, evt);
     await noteSync(env, 'pos');
   } catch (e) {
-    /* Already marked "seen" above, so a processing bug here won't cause endless
-       retries to double count - but do surface a 500 so OOLIO's dashboard shows
-       the failed delivery for us to investigate. */
+    /* Already marked "seen" above (when we had a dedupeId), so a processing
+       bug here won't cause endless retries to double count - but do surface
+       a 500 so OOLIO's dashboard shows the failed delivery for us to
+       investigate. */
     return json({ error: 'processing failed' }, 500);
   }
   return json({ ok: true });
@@ -506,6 +521,15 @@ function tokenRequestInit(cfg, params, env) {
   return { method: 'POST', headers: headers, body: body.toString() };
 }
 
+/* Coalesces concurrent refresh attempts for the same source. Xero (and most
+   OAuth providers that rotate refresh tokens) invalidates the old refresh
+   token the instant it's used - so if two callers both see an expiring
+   token and both fire a refresh with the SAME refresh_token, only one can
+   succeed; the other gets rejected and (before this fix) would surface as a
+   broken/incorrect period. This became reachable once apiMetrics started
+   fetching cur/prev/yoy concurrently instead of one-at-a-time. */
+const _refreshInFlight = new Map(); /* source -> Promise<accessToken> */
+
 /* Returns a valid access token for an OAuth source, refreshing (and
    persisting the ROTATED refresh token) when needed. */
 async function getValidAccessToken(env, source) {
@@ -515,27 +539,43 @@ async function getValidAccessToken(env, source) {
   const skewMs = 60 * 1000;
   if (!tokens.expires_at || Date.now() < tokens.expires_at - skewMs) return tokens.access_token;
 
-  /* refresh */
-  const cfg = adapter.oauth || {};
-  if (!tokens.refresh_token || !cfg.tokenUrl) { const e = new Error('cannot refresh'); e.status = 401; throw e; }
-  const res = await fetch(cfg.tokenUrl, tokenRequestInit(cfg, {
-    grant_type: 'refresh_token',
-    refresh_token: tokens.refresh_token
-  }, env));
-  if (!res.ok) {
-    /* refresh failed: force a reconnect rather than silently serving stale data */
-    const e = new Error('refresh failed'); e.status = 401; throw e;
+  if (_refreshInFlight.has(source)) return _refreshInFlight.get(source);
+
+  const doRefresh = (async () => {
+    /* Re-check under the "lock" - another concurrent caller may have already
+       completed the refresh while we were waiting our turn. */
+    const latest = await getTokens(env, source);
+    if (latest && latest.access_token && latest.expires_at && Date.now() < latest.expires_at - skewMs) {
+      return latest.access_token;
+    }
+    const cfg = adapter.oauth || {};
+    if (!latest || !latest.refresh_token || !cfg.tokenUrl) { const e = new Error('cannot refresh'); e.status = 401; throw e; }
+    const res = await fetch(cfg.tokenUrl, tokenRequestInit(cfg, {
+      grant_type: 'refresh_token',
+      refresh_token: latest.refresh_token
+    }, env));
+    if (!res.ok) {
+      /* refresh failed: force a reconnect rather than silently serving stale data */
+      const e = new Error('refresh failed'); e.status = 401; throw e;
+    }
+    const fresh = await res.json();
+    const updated = {
+      ...latest,
+      access_token: fresh.access_token,
+      /* CRITICAL: many providers (Xero!) rotate the refresh token - always keep the new one */
+      refresh_token: fresh.refresh_token || latest.refresh_token,
+      expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000)
+    };
+    await saveTokens(env, source, updated);
+    return updated.access_token;
+  })();
+
+  _refreshInFlight.set(source, doRefresh);
+  try {
+    return await doRefresh;
+  } finally {
+    _refreshInFlight.delete(source);
   }
-  const fresh = await res.json();
-  const updated = {
-    ...tokens,
-    access_token: fresh.access_token,
-    /* CRITICAL: many providers (Xero!) rotate the refresh token - always keep the new one */
-    refresh_token: fresh.refresh_token || tokens.refresh_token,
-    expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000)
-  };
-  await saveTokens(env, source, updated);
-  return updated.access_token;
 }
 
 /* Helpers handed to every adapter call */
@@ -832,6 +872,41 @@ async function adjustMonthAgg(env, source, date, isNewDay, fieldDeltas) {
   }
   await putMonthAgg(env, source, monthKey, agg);
 }
+
+/* One-time (or safe-to-rerun) repair: rebuilds EVERY month's aggregate from
+   the actual stored daily rows, by listing all data:<source>:* keys. Needed
+   because monthagg only started being maintained going forward from when it
+   was introduced - any day rows written before that deploy have no matching
+   aggregate contribution until this runs. Safe to run anytime (e.g. after a
+   bulk CSV upload) since it always recomputes from the real daily data
+   rather than trusting whatever aggregate currently exists. */
+async function backfillMonthAgg(env, source) {
+  const prefix = 'data:' + source + ':';
+  const totals = {}; /* monthKey -> { _days, ...fields } */
+  let cursor;
+  do {
+    const page = await env.TOKENS.list({ prefix, cursor });
+    for (const k of page.keys) {
+      const date = k.name.slice(prefix.length);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      const raw = await env.TOKENS.get(k.name);
+      if (!raw) continue;
+      let row;
+      try { row = JSON.parse(raw); } catch (e) { continue; }
+      const monthKey = date.slice(0, 7);
+      if (!totals[monthKey]) totals[monthKey] = { _days: 0 };
+      totals[monthKey]._days++;
+      for (const [f, v] of Object.entries(row)) {
+        if (typeof v === 'number' && isFinite(v)) totals[monthKey][f] = (totals[monthKey][f] || 0) + v;
+      }
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  const months = Object.keys(totals);
+  await Promise.all(months.map((mo) => putMonthAgg(env, source, mo, totals[mo])));
+  return { source, monthsRebuilt: months.length, months };
+}
+
 
 /* Whole-day overwrite (CSV upload path). Computes the delta against
    whatever was there before so the month aggregate stays correct even when
@@ -1179,6 +1254,13 @@ export default {
         return json({ ok: true });
       }
       return json({ error: 'unknown source' }, 400);
+    }
+    if (path === '/api/backfill-monthagg' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const source = url.searchParams.get('source') || 'pos';
+      if (!['accounting', 'pos', 'rostering'].includes(source)) return json({ error: 'unknown source' }, 400);
+      const result = await backfillMonthAgg(env, source);
+      return json({ ok: true, ...result });
     }
     return new Response('Not found', { status: 404 });
   },
