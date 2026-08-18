@@ -103,32 +103,51 @@ const ADAPTERS = {
     },
     async fetchRange(env, h, q) {
       const tenantId = await xeroTenantId(env, h);
-      const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + q.from + '&toDate=' + q.to;
-      const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-      const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
-      return walkXeroPL(rows, 0);
+      /* Revenue and the rest of the P&L are queried on DIFFERENT windows, per
+         the owner's explicit instruction: Revenue is tracked via Xero's bank
+         feed, which lags a trading day behind, so it's queried Tue-Mon to
+         land on the right deposits. COGS/Wages/Overheads are recorded in
+         Xero on their own accrual dates (bills, payroll), no lag, so they're
+         queried on the true Mon-Sun trading week - the same q.from/q.to
+         OOLIO uses. q.from/q.to here ARE that true Mon-Sun week. */
+      const revenueQ = { from: shiftIsoDate(q.from, 1), to: shiftIsoDate(q.to, 1) };
+      const [revenueResult, expenseResult] = await Promise.all([
+        fetchXeroPL(h, tenantId, revenueQ.from, revenueQ.to),
+        fetchXeroPL(h, tenantId, q.from, q.to)
+      ]);
+      return {
+        revenue: revenueResult.revenue,
+        cogs: expenseResult.cogs,
+        wagesSuper: expenseResult.wagesSuper,
+        overheads: expenseResult.overheads
+      };
     },
     async fetchMonthly(env, h, q) {
       const tenantId = await xeroTenantId(env, h);
       const months = monthList(q.fromMonth, q.toMonth);
       const out = { months, revenue: [], cogs: [], wagesSuper: [], overheads: [] };
-      /* One P&L call per month, in parallel, to avoid the 12-period cap and
-         ordering ambiguity of the multi-period report. Shifted forward by
-         the deposit lag (see ACCOUNTING_DEPOSIT_LAG_DAYS below) so e.g.
-         "August" correctly captures deposits for Aug1-Aug31 trading (which
-         land Aug2-Sep1), not the raw calendar-month deposit dates, which
-         would misattribute the month's first day to July and lose its last
-         day to September. */
+      /* Same Tue-Mon-for-Revenue vs Mon-Sun-for-everything-else split as
+         fetchRange, just per calendar month instead of per week. Two P&L
+         calls per month (revenue window + expense window), all months and
+         both windows fetched in parallel. */
       const results = await Promise.all(months.map(async (mo) => {
         const [y, m] = mo.split('-').map(Number);
-        const from = shiftIsoDate(mo + '-01', ACCOUNTING_DEPOSIT_LAG_DAYS);
+        const monthFrom = mo + '-01';
         const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-        const to = shiftIsoDate(mo + '-' + String(lastDay).padStart(2, '0'), ACCOUNTING_DEPOSIT_LAG_DAYS);
+        const monthTo = mo + '-' + String(lastDay).padStart(2, '0');
+        const revFrom = shiftIsoDate(monthFrom, 1);
+        const revTo = shiftIsoDate(monthTo, 1);
         try {
-          const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
-          const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-          const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
-          return walkXeroPL(rows, 0);
+          const [revenueResult, expenseResult] = await Promise.all([
+            fetchXeroPL(h, tenantId, revFrom, revTo),
+            fetchXeroPL(h, tenantId, monthFrom, monthTo)
+          ]);
+          return {
+            revenue: revenueResult.revenue,
+            cogs: expenseResult.cogs,
+            wagesSuper: expenseResult.wagesSuper,
+            overheads: expenseResult.overheads
+          };
         } catch (e) { return null; }
       }));
       for (const r of results) {
@@ -284,17 +303,30 @@ function walkXeroPL(reportRows, periodIndex) {
   for (const row of reportRows) {
     if (row.RowType !== 'Section') continue;
     const title = (row.Title || '').toLowerCase();
-    if ((title === 'income' || title === 'revenue' || title === 'trading income') && !title.includes('other')) {
-      const s = findXeroSummary(row);
-      revenue += s ? xeroCellValue(s, periodIndex) : 0;
-    } else if (title.includes('cost of sales')) {
+    /* Cost of Sales checked FIRST and revenue matching explicitly excludes
+       it - both titles can contain the word "sales", so order/exclusion
+       here matters to avoid COGS being miscounted as Revenue. */
+    if (title.includes('cost of sales')) {
       const s = findXeroSummary(row);
       cogs += s ? xeroCellValue(s, periodIndex) : 0;
+    } else if (!title.includes('other') && (title.includes('income') || title.includes('revenue') || title.includes('trading income'))) {
+      const s = findXeroSummary(row);
+      revenue += s ? xeroCellValue(s, periodIndex) : 0;
     } else if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
       walkXeroOpex(row, periodIndex, opexAcc);
     }
   }
   return { revenue, cogs, wagesSuper: opexAcc.wagesSuper, overheads: opexAcc.overheads };
+}
+
+/* Issues one Xero P&L call for a date range and returns the parsed figures.
+   Used twice per period by the accounting adapter (once for Revenue's Tue-
+   Mon window, once for COGS/Wages/Overheads' Mon-Sun window). */
+async function fetchXeroPL(h, tenantId, from, to) {
+  const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+  const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+  return walkXeroPL(rows, 0);
 }
 
 /* ----------------------------------------------------------------------------
@@ -417,8 +449,9 @@ async function webhookAlreadySeen(env, id) {
    and any other/unknown type is ignored too. Uses data.createdAt (order
    creation time) for the trading date, matching how the CSV export's
    Date/Time column was interpreted; pos data is stored and read on the true
-   trading date with no shift (see ACCOUNTING_DEPOSIT_LAG_DAYS in fetchSlot -
-   only Xero's query gets shifted, since only Xero has a deposit lag). */
+   trading date with no shift - OOLIO has no reporting lag, so nothing needs
+   correcting here. (Xero's own lag is handled inside the accounting
+   adapter's fetchRange/fetchMonthly, which query two separate windows.) */
 async function processOolioWebhookEvent(env, evt) {
   if (!evt || evt.type !== 'order.complete' || !evt.data) return;
   const createdAt = evt.data.createdAt;
@@ -1079,23 +1112,13 @@ async function sourceStatus(env, source) {
   }
 }
 
-/* Reconciliation offset: Xero's bank deposits land ONE trading day after the
-   real OOLIO sale (a Monday's trading shows as a Tuesday deposit). OOLIO
-   itself has no such lag - it's the point of sale, so it always reflects the
-   true, current trading days with no adjustment needed.
-
-   So: OOLIO/pos is queried on the REAL trading-day range, unshifted, always
-   (this needs the dashboard's "Week starts on" setting to be Monday, the
-   actual trading week - not a workaround Tuesday). Xero/accounting is
-   queried SHIFTED FORWARD by the deposit lag, so its deposit dates line up
-   with the trading days they actually represent. This is symmetric and
-   period-shape-agnostic: it works the same way for weeks, months, and
-   financial years, and for a still-in-progress "this week/month" it
-   naturally tails off at whatever's actually landed in Xero so far, with no
-   need to special-case "is this a partial period". See kpi-spec.md rule 4
-   on keeping every figure on its correct trading-day basis. */
-const ACCOUNTING_DEPOSIT_LAG_DAYS = 1;
-
+/* Xero's Revenue (bank-feed driven, so it lags a trading day) and its
+   COGS/Wages/Overheads (accrual-dated bills/payroll, no lag) are queried on
+   two DIFFERENT windows - see the accounting adapter's fetchRange/
+   fetchMonthly, which handle this internally with two P&L calls. OOLIO/pos
+   is always queried on the plain, unshifted trading-day range (it's the
+   point of sale - there's no lag to correct for). So fetchSlot itself needs
+   no per-source date adjustment; every adapter gets the same q.from/q.to. */
 function shiftIsoDate(s, days) {
   const [y, m, d] = s.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -1111,16 +1134,7 @@ async function fetchSlot(env, q) {
     if (!adapter || !adapter.configured) { out[source] = null; continue; }
     try {
       const h = makeHelpers(env, source);
-      let sourceQ = q;
-      if (source === 'accounting' && q.from && q.to) {
-        sourceQ = {
-          ...q,
-          from: shiftIsoDate(q.from, ACCOUNTING_DEPOSIT_LAG_DAYS),
-          to: shiftIsoDate(q.to, ACCOUNTING_DEPOSIT_LAG_DAYS)
-        };
-      }
-      /* pos gets q unchanged - it's already the true trading-day range. */
-      out[source] = await adapter.fetchRange(env, h, sourceQ);
+      out[source] = await adapter.fetchRange(env, h, q);
       await noteSync(env, source);
     } catch (err) {
       out[source] = null; /* per-source failure never breaks the whole payload */
