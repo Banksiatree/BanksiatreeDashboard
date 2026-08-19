@@ -173,6 +173,37 @@ body {
 .conn-actions { display: flex; gap: 8px; margin-top: 0.6rem; flex-wrap: wrap; }
 .cb-url { font-size: 12px; color: var(--muted); word-break: break-all; background: var(--cream2); border-radius: 8px; padding: 0.5rem 0.7rem; margin-top: 0.55rem; }
 
+/* Cash split */
+.cs-amount-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 16px; padding: 1.3rem 1.4rem; margin-bottom: 1rem; }
+.cs-amount-field { display: flex; align-items: baseline; gap: 8px; border-bottom: 2px solid var(--border-med); padding-bottom: 0.5rem; }
+.cs-amount-field:focus-within { border-color: var(--accent); }
+.cs-amount-field .cs-prefix { font-family: 'Khand', sans-serif; font-size: 30px; color: var(--muted); }
+.cs-amount-field input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-family: 'Khand', sans-serif; font-size: 40px; font-weight: 600; color: var(--black); }
+.cs-rates-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 16px; padding: 1.1rem 1.3rem; margin-bottom: 1rem; }
+.cs-rates-head { font-family: 'Khand', sans-serif; font-size: 15px; font-weight: 600; color: var(--black); margin-bottom: 0.3rem; }
+.cs-rates-sub { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin-bottom: 0.7rem; }
+.cs-rate-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 10px; }
+.cs-rate-cell .set-label { display: flex; justify-content: space-between; align-items: baseline; }
+.cs-rate-cell .cs-live-tag { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--c-green); }
+.cs-ledger-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+.cs-ledger-head { padding: 1rem 1.3rem 0.8rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cs-ledger-head .cs-title { font-family: 'Khand', sans-serif; font-size: 18px; font-weight: 600; color: var(--black); }
+.cs-ledger-head .cs-balance { font-size: 12px; font-weight: 600; color: var(--c-green); }
+.cs-ledger-head .cs-balance.off { color: var(--c-coral); }
+.cs-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 12px; padding: 0.85rem 1.3rem; border-bottom: 1px solid var(--border); }
+.cs-row:last-child { border-bottom: none; }
+.cs-row .cs-name { font-size: 14px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.cs-row .cs-note { grid-column: 1; font-size: 12px; color: var(--muted); }
+.cs-row .cs-amt { font-family: 'Khand', sans-serif; font-size: 22px; font-weight: 600; color: var(--black); text-align: right; white-space: nowrap; }
+.cs-tag { font-size: 10.5px; font-weight: 700; color: var(--muted); background: var(--cream2); border-radius: 20px; padding: 2px 9px; }
+.cs-row.cs-surcharge .cs-amt { color: var(--c-amber); }
+.cs-row.cs-sub { background: var(--cream2); }
+.cs-row.cs-sub .cs-name { font-style: italic; font-weight: 400; color: var(--muted); font-size: 13px; }
+.cs-row.cs-sub .cs-amt { font-size: 16px; color: var(--muted); }
+.cs-row.cs-total { background: var(--accent-dim); }
+.cs-row.cs-total .cs-amt { font-size: 26px; }
+.cs-empty { padding: 1.3rem; font-size: 13px; color: var(--muted); line-height: 1.6; }
+
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
 .recon-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
@@ -324,7 +355,14 @@ function defaultSettings() {
     /* acs holds the GREEN threshold (at/above this = green); acsLow holds the
        RED threshold (below this = red); between the two = amber. Set from
        the owner's own numbers: below $30 red, $30-$31.50 amber, above green. */
-    targets: { cogs: 30, wage: 30, overheads: 30, profit: 10, acs: 31.5, acsLow: 30 }
+    targets: { cogs: 30, wage: 30, overheads: 30, profit: 10, acs: 31.5, acsLow: 30 },
+    /* Cash Split tab: card surcharge comes off the top of the week's bank
+       deposit before anything else; the tax reserve is a flat share of Net
+       Revenue (not literally 25% of the profit line - the owner's own
+       spreadsheet worked out closer to a flat rate in practice). Both are
+       policy numbers the owner sets, not something Xero reports. */
+    surchargePct: 1.2,
+    taxPct: 3.18
   };
 }
 function loadSettings() {
@@ -492,13 +530,21 @@ function fmtRange(r) {
    App state + data fetch
 ============================================================ */
 var state = {
-  view: 'dashboard',           /* dashboard | connections | recon | settings */
+  view: 'dashboard',           /* dashboard | connections | recon | settings | cashsplit */
   period: SETTINGS.defaultPeriod === 'custom' ? 'thisWeek' : SETTINGS.defaultPeriod,
   customFrom: null, customTo: null,
   loading: false,
   data: null,                  /* last /api/metrics payload */
   fetchedAt: null,
-  fetchError: null
+  fetchError: null,
+  cashSplit: {
+    loading: false,
+    data: null,                /* last /api/cashsplit payload */
+    error: null,
+    sales: '',                 /* this week's bank deposit - typed fresh each visit, never persisted */
+    loanRepayments: 0,
+    gstOverride: null, cogsOverride: null, cashOverride: null  /* null = use the live figure */
+  }
 };
 
 function apiUrl(force) {
@@ -777,8 +823,8 @@ function render() {
   /* Nav */
   var nav = el('div', 'nav');
   var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -813,6 +859,7 @@ function render() {
   if (isManual() && (state.view === 'connections' || state.view === 'recon')) state.view = 'dashboard';
   if (state.view === 'dashboard') renderDashboard(root);
   else if (state.view === 'enter') renderManualEntry(root);
+  else if (state.view === 'cashsplit') renderCashSplit(root);
   else if (state.view === 'connections') renderConnections(root);
   else if (state.view === 'recon') renderRecon(root);
   else renderSettings(root);
@@ -1543,6 +1590,208 @@ function renderManualEntry(root) {
   }
 }
 
+/* ============================================================
+   Cash split - the weekly bank-transfer split. Independent of the
+   dashboard's period machinery: it always asks for the latest available
+   BAS/P&L rates, not a chosen date range, and works whether the owner is in
+   live or manual mode (manual mode has no Xero connection, so it always
+   falls back to typed-in rates below).
+============================================================ */
+function fetchCashSplit(force) {
+  var cs = state.cashSplit;
+  if (cs.loading) return;
+  if (isManual()) { cs.data = { available: false, reason: 'manual_mode' }; render(); return; }
+  cs.loading = true; cs.error = null;
+  render();
+  fetch('/api/cashsplit' + (force ? '?refresh=1' : '')).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    cs.data = json; cs.loading = false; render();
+  }).catch(function () {
+    cs.loading = false; cs.error = 'Could not reach the dashboard just now. Try refresh.'; render();
+  });
+}
+
+/* Recomputed client-side (not re-fetched) so typing a loan-repayment figure
+   or a manual override doesn’t need a server round trip. Returns null for
+   any rate with neither a live figure nor a manual override typed in - the
+   ledger below refuses to compute rather than guessing a 0%. */
+function csEffectiveRates() {
+  var cs = state.cashSplit;
+  var d = cs.data;
+  var pl = (d && d.pl && !d.pl.error) ? d.pl : null;
+  var gstLive = (d && d.gst && !d.gst.error) ? d.gst.pct : null;
+
+  var gstPct = (cs.gstOverride != null && cs.gstOverride !== '') ? parseFloat(cs.gstOverride) / 100 : gstLive;
+  var cogsPct = (cs.cogsOverride != null && cs.cogsOverride !== '') ? parseFloat(cs.cogsOverride) / 100 : (pl ? pl.cogsPct : null);
+
+  var cashPct;
+  if (cs.cashOverride != null && cs.cashOverride !== '') {
+    cashPct = parseFloat(cs.cashOverride) / 100;
+  } else if (pl) {
+    var loanRepay = parseFloat(cs.loanRepayments) || 0;
+    var raw = pl.netRevenue ? (pl.netProfit - loanRepay) / pl.netRevenue : 0;
+    cashPct = Math.max(raw, 0.01);
+  } else {
+    cashPct = null;
+  }
+  return { gstPct: (isFinite(gstPct) ? gstPct : null), cogsPct: (isFinite(cogsPct) ? cogsPct : null), cashPct: (isFinite(cashPct) ? cashPct : null) };
+}
+
+function csRateCell(label, liveValue, overrideVal, onOverride) {
+  var cell = el('div', 'set-cell cs-rate-cell');
+  var lab = el('div', 'set-label');
+  lab.appendChild(document.createTextNode(label));
+  if (overrideVal == null || overrideVal === '') {
+    if (liveValue != null) lab.appendChild(el('span', 'cs-live-tag', 'Live'));
+  }
+  cell.appendChild(lab);
+  var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
+  inp.value = (overrideVal != null && overrideVal !== '') ? overrideVal : (liveValue != null ? (liveValue * 100).toFixed(2) : '');
+  inp.placeholder = 'e.g. 8.75';
+  inp.oninput = function () { onOverride(inp.value); render(); };
+  cell.appendChild(inp);
+  return cell;
+}
+
+function renderCashSplit(root) {
+  var cs = state.cashSplit;
+  root.appendChild(el('div', 'screen-title', 'Cash split'));
+  root.appendChild(el('p', 'screen-sub', 'Type in what landed in the bank this week and see exactly what to transfer where - surcharge, GST, COGS, profit and tax, in the order the money actually moves.'));
+
+  if (!isManual() && cs.data == null && !cs.loading) fetchCashSplit(false);
+
+  if (cs.error) root.appendChild(el('div', 'banner banner-coral', esc(cs.error)));
+
+  var d = cs.data;
+  if (isManual()) {
+    root.appendChild(el('div', 'banner banner-amber', 'You’re in ‘I type them in’ mode, so there’s no Xero connection to pull rates from. Type each rate in below from your own BAS and P&amp;L.'));
+  } else if (d && d.available === false) {
+    var reasonMsg = d.reason === 'not_connected'
+      ? 'Connect ' + esc(P.accounting) + ' on the Connections screen to pull GST, COGS and Cash rates in automatically. Until then, type each one in below.'
+      : 'Not connected yet. Type each rate in below.';
+    root.appendChild(el('div', 'banner banner-amber', reasonMsg));
+  }
+
+  /* Rates card */
+  var ratesCard = el('div', 'cs-rates-card');
+  var rhead = el('div', 'cs-rates-head', d && d.period ? ('Rates as of ' + esc(d.period.label)) : 'Rates');
+  ratesCard.appendChild(rhead);
+  ratesCard.appendChild(el('div', 'cs-rates-sub', 'Pulled from your last BAS and P&amp;L in ' + esc(P.accounting) + ' where possible. Type over any of them to use your own figure instead.'));
+
+  if (cs.loading) {
+    ratesCard.appendChild(el('div', 'cs-empty', 'Fetching your latest rates…'));
+  } else {
+    if (d && d.gst && d.gst.error) ratesCard.appendChild(el('div', 'set-note', 'GST rate: ' + esc(d.gst.error)));
+    if (d && d.pl && d.pl.error) ratesCard.appendChild(el('div', 'set-note', 'COGS/Cash rate: ' + esc(d.pl.error)));
+    var rgrid = el('div', 'cs-rate-grid');
+    var gstLive = (d && d.gst && !d.gst.error) ? d.gst.pct : null;
+    var cogsLive = (d && d.pl && !d.pl.error) ? d.pl.cogsPct : null;
+    rgrid.appendChild(csRateCell('GST / PAYG %', gstLive, cs.gstOverride, function (v) { cs.gstOverride = v; }));
+    rgrid.appendChild(csRateCell('COGS %', cogsLive, cs.cogsOverride, function (v) { cs.cogsOverride = v; }));
+
+    var cashLiveCell = el('div', 'set-cell cs-rate-cell');
+    var cashLab = el('div', 'set-label');
+    cashLab.appendChild(document.createTextNode('Cash / profit %'));
+    var eff0 = csEffectiveRates();
+    if ((cs.cashOverride == null || cs.cashOverride === '') && eff0.cashPct != null) cashLab.appendChild(el('span', 'cs-live-tag', 'Live · min 1%'));
+    cashLiveCell.appendChild(cashLab);
+    var cashInp = document.createElement('input'); cashInp.type = 'number'; cashInp.step = 'any';
+    cashInp.value = (cs.cashOverride != null && cs.cashOverride !== '') ? cs.cashOverride : (eff0.cashPct != null ? (eff0.cashPct * 100).toFixed(2) : '');
+    cashInp.oninput = function () { cs.cashOverride = cashInp.value; render(); };
+    cashLiveCell.appendChild(cashInp);
+    rgrid.appendChild(cashLiveCell);
+
+    var loanCell = el('div', 'set-cell cs-rate-cell');
+    loanCell.appendChild(el('div', 'set-label', 'Loan repayments this period'));
+    var loanInp = document.createElement('input'); loanInp.type = 'number'; loanInp.step = 'any';
+    loanInp.value = cs.loanRepayments || 0;
+    loanInp.oninput = function () { cs.loanRepayments = loanInp.value; render(); };
+    loanCell.appendChild(loanInp);
+    loanCell.appendChild(el('div', 'set-note', 'Reduces the Cash/profit rate - ' + esc(P.accounting) + ' has no field for this, so it’s not pulled in live.'));
+    rgrid.appendChild(loanCell);
+
+    ratesCard.appendChild(rgrid);
+    if (!isManual()) {
+      var refreshBtn = el('button', 'btn-plain', 'Refresh rates');
+      refreshBtn.style.marginTop = '10px';
+      refreshBtn.onclick = function () { fetchCashSplit(true); };
+      ratesCard.appendChild(refreshBtn);
+    }
+  }
+  root.appendChild(ratesCard);
+
+  /* Sales input */
+  var amountCard = el('div', 'cs-amount-card');
+  amountCard.appendChild(el('div', 'set-label', 'Total sales deposited this week'));
+  var af = el('div', 'cs-amount-field');
+  af.appendChild(el('span', 'cs-prefix', esc(KIT_CONFIG.currency)));
+  var salesInp = document.createElement('input'); salesInp.type = 'number'; salesInp.step = 'any'; salesInp.min = '0'; salesInp.placeholder = '0.00';
+  salesInp.value = cs.sales;
+  salesInp.oninput = function () { cs.sales = salesInp.value; render(); };
+  af.appendChild(salesInp);
+  amountCard.appendChild(af);
+  amountCard.appendChild(el('div', 'set-note', 'The full amount that hit the account from last week’s trade, before any transfers out.'));
+  root.appendChild(amountCard);
+
+  /* Ledger */
+  var ledgerCard = el('div', 'cs-ledger-card');
+  var lhead = el('div', 'cs-ledger-head');
+  lhead.appendChild(el('div', 'cs-title', 'Transfer this to each account'));
+  var balSpan = el('span', 'cs-balance');
+  lhead.appendChild(balSpan);
+  ledgerCard.appendChild(lhead);
+
+  var rows = el('div');
+  var sales = parseFloat(cs.sales);
+  var eff = csEffectiveRates();
+  if (!isFinite(sales) || sales <= 0) {
+    rows.appendChild(el('div', 'cs-empty', 'Enter this week’s sales above to see the split.'));
+  } else if (eff.gstPct == null || eff.cogsPct == null || eff.cashPct == null) {
+    rows.appendChild(el('div', 'cs-empty', 'Missing a rate above - fill in whichever one shows no value before the split can be calculated.'));
+  } else {
+    var surchargePct = (typeof SETTINGS.surchargePct === 'number' ? SETTINGS.surchargePct : 0) / 100;
+    var taxPct = (typeof SETTINGS.taxPct === 'number' ? SETTINGS.taxPct : 0) / 100;
+
+    function r2(x) { return Math.round((x + Number.EPSILON) * 100) / 100; }
+    var surcharge = r2(sales * surchargePct);
+    var base = sales - surcharge;
+    var gst = r2(base * eff.gstPct);
+    var cogsAmt = r2(base * eff.cogsPct);
+    var netRevenue = base - gst - cogsAmt;
+    var cash = r2(netRevenue * eff.cashPct);
+    var tax = r2(netRevenue * taxPct);
+    var trading = netRevenue - cash - tax;
+
+    function csRow(cls, name, tag, amt, note) {
+      var rw = el('div', 'cs-row' + (cls ? ' ' + cls : ''));
+      var nameEl = el('span', 'cs-name', esc(name) + (tag ? ' <span class="cs-tag">' + esc(tag) + '</span>' : ''));
+      rw.appendChild(nameEl);
+      rw.appendChild(el('span', 'cs-amt', esc(fmtMoney(amt, true))));
+      if (note) rw.appendChild(el('span', 'cs-note', esc(note)));
+      rows.appendChild(rw);
+    }
+    csRow('cs-surcharge', 'Card surcharge', (surchargePct * 100).toFixed(2) + '%', surcharge, 'Off the top, first — covers card processing fees.');
+    csRow('cs-sub', 'Working balance', null, base, null);
+    csRow(null, 'GST / PAYG', (eff.gstPct * 100).toFixed(2) + '%', gst, 'Set aside for your next BAS.');
+    csRow(null, 'COGS', (eff.cogsPct * 100).toFixed(2) + '%', cogsAmt, 'Stock and cost of goods sold.');
+    csRow('cs-sub', 'Net revenue', null, netRevenue, null);
+    csRow(null, 'Cash (Profit)', (eff.cashPct * 100).toFixed(2) + '%', cash, 'Profit account — floors at 1% minimum.');
+    csRow(null, 'Tax', (taxPct * 100).toFixed(2) + '%', tax, 'Reserved for your tax bill.');
+    csRow('cs-total', 'Trading account', null, trading, 'Remainder — covers OPEX and day-to-day running costs.');
+
+    var total = surcharge + gst + cogsAmt + cash + tax + trading;
+    var diff = Math.abs(total - sales);
+    balSpan.textContent = diff < 0.01 ? 'Balances to the cent' : ('Off by ' + fmtMoney(diff, true));
+    balSpan.className = 'cs-balance' + (diff < 0.01 ? '' : ' off');
+  }
+  ledgerCard.appendChild(rows);
+  root.appendChild(ledgerCard);
+
+  root.appendChild(el('p', 'set-note', 'Surcharge and tax rates are set in Settings. Everything left in Trading still splits by hand into Owner’s Pay, Annual Leave, Annual Bills or the Drip account, same as before.'));
+}
+
 function renderSettings(root) {
   root.appendChild(el('div', 'screen-title', 'Settings'));
   root.appendChild(el('p', 'screen-sub', 'The bits you might want to change, with no code anywhere. Your AI set the rest up during the build.'));
@@ -1695,6 +1944,39 @@ function renderSettings(root) {
     tgrid.appendChild(cell);
   });
   root.appendChild(tgrid);
+
+  /* Cash Split policy numbers - not something Xero reports, the owner sets these */
+  root.appendChild(el('div', 'screen-title', 'Cash split'));
+  root.appendChild(el('p', 'screen-sub', 'The two numbers on the Cash split tab that are policy, not accounting - Xero can’t supply either of these.'));
+  var csgrid = el('div', 'set-grid');
+
+  var csc1 = el('div', 'set-cell');
+  csc1.appendChild(el('div', 'set-label', 'Card surcharge %'));
+  var csi1 = document.createElement('input'); csi1.type = 'number'; csi1.step = 'any'; csi1.min = '0';
+  csi1.value = (typeof SETTINGS.surchargePct === 'number') ? SETTINGS.surchargePct : '';
+  csi1.onchange = function () {
+    var val = parseFloat(csi1.value);
+    SETTINGS.surchargePct = isFinite(val) ? val : 0;
+    saveSettings(); render();
+  };
+  csc1.appendChild(csi1);
+  csc1.appendChild(el('div', 'set-note', 'Taken off the top of the week’s deposit first, before GST or COGS.'));
+  csgrid.appendChild(csc1);
+
+  var csc2 = el('div', 'set-cell');
+  csc2.appendChild(el('div', 'set-label', 'Tax reserve %'));
+  var csi2 = document.createElement('input'); csi2.type = 'number'; csi2.step = 'any'; csi2.min = '0';
+  csi2.value = (typeof SETTINGS.taxPct === 'number') ? SETTINGS.taxPct : '';
+  csi2.onchange = function () {
+    var val = parseFloat(csi2.value);
+    SETTINGS.taxPct = isFinite(val) ? val : 0;
+    saveSettings(); render();
+  };
+  csc2.appendChild(csi2);
+  csc2.appendChild(el('div', 'set-note', 'Share of Net Revenue set aside for tax, on top of the Cash/Profit account.'));
+  csgrid.appendChild(csc2);
+
+  root.appendChild(csgrid);
 
   if (!isManual()) {
     root.appendChild(el('div', 'section-sub', 'Session'));
