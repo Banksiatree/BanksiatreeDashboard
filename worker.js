@@ -84,7 +84,14 @@ const ADAPTERS = {
     oauth: {
       authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
       tokenUrl: 'https://identity.xero.com/connect/token',
-      scopes: 'offline_access accounting.reports.profitandloss.read',
+      /* accounting.reports.taxreports.read added for the Cash Split tab's
+         GST/PAYG rate, pulled from the BAS/GST report (fetchXeroBasSummary
+         below) - a different report + scope to the P&L one above. This scope
+         must also be added to the app's own configuration in the Xero
+         Developer Portal, and any already-connected org needs to Reconnect
+         on the Connections screen once, before the new scope takes effect -
+         the old token was issued without it. */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.reports.taxreports.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -327,6 +334,183 @@ async function fetchXeroPL(h, tenantId, from, to) {
   const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
   const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
   return walkXeroPL(rows, 0);
+}
+
+/* ----------------------------------------------------------------------------
+   Cash Split tab: GST/PAYG rate from Xero's BAS/GST report. Different report
+   and different scope (accounting.reports.taxreports.read) to the P&L one
+   above - see the note on accounting.oauth.scopes.
+
+   NOTE ON CONFIDENCE: the P&L walker above was built and matched against this
+   owner's real, already-connected Xero org. This BAS walker has NOT been
+   verified against a real live response (no Xero sandbox/credentials were
+   available while writing it) - it follows Xero's documented Reports API
+   shape (a Reports[] array of Rows/Cells, same as ProfitAndLoss) and matches
+   row labels defensively by regex rather than assuming exact wording, but the
+   G1/1A/1B label regexes below may need a quick adjustment after the first
+   real fetch. If gst.error is non-null on the Cash Split tab, check the
+   Worker's logs for what the raw row labels actually were.
+---------------------------------------------------------------------------- */
+const BAS_G1_RE = /\bG1\b|total\s+sales/i;
+const BAS_1A_RE = /\b1A\b|GST\s+on\s+sales/i;
+const BAS_1B_RE = /\b1B\b|GST\s+on\s+purchases/i;
+
+/* Flattens every Row (at any nesting depth) into { label, value } pairs,
+   same recursive-Section approach as walkXeroOpex/findXeroSummary above. */
+function flattenXeroRows(section, periodIndex, out) {
+  for (const row of section.Rows || section || []) {
+    if (row.RowType === 'Row' || row.RowType === 'SummaryRow') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      out.push({ label, value: xeroCellValue(row, periodIndex) });
+    } else if (row.RowType === 'Section') {
+      flattenXeroRows(row, periodIndex, out);
+    }
+  }
+}
+function findXeroRowValue(flat, re) {
+  const hit = flat.find((r) => re.test(r.label));
+  return hit ? hit.value : null;
+}
+
+const AU_MONTHS = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
+function parseLongAuDate(s) {
+  const m = /(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec((s || '').trim());
+  if (!m) return null;
+  const mi = AU_MONTHS[m[2].toLowerCase()];
+  if (mi == null) return null;
+  const d = new Date(Date.UTC(+m[3], mi, +m[1]));
+  return d.toISOString().slice(0, 10);
+}
+/* This calendar quarter-to-date, used only as a fallback when the BAS
+   report's own covered period can't be parsed out of its ReportTitles. */
+function currentQuarterFallback() {
+  const now = new Date();
+  const q = Math.floor(now.getUTCMonth() / 3);
+  const from = new Date(Date.UTC(now.getUTCFullYear(), q * 3, 1));
+  return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) };
+}
+/* Best-effort date range + label out of a BAS report's ReportTitles (Xero
+   puts the covered period in free text there, e.g. "For the period 1 April
+   2026 to 30 June 2026" - exact wording not verified, hence the loose regex
+   and the fallback to the calendar quarter-to-date when it doesn't match). */
+function basPeriodRange(report) {
+  const titles = (report && report.ReportTitles) || [];
+  for (const t of titles) {
+    const m = /for\s+the\s+period\s+(.+?)\s+to\s+(.+)/i.exec(t || '');
+    if (m) {
+      const from = parseLongAuDate(m[1]);
+      const to = parseLongAuDate(m[2]);
+      if (from && to) return { from, to, label: m[1].trim() + ' to ' + m[2].trim() };
+    }
+  }
+  const fb = currentQuarterFallback();
+  return { from: fb.from, to: fb.to, label: fb.from + ' to ' + fb.to + ' (estimated - could not read the period from the BAS report itself)' };
+}
+
+/* Lists the org's BAS/GST reports and returns the parsed figures from the
+   most recent one. Xero's list call may return skeletal entries (no Rows) -
+   in that case this follows up with a per-reportID fetch, same two-step
+   pattern Xero uses elsewhere in the Reports API. */
+async function fetchXeroBasSummary(h, tenantId) {
+  const listUrl = 'https://api.xero.com/api.xro/2.0/Reports/BASorGST';
+  const listData = await h.fetchJson(listUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const reports = (listData && listData.Reports) || [];
+  if (!reports.length) { const e = new Error('no BAS reports found in Xero'); e.status = 404; throw e; }
+
+  /* Most recent first: sort by whatever date-ish field is present, newest
+     first, but don't fail if none of these exist - Xero's own list order
+     (usually newest-first already) is the fallback. */
+  const withDates = reports.map((r) => ({
+    r,
+    t: Date.parse(r.UpdatedDateUTC || r.ReportDate || '') || 0
+  }));
+  withDates.sort((a, b) => b.t - a.t);
+  let report = withDates[0].r;
+
+  let rows = report.Rows;
+  if (!rows || !rows.length) {
+    const reportId = report.ReportID || report.reportID;
+    if (!reportId) { const e = new Error('BAS report has no ReportID to fetch'); e.status = 502; throw e; }
+    const detailUrl = listUrl + '?reportID=' + encodeURIComponent(reportId);
+    const detailData = await h.fetchJson(detailUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+    report = (detailData && detailData.Reports && detailData.Reports[0]) || report;
+    rows = report.Rows || [];
+  }
+
+  const flat = [];
+  flattenXeroRows({ Rows: rows }, 0, flat);
+  const g1 = findXeroRowValue(flat, BAS_G1_RE);
+  const oneA = findXeroRowValue(flat, BAS_1A_RE);
+  const oneB = findXeroRowValue(flat, BAS_1B_RE);
+  if (g1 == null || oneA == null || oneB == null) {
+    const e = new Error('could not find G1/1A/1B in the BAS report rows');
+    e.status = 502;
+    throw e;
+  }
+  return {
+    gstPct: g1 !== 0 ? (oneA - oneB) / g1 : 0,
+    g1, oneA, oneB,
+    period: basPeriodRange(report)
+  };
+}
+
+/* ----------------------------------------------------------------------------
+   GET /api/cashsplit - powers the Cash Split tab. Live GST%/COGS%/Cash% for
+   the most recent BAS period, so the owner only has to type in the one
+   number Xero can never supply: what actually landed in the bank this week.
+   Per-section try/catch (gst vs pl), same "one source failing never breaks
+   the rest of the payload" approach as fetchSlot - a missing/unparsable BAS
+   report shouldn't also hide COGS/Cash, and vice versa.
+---------------------------------------------------------------------------- */
+async function apiCashSplit(env) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+
+  let gst = null, gstError = null;
+  let period = null;
+  try {
+    const bas = await fetchXeroBasSummary(h, tenantId);
+    gst = { pct: bas.gstPct, g1: bas.g1, oneA: bas.oneA, oneB: bas.oneB };
+    period = bas.period;
+  } catch (err) {
+    gstError = plainError(err.status || 500);
+  }
+  if (!period) {
+    const fb = currentQuarterFallback();
+    period = { from: fb.from, to: fb.to, label: 'this quarter to date (no BAS report found)' };
+  }
+
+  let pl = null, plError = null;
+  try {
+    const r = await fetchXeroPL(h, tenantId, period.from, period.to);
+    const netRevenue = r.revenue - r.cogs;
+    const netProfit = netRevenue - r.wagesSuper - r.overheads;
+    const cogsPct = r.revenue ? r.cogs / r.revenue : 0;
+    const cashPctRaw = netRevenue ? netProfit / netRevenue : 0;
+    pl = {
+      revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads,
+      netRevenue, netProfit, cogsPct,
+      cashPctRaw, cashPct: Math.max(cashPctRaw, 0.01), cashFloored: cashPctRaw < 0.01
+    };
+  } catch (err) {
+    plError = plainError(err.status || 500);
+  }
+
+  await noteSync(env, 'accounting');
+  return json({
+    available: true,
+    period,
+    gst: gst ? { ...gst, error: null } : { error: gstError || 'unavailable' },
+    pl: pl ? { ...pl, error: null } : { error: plError || 'unavailable' }
+  });
 }
 
 /* ----------------------------------------------------------------------------
@@ -1273,6 +1457,10 @@ export default {
     if (path === '/api/metrics' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiMetrics(env, url);
+    }
+    if (path === '/api/cashsplit' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiCashSplit(env);
     }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {
