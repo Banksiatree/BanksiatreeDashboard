@@ -424,23 +424,37 @@ function basPeriodRange(report) {
   return { from: fb.from, to: fb.to, label: fb.from + ' to ' + fb.to + ' (estimated - could not read the period from the BAS report itself)' };
 }
 
-/* Lists the org's BAS/GST reports and returns the parsed figures from the
-   most recent one. Xero's list call may return skeletal entries (no Rows) -
-   in that case this follows up with a per-reportID fetch, same two-step
-   pattern Xero uses elsewhere in the Reports API. */
+/* Matches a report list entry that looks like a lodged BAS/Activity
+   Statement/GST return, by name - the generic /Reports list (see below)
+   returns every saved report in the org (P&L, Balance Sheet, custom ones,
+   etc), not just tax ones, so this has to pick the right one out. Loose and
+   case-insensitive since the exact wording Xero uses for this org isn't
+   confirmed - see the diagnostic in fetchXeroBasSummary if this ever stops
+   matching (it dumps every report name it actually saw). */
+const BAS_REPORT_NAME_RE = /activity\s*statement|\bBAS\b|GST\s*return|GST\s*reconciliation/i;
+
+/* Finds the org's most recent BAS/Activity Statement report and returns the
+   parsed G1/1A/1B figures from it.
+   CORRECTED from an earlier version of this function that called a
+   `/Reports/BASorGST` endpoint - that endpoint does not exist anywhere in
+   Xero's real API (confirmed against Xero's own official xero-node SDK
+   source, which only has /Reports (list) and /Reports/{ReportID} (fetch
+   one) - no named BAS/GST report route at all). This version uses those
+   two real endpoints instead: list every saved report, find one that looks
+   like a BAS by name, then fetch it by its ReportID. */
 async function fetchXeroBasSummary(h, tenantId) {
-  const listUrl = 'https://api.xero.com/api.xro/2.0/Reports/BASorGST';
+  const listUrl = 'https://api.xero.com/api.xro/2.0/Reports';
   const listData = await h.fetchJson(listUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-  const reports = (listData && listData.Reports) || [];
+  const allReports = (listData && listData.Reports) || [];
+  const reports = allReports.filter((r) => BAS_REPORT_NAME_RE.test(r.ReportName || r.ReportTitle || ''));
   if (!reports.length) {
-    const e = new Error('no BAS reports found in Xero');
+    const e = new Error('no BAS/Activity Statement report found among your saved Xero reports');
     e.status = 404;
-    /* TEMP DIAGNOSTIC (see gst.error handling in apiCashSplit below) - the
-       "Reports" key coming back empty could mean genuinely no saved BAS
-       reports, or it could mean this list call's response shape isn't what
-       this code assumes. Surfacing the raw keys/snippet here, once, is the
-       fastest way to tell those apart without Xero sandbox access. */
-    e.debug = 'raw response keys: [' + Object.keys(listData || {}).join(', ') + '] snippet: ' + JSON.stringify(listData).slice(0, 400);
+    /* TEMP DIAGNOSTIC (see gst.error handling in apiCashSplit below) - lists
+       every report name this org actually has, so if none of them match
+       BAS_REPORT_NAME_RE above, the real name can be read straight off this
+       and the regex adjusted, instead of guessing again. */
+    e.debug = 'saw ' + allReports.length + ' report(s): [' + allReports.map((r) => r.ReportName || r.ReportTitle || '(unnamed)').join(', ') + ']';
     throw e;
   }
 
@@ -458,7 +472,7 @@ async function fetchXeroBasSummary(h, tenantId) {
   if (!rows || !rows.length) {
     const reportId = report.ReportID || report.reportID;
     if (!reportId) { const e = new Error('BAS report has no ReportID to fetch'); e.status = 502; throw e; }
-    const detailUrl = listUrl + '?reportID=' + encodeURIComponent(reportId);
+    const detailUrl = 'https://api.xero.com/api.xro/2.0/Reports/' + encodeURIComponent(reportId);
     const detailData = await h.fetchJson(detailUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
     report = (detailData && detailData.Reports && detailData.Reports[0]) || report;
     rows = report.Rows || [];
