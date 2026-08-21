@@ -889,6 +889,20 @@ function esc(s) {
 function renderDashboard(root) {
   var r = resolvePeriod(state.period, state.customFrom, state.customTo);
 
+  /* TEMP debug panel - shows exactly what date range the server used for
+     "This week"/whatever "cur" resolves to, and why any source came back
+     empty. Delete this whole block once the zero-figures issue is fixed
+     (it pairs with the debug plumbing in apiMetrics/fetchSlot in worker.js). */
+  if (!isManual() && state.data && state.data.debug) {
+    var dbg = el('div', 'banner banner-amber');
+    dbg.style.fontFamily = 'monospace';
+    dbg.style.fontSize = '11px';
+    dbg.style.whiteSpace = 'pre-wrap';
+    dbg.style.wordBreak = 'break-word';
+    dbg.textContent = 'DEBUG (temporary): ' + JSON.stringify(state.data.debug, null, 2);
+    root.appendChild(dbg);
+  }
+
   /* Period selector */
   var bar = el('div', 'period-bar');
   bar.appendChild(el('span', 'period-label', 'Period'));
