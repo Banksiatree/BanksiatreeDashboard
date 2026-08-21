@@ -1664,7 +1664,7 @@ function csRateCell(label, liveValue, overrideVal, onOverride) {
   var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
   inp.value = (overrideVal != null && overrideVal !== '') ? overrideVal : (liveValue != null ? (liveValue * 100).toFixed(2) : '');
   inp.placeholder = 'e.g. 8.75';
-  inp.oninput = function () { onOverride(inp.value); render(); };
+  inp.onchange = function () { onOverride(inp.value); render(); };
   cell.appendChild(inp);
   return cell;
 }
@@ -1713,7 +1713,7 @@ function renderCashSplit(root) {
     cashLiveCell.appendChild(cashLab);
     var cashInp = document.createElement('input'); cashInp.type = 'number'; cashInp.step = 'any';
     cashInp.value = (cs.cashOverride != null && cs.cashOverride !== '') ? cs.cashOverride : (eff0.cashPct != null ? (eff0.cashPct * 100).toFixed(2) : '');
-    cashInp.oninput = function () { cs.cashOverride = cashInp.value; render(); };
+    cashInp.onchange = function () { cs.cashOverride = cashInp.value; render(); };
     cashLiveCell.appendChild(cashInp);
     rgrid.appendChild(cashLiveCell);
 
@@ -1721,7 +1721,7 @@ function renderCashSplit(root) {
     loanCell.appendChild(el('div', 'set-label', 'Loan repayments this period'));
     var loanInp = document.createElement('input'); loanInp.type = 'number'; loanInp.step = 'any';
     loanInp.value = cs.loanRepayments || 0;
-    loanInp.oninput = function () { cs.loanRepayments = loanInp.value; render(); };
+    loanInp.onchange = function () { cs.loanRepayments = loanInp.value; render(); };
     loanCell.appendChild(loanInp);
     loanCell.appendChild(el('div', 'set-note', 'Reduces the Cash/profit rate - ' + esc(P.accounting) + ' has no field for this, so it’s not pulled in live.'));
     rgrid.appendChild(loanCell);
@@ -1743,7 +1743,7 @@ function renderCashSplit(root) {
   af.appendChild(el('span', 'cs-prefix', esc(KIT_CONFIG.currency)));
   var salesInp = document.createElement('input'); salesInp.type = 'number'; salesInp.step = 'any'; salesInp.min = '0'; salesInp.placeholder = '0.00';
   salesInp.value = cs.sales;
-  salesInp.oninput = function () { cs.sales = salesInp.value; render(); };
+  salesInp.onchange = function () { cs.sales = salesInp.value; render(); };
   af.appendChild(salesInp);
   amountCard.appendChild(af);
   amountCard.appendChild(el('div', 'set-note', 'The full amount that hit the account from last week’s trade, before any transfers out.'));
