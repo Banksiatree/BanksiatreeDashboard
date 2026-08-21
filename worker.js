@@ -186,15 +186,32 @@ const ADAPTERS = {
     mode: 'export', /* OOLIO has no self-serve GET/reporting API - fed by CSV export (fallback ladder rung 4, guided upload)
                         AND, once set up in OOLIO, by their signed order.complete webhook
                         (POST /api/webhook/oolio, see apiWebhookOolio below) - both write
-                        the same KV day-store, so fetchRange/fetchMonthly need no changes. */
+                        the same KV day-store. fetchRange also reconciles against per-event
+                        markers written by the webhook (see writeOolioEventMarker below). */
     oauth: {},
     async status(env, h) {
       const ls = await lastSync(env, 'pos');
       return { connected: !!ls, org: 'OOLIO Sales Feed (CSV upload)', sandbox: false, lastSync: ls };
     },
     async fetchRange(env, h, q) {
-      const r = await h.readIngested(q.from, q.to);
-      return { count: r.sums.count || 0 };
+      /* Reconciled against per-event markers (see writeOolioEventMarker) day
+         by day, taking whichever is higher - the running total can lose a
+         count when two DIFFERENT webhook deliveries land at the same instant
+         (KV has no atomic increment), the markers can't. Scoped to fetchRange
+         only (This week/Last week/etc, always a short range) rather than
+         fetchMonthly, to keep the 24-month trend on its existing fast path. */
+      const dates = eachDate(q.from, q.to);
+      const [blobRaws, markerCounts] = await Promise.all([
+        Promise.all(dates.map((d) => env.TOKENS.get('data:pos:' + d))),
+        Promise.all(dates.map((d) => countOolioEventMarkers(env, d)))
+      ]);
+      let total = 0;
+      dates.forEach((d, i) => {
+        let blobCount = 0;
+        if (blobRaws[i]) { try { blobCount = JSON.parse(blobRaws[i]).count || 0; } catch (e) {} }
+        total += Math.max(blobCount, markerCounts[i]);
+      });
+      return { count: total };
     },
     async fetchMonthly(env, h, q) {
       const r = await h.monthlyIngested(q.fromMonth, q.toMonth);
@@ -415,7 +432,17 @@ async function fetchXeroBasSummary(h, tenantId) {
   const listUrl = 'https://api.xero.com/api.xro/2.0/Reports/BASorGST';
   const listData = await h.fetchJson(listUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
   const reports = (listData && listData.Reports) || [];
-  if (!reports.length) { const e = new Error('no BAS reports found in Xero'); e.status = 404; throw e; }
+  if (!reports.length) {
+    const e = new Error('no BAS reports found in Xero');
+    e.status = 404;
+    /* TEMP DIAGNOSTIC (see gst.error handling in apiCashSplit below) - the
+       "Reports" key coming back empty could mean genuinely no saved BAS
+       reports, or it could mean this list call's response shape isn't what
+       this code assumes. Surfacing the raw keys/snippet here, once, is the
+       fastest way to tell those apart without Xero sandbox access. */
+    e.debug = 'raw response keys: [' + Object.keys(listData || {}).join(', ') + '] snippet: ' + JSON.stringify(listData).slice(0, 400);
+    throw e;
+  }
 
   /* Most recent first: sort by whatever date-ish field is present, newest
      first, but don't fail if none of these exist - Xero's own list order
@@ -481,7 +508,15 @@ async function apiCashSplit(env) {
     gst = { pct: bas.gstPct, g1: bas.g1, oneA: bas.oneA, oneB: bas.oneB };
     period = bas.period;
   } catch (err) {
-    gstError = plainError(err.status || 500);
+    /* TEMP: appending raw diagnostic detail after the friendly message while
+       we're actively debugging why the BAS report lookup comes back empty -
+       trim this back to plainError(...) alone once it's confirmed working. */
+    const debugBits = [];
+    debugBits.push('status=' + (err && err.status));
+    debugBits.push('msg=' + String((err && err.message) || err).slice(0, 150));
+    if (err && err.body) debugBits.push('xeroBody=' + String(err.body).slice(0, 400));
+    if (err && err.debug) debugBits.push(err.debug);
+    gstError = plainError(err.status || 500) + '  [DEBUG: ' + debugBits.join(' | ') + ']';
   }
   if (!period) {
     const fb = currentQuarterFallback();
@@ -627,6 +662,27 @@ async function webhookAlreadySeen(env, id) {
    ingest-storage section below, alongside saveIngestedRows/monthlyIngested,
    since it also has to keep the monthly aggregate in sync.) */
 
+/* Permanent, uniquely-keyed marker per accepted webhook event - written
+   ALONGSIDE incrementIngestedField's running total, not instead of it (the
+   running total still feeds monthagg/the trend chart - see fetchMonthly,
+   left untouched). Two different events always write two different keys,
+   so unlike the running total these can never lose a count to a race - see
+   the reconciliation in the pos adapter's fetchRange above. */
+async function writeOolioEventMarker(env, date, eventId) {
+  await env.TOKENS.put('evtpos:' + date + ':' + eventId, '1');
+}
+async function countOolioEventMarkers(env, date) {
+  let count = 0, cursor;
+  const prefix = 'evtpos:' + date + ':';
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix, cursor } : { prefix });
+    count += page.keys.length;
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  return count;
+}
+
 /* Handles one already-signature-verified OOLIO webhook event. Only
    order.complete increments the day's transaction count - order.refunded is
    intentionally ignored (per kpi-spec.md: refunds never reduce the count),
@@ -635,14 +691,17 @@ async function webhookAlreadySeen(env, id) {
    Date/Time column was interpreted; pos data is stored and read on the true
    trading date with no shift - OOLIO has no reporting lag, so nothing needs
    correcting here. (Xero's own lag is handled inside the accounting
-   adapter's fetchRange/fetchMonthly, which query two separate windows.) */
-async function processOolioWebhookEvent(env, evt) {
+   adapter's fetchRange/fetchMonthly, which query two separate windows.)
+   eventId (the same id apiWebhookOolio already dedupes deliveries on) is
+   used to key this event's marker - see writeOolioEventMarker above. */
+async function processOolioWebhookEvent(env, evt, eventId) {
   if (!evt || evt.type !== 'order.complete' || !evt.data) return;
   const createdAt = evt.data.createdAt;
   if (!createdAt || typeof createdAt !== 'string' || createdAt.length < 10) return;
   const date = createdAt.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
   await incrementIngestedField(env, 'pos', date, 'count', 1);
+  if (eventId) await writeOolioEventMarker(env, date, eventId);
 }
 
 /* POST /api/webhook/oolio - public (no dashboard session).
@@ -677,7 +736,7 @@ async function apiWebhookOolio(env, request) {
   if (dedupeId && (await webhookAlreadySeen(env, dedupeId))) return json({ ok: true, duplicate: true });
 
   try {
-    await processOolioWebhookEvent(env, evt);
+    await processOolioWebhookEvent(env, evt, dedupeId);
     await noteSync(env, 'pos');
   } catch (e) {
     /* Already marked "seen" above (when we had a dedupeId), so a processing
@@ -827,7 +886,13 @@ function makeHelpers(env, source) {
         if (t) { t.expires_at = 0; await saveTokens(env, source, t); } /* force refresh */
         res = await doFetch();
       }
-      if (!res.ok) { const e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => '');
+        const e = new Error('HTTP ' + res.status);
+        e.status = res.status;
+        e.body = bodyText;
+        throw e;
+      }
       return res.json();
     }
   };
@@ -1310,8 +1375,9 @@ function shiftIsoDate(s, days) {
   return dt.toISOString().slice(0, 10);
 }
 
-async function fetchSlot(env, q) {
-  /* One period slot: pull each configured source; null where unavailable. */
+async function fetchSlot(env, q, debugOut) {
+  /* One period slot: pull each configured source; null where unavailable.
+     debugOut (optional, TEMP - see apiMetrics) collects why, if it fails. */
   const out = {};
   for (const source of ['accounting', 'pos', 'rostering']) {
     const adapter = ADAPTERS[source];
@@ -1322,6 +1388,13 @@ async function fetchSlot(env, q) {
       await noteSync(env, source);
     } catch (err) {
       out[source] = null; /* per-source failure never breaks the whole payload */
+      if (debugOut) {
+        debugOut[source] = {
+          status: err && err.status,
+          message: String((err && err.message) || err).slice(0, 200),
+          body: err && err.body ? String(err.body).slice(0, 400) : null
+        };
+      }
     }
   }
   return out;
@@ -1366,8 +1439,9 @@ async function apiMetrics(env, url) {
     /* These three were previously awaited one after another - each one doing
        a live Xero call plus KV reads - which serialised their latency. They
        don't depend on each other, so run them concurrently. */
+    const curDebug = {}; /* TEMP diagnostic - see apiMetrics's debug field below */
     const [curOut, prevOut, yoyOut] = await Promise.all([
-      fetchSlot(env, { ...base, ...cur }),
+      fetchSlot(env, { ...base, ...cur }, curDebug),
       prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
       yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
     ]);
@@ -1388,7 +1462,19 @@ async function apiMetrics(env, url) {
         } catch (err) { trendOut[source] = null; }
       }
     }
-    data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
+    /* TEMP diagnostic snapshot - what date range "cur" (usually "this week")
+       actually resolved to server-side, and why any source came back null,
+       if it did. Remove this whole block (and the debug: line below, and the
+       debugOut plumbing in fetchSlot above) once the zero-figures issue is
+       confirmed fixed. */
+    data = {
+      generatedAt: new Date().toISOString(), periods: periods, trend: trendOut,
+      debug: {
+        curRangeRequested: cur,
+        curRevenueRangeUsed: { from: shiftIsoDate(cur.from, 1), to: shiftIsoDate(cur.to, 1) },
+        curErrors: curDebug
+      }
+    };
     if (env.TOKENS) {
       try { await env.TOKENS.put(cacheKey, JSON.stringify(data), { expirationTtl: METRICS_CACHE_TTL }); } catch (e) {}
     }
@@ -1399,7 +1485,8 @@ async function apiMetrics(env, url) {
     protected: true,
     sources: { accounting: sAcc, pos: sPos, rostering: sRos },
     periods: data.periods,
-    trend: data.trend
+    trend: data.trend,
+    debug: data.debug
   });
 }
 
