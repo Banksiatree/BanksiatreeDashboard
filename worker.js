@@ -84,14 +84,15 @@ const ADAPTERS = {
     oauth: {
       authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
       tokenUrl: 'https://identity.xero.com/connect/token',
-      /* accounting.reports.taxreports.read added for the Cash Split tab's
-         GST/PAYG rate, pulled from the BAS/GST report (fetchXeroBasSummary
-         below) - a different report + scope to the P&L one above. This scope
-         must also be added to the app's own configuration in the Xero
-         Developer Portal, and any already-connected org needs to Reconnect
-         on the Connections screen once, before the new scope takes effect -
-         the old token was issued without it. */
-      scopes: 'offline_access accounting.reports.profitandloss.read accounting.reports.taxreports.read',
+      /* accounting.transactions.read added for the Cash Split tab's
+         GST/PAYG rate, calculated from real BankTransactions/Payments (see
+         fetchXeroCashBasisGst below) - there's no BAS/Activity Statement API
+         to pull a report from (confirmed against Xero's full official
+         OpenAPI spec, not guessed - see that function's comment). Any
+         already-connected org needs to Reconnect on the Connections screen
+         once before this new scope takes effect - the old token was issued
+         without it. */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.transactions.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -354,144 +355,135 @@ async function fetchXeroPL(h, tenantId, from, to) {
 }
 
 /* ----------------------------------------------------------------------------
-   Cash Split tab: GST/PAYG rate from Xero's BAS/GST report. Different report
-   and different scope (accounting.reports.taxreports.read) to the P&L one
-   above - see the note on accounting.oauth.scopes.
+   Cash Split tab: GST/PAYG rate calculated directly from real ledger
+   transactions - not from a BAS/Activity Statement report. That report
+   simply has no public API (confirmed by searching Xero's complete,
+   official OpenAPI specification - every product, every endpoint - for
+   "BAS", "IAS" and "Activity Statement" and finding nothing; two earlier
+   attempts at named report endpoints both turned out not to exist). Xero's
+   Activity Statements screen is a UI-only feature.
 
-   NOTE ON CONFIDENCE: the P&L walker above was built and matched against this
-   owner's real, already-connected Xero org. This BAS walker has NOT been
-   verified against a real live response (no Xero sandbox/credentials were
-   available while writing it) - it follows Xero's documented Reports API
-   shape (a Reports[] array of Rows/Cells, same as ProfitAndLoss) and matches
-   row labels defensively by regex rather than assuming exact wording, but the
-   G1/1A/1B label regexes below may need a quick adjustment after the first
-   real fetch. If gst.error is non-null on the Cash Split tab, check the
-   Worker's logs for what the raw row labels actually were.
+   What IS real and does exist (checked the same way, against the same
+   spec): BankTransactions and Payments, both genuine, documented endpoints.
+   This owner's BAS uses the CASH accounting method (confirmed from their
+   real Activity Statement screen), so GST is recognised when money actually
+   moves, not when something is invoiced - which these two endpoints
+   together cover completely, with no overlap between them:
+     - BankTransactions (Type RECEIVE/SPEND): money coded directly to the
+       bank account without going through an invoice - the normal path for
+       a cafe's day-to-day till/EFTPOS deposits and card-charged expenses.
+       These carry their own Total/TotalTax directly, no calculation needed.
+     - Payments (PaymentType ACCRECPAYMENT/ACCPAYPAYMENT): money applied to
+       a sales invoice or a supplier bill. The payment itself has no GST
+       split, so its GST is prorated by the paid amount's share of the
+       underlying invoice/bill's Total - the standard way partial payments
+       are handled for cash-basis GST.
+
+   Deliberately scoped to the last FULLY COMPLETED quarter, never the
+   current one in progress: you can't lodge a BAS for a quarter that hasn't
+   ended, so the previous quarter is always either already lodged or ready
+   to be - a stable, checkable answer. The current quarter is a moving
+   target with every new transaction, which is exactly the kind of
+   in-progress estimate this deliberately avoids.
+
+   NOT YET VERIFIED against this owner's real numbers - built from Xero's
+   real API surface (not guessed, unlike the two earlier BAS attempts
+   tonight), but the only real test is comparing its output for the last
+   completed quarter against the actual finalised figure on the owner's own
+   Activity Statement screen before this is trusted.
 ---------------------------------------------------------------------------- */
-const BAS_G1_RE = /\bG1\b|total\s+sales/i;
-const BAS_1A_RE = /\b1A\b|GST\s+on\s+sales/i;
-const BAS_1B_RE = /\b1B\b|GST\s+on\s+purchases/i;
 
-/* Flattens every Row (at any nesting depth) into { label, value } pairs,
-   same recursive-Section approach as walkXeroOpex/findXeroSummary above. */
-function flattenXeroRows(section, periodIndex, out) {
-  for (const row of section.Rows || section || []) {
-    if (row.RowType === 'Row' || row.RowType === 'SummaryRow') {
-      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
-      out.push({ label, value: xeroCellValue(row, periodIndex) });
-    } else if (row.RowType === 'Section') {
-      flattenXeroRows(row, periodIndex, out);
-    }
-  }
+/* Xero's JSON dates come back as either "/Date(1717200000000+0000)/" (the
+   classic .NET format, still used by the Accounting API) or a plain
+   YYYY-MM-DD string, depending on endpoint - handles both. */
+function parseXeroApiDate(s) {
+  if (!s) return null;
+  const m = /\/Date\((\d+)/.exec(s);
+  if (m) return new Date(Number(m[1])).toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return null;
 }
-function findXeroRowValue(flat, re) {
-  const hit = flat.find((r) => re.test(r.label));
-  return hit ? hit.value : null;
-}
+function round2(x) { return Math.round((x + Number.EPSILON) * 100) / 100; }
 
-const AU_MONTHS = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
-function parseLongAuDate(s) {
-  const m = /(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec((s || '').trim());
-  if (!m) return null;
-  const mi = AU_MONTHS[m[2].toLowerCase()];
-  if (mi == null) return null;
-  const d = new Date(Date.UTC(+m[3], mi, +m[1]));
-  return d.toISOString().slice(0, 10);
-}
-/* This calendar quarter-to-date, used only as a fallback when the BAS
-   report's own covered period can't be parsed out of its ReportTitles. */
-function currentQuarterFallback() {
+/* The last fully completed calendar quarter (never the current one) - see
+   the block comment above for why. */
+function lastCompletedQuarter() {
   const now = new Date();
   const q = Math.floor(now.getUTCMonth() / 3);
-  const from = new Date(Date.UTC(now.getUTCFullYear(), q * 3, 1));
-  return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) };
-}
-/* Best-effort date range + label out of a BAS report's ReportTitles (Xero
-   puts the covered period in free text there, e.g. "For the period 1 April
-   2026 to 30 June 2026" - exact wording not verified, hence the loose regex
-   and the fallback to the calendar quarter-to-date when it doesn't match). */
-function basPeriodRange(report) {
-  const titles = (report && report.ReportTitles) || [];
-  for (const t of titles) {
-    const m = /for\s+the\s+period\s+(.+?)\s+to\s+(.+)/i.exec(t || '');
-    if (m) {
-      const from = parseLongAuDate(m[1]);
-      const to = parseLongAuDate(m[2]);
-      if (from && to) return { from, to, label: m[1].trim() + ' to ' + m[2].trim() };
-    }
-  }
-  const fb = currentQuarterFallback();
-  return { from: fb.from, to: fb.to, label: fb.from + ' to ' + fb.to + ' (estimated - could not read the period from the BAS report itself)' };
-}
-
-/* Matches a report list entry that looks like a lodged BAS/Activity
-   Statement/GST return, by name - the generic /Reports list (see below)
-   returns every saved report in the org (P&L, Balance Sheet, custom ones,
-   etc), not just tax ones, so this has to pick the right one out. Loose and
-   case-insensitive since the exact wording Xero uses for this org isn't
-   confirmed - see the diagnostic in fetchXeroBasSummary if this ever stops
-   matching (it dumps every report name it actually saw). */
-const BAS_REPORT_NAME_RE = /activity\s*statement|\bBAS\b|GST\s*return|GST\s*reconciliation/i;
-
-/* Finds the org's most recent BAS/Activity Statement report and returns the
-   parsed G1/1A/1B figures from it.
-   CORRECTED from an earlier version of this function that called a
-   `/Reports/BASorGST` endpoint - that endpoint does not exist anywhere in
-   Xero's real API (confirmed against Xero's own official xero-node SDK
-   source, which only has /Reports (list) and /Reports/{ReportID} (fetch
-   one) - no named BAS/GST report route at all). This version uses those
-   two real endpoints instead: list every saved report, find one that looks
-   like a BAS by name, then fetch it by its ReportID. */
-async function fetchXeroBasSummary(h, tenantId) {
-  const listUrl = 'https://api.xero.com/api.xro/2.0/Reports';
-  const listData = await h.fetchJson(listUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-  const allReports = (listData && listData.Reports) || [];
-  const reports = allReports.filter((r) => BAS_REPORT_NAME_RE.test(r.ReportName || r.ReportTitle || ''));
-  if (!reports.length) {
-    const e = new Error('no BAS/Activity Statement report found among your saved Xero reports');
-    e.status = 404;
-    /* TEMP DIAGNOSTIC (see gst.error handling in apiCashSplit below) - lists
-       every report name this org actually has, so if none of them match
-       BAS_REPORT_NAME_RE above, the real name can be read straight off this
-       and the regex adjusted, instead of guessing again. */
-    e.debug = 'saw ' + allReports.length + ' report(s): [' + allReports.map((r) => r.ReportName || r.ReportTitle || '(unnamed)').join(', ') + ']';
-    throw e;
-  }
-
-  /* Most recent first: sort by whatever date-ish field is present, newest
-     first, but don't fail if none of these exist - Xero's own list order
-     (usually newest-first already) is the fallback. */
-  const withDates = reports.map((r) => ({
-    r,
-    t: Date.parse(r.UpdatedDateUTC || r.ReportDate || '') || 0
-  }));
-  withDates.sort((a, b) => b.t - a.t);
-  let report = withDates[0].r;
-
-  let rows = report.Rows;
-  if (!rows || !rows.length) {
-    const reportId = report.ReportID || report.reportID;
-    if (!reportId) { const e = new Error('BAS report has no ReportID to fetch'); e.status = 502; throw e; }
-    const detailUrl = 'https://api.xero.com/api.xro/2.0/Reports/' + encodeURIComponent(reportId);
-    const detailData = await h.fetchJson(detailUrl, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-    report = (detailData && detailData.Reports && detailData.Reports[0]) || report;
-    rows = report.Rows || [];
-  }
-
-  const flat = [];
-  flattenXeroRows({ Rows: rows }, 0, flat);
-  const g1 = findXeroRowValue(flat, BAS_G1_RE);
-  const oneA = findXeroRowValue(flat, BAS_1A_RE);
-  const oneB = findXeroRowValue(flat, BAS_1B_RE);
-  if (g1 == null || oneA == null || oneB == null) {
-    const e = new Error('could not find G1/1A/1B in the BAS report rows');
-    e.status = 502;
-    throw e;
-  }
+  const startOfThisQuarter = new Date(Date.UTC(now.getUTCFullYear(), q * 3, 1));
+  const endOfPrevQuarter = new Date(startOfThisQuarter.getTime() - 86400000);
+  const startOfPrevQuarter = new Date(Date.UTC(endOfPrevQuarter.getUTCFullYear(), endOfPrevQuarter.getUTCMonth() - 2, 1));
   return {
+    from: startOfPrevQuarter.toISOString().slice(0, 10),
+    to: endOfPrevQuarter.toISOString().slice(0, 10)
+  };
+}
+
+/* Pages through a Xero list endpoint (BankTransactions/Payments both work
+   the same way: up to 100 per page, `page` query param, 1-indexed). The
+   `where` clause is sent as an optimisation, but the real, authoritative
+   date-range check happens client-side on every item's own date field
+   regardless - so even if Xero's `where` date syntax turns out to be
+   subtly wrong, results stay correct, just less efficient to fetch. Sorted
+   newest-first, so this can stop as soon as it walks past `from`. */
+async function fetchXeroPaged(h, tenantId, path, whereClause, dateField, from, to) {
+  const out = [];
+  for (let page = 1; page <= 50; page++) {
+    const params = new URLSearchParams();
+    if (whereClause) params.set('where', whereClause);
+    params.set('order', dateField + ' DESC');
+    params.set('page', String(page));
+    const url = 'https://api.xero.com/api.xro/2.0/' + path + '?' + params.toString();
+    const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+    const items = data[path] || [];
+    if (!items.length) break;
+    let wentPastRange = false;
+    for (const item of items) {
+      const iso = parseXeroApiDate(item[dateField]);
+      if (!iso || iso > to) continue;
+      if (iso < from) { wentPastRange = true; break; }
+      out.push(item);
+    }
+    if (wentPastRange || items.length < 100) break;
+  }
+  return out;
+}
+
+/* Calculates G1/1A/1B for a date range from real transactions - see the
+   block comment above for the full method. Known scope gap: doesn't include
+   RECEIVE-OVERPAYMENT/RECEIVE-PREPAYMENT/SPEND-OVERPAYMENT/SPEND-PREPAYMENT
+   bank transaction types, only plain RECEIVE/SPEND - if the validation
+   check against a real completed quarter is off, that's the first thing to
+   extend. */
+async function fetchXeroCashBasisGst(h, tenantId, from, to) {
+  const dateWhere = 'Date >= DateTime(' + from.split('-').map(Number).join(',') + ') && Date <= DateTime(' + to.split('-').map(Number).join(',') + ')';
+
+  const [bankReceive, bankSpend, invoicePayments, billPayments] = await Promise.all([
+    fetchXeroPaged(h, tenantId, 'BankTransactions', dateWhere + ' && Type=="RECEIVE"', 'Date', from, to),
+    fetchXeroPaged(h, tenantId, 'BankTransactions', dateWhere + ' && Type=="SPEND"', 'Date', from, to),
+    fetchXeroPaged(h, tenantId, 'Payments', dateWhere + ' && PaymentType=="ACCRECPAYMENT"', 'Date', from, to),
+    fetchXeroPaged(h, tenantId, 'Payments', dateWhere + ' && PaymentType=="ACCPAYPAYMENT"', 'Date', from, to)
+  ]);
+
+  let g1 = 0, oneA = 0, oneB = 0;
+  for (const bt of bankReceive) { g1 += bt.Total || 0; oneA += bt.TotalTax || 0; }
+  for (const bt of bankSpend) { oneB += bt.TotalTax || 0; }
+  for (const p of invoicePayments) {
+    const amt = p.Amount || 0;
+    g1 += amt;
+    const inv = p.Invoice;
+    if (inv && inv.Total) oneA += amt * ((inv.TotalTax || 0) / inv.Total);
+  }
+  for (const p of billPayments) {
+    const amt = p.Amount || 0;
+    const bill = p.Invoice; /* Xero's Payment schema calls a paid bill "Invoice" too - same object shape, Type ACCPAY */
+    if (bill && bill.Total) oneB += amt * ((bill.TotalTax || 0) / bill.Total);
+  }
+
+  return {
+    g1: round2(g1), oneA: round2(oneA), oneB: round2(oneB),
     gstPct: g1 !== 0 ? (oneA - oneB) / g1 : 0,
-    g1, oneA, oneB,
-    period: basPeriodRange(report)
+    counts: { bankReceive: bankReceive.length, bankSpend: bankSpend.length, invoicePayments: invoicePayments.length, billPayments: billPayments.length }
   };
 }
 
@@ -515,26 +507,27 @@ async function apiCashSplit(env) {
     return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
   }
 
+  /* Last fully completed quarter, always - see fetchXeroCashBasisGst's block
+     comment for why. Same period is used for the COGS/Cash P&L figures
+     below too, so all three rates come from the one consistent, stable,
+     already-closed quarter rather than an in-progress one. */
+  const period = lastCompletedQuarter();
+  period.label = period.from + ' to ' + period.to + ' (last completed quarter)';
+
   let gst = null, gstError = null;
-  let period = null;
   try {
-    const bas = await fetchXeroBasSummary(h, tenantId);
-    gst = { pct: bas.gstPct, g1: bas.g1, oneA: bas.oneA, oneB: bas.oneB };
-    period = bas.period;
+    const bas = await fetchXeroCashBasisGst(h, tenantId, period.from, period.to);
+    gst = { pct: bas.gstPct, g1: bas.g1, oneA: bas.oneA, oneB: bas.oneB, counts: bas.counts };
   } catch (err) {
     /* TEMP: appending raw diagnostic detail after the friendly message while
-       we're actively debugging why the BAS report lookup comes back empty -
-       trim this back to plainError(...) alone once it's confirmed working. */
+       this is still being validated against the owner's real numbers -
+       trim back to plainError(...) alone once confirmed working. */
     const debugBits = [];
     debugBits.push('status=' + (err && err.status));
     debugBits.push('msg=' + String((err && err.message) || err).slice(0, 150));
     if (err && err.body) debugBits.push('xeroBody=' + String(err.body).slice(0, 400));
     if (err && err.debug) debugBits.push(err.debug);
     gstError = plainError(err.status || 500) + '  [DEBUG: ' + debugBits.join(' | ') + ']';
-  }
-  if (!period) {
-    const fb = currentQuarterFallback();
-    period = { from: fb.from, to: fb.to, label: 'this quarter to date (no BAS report found)' };
   }
 
   let pl = null, plError = null;
