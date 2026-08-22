@@ -84,15 +84,20 @@ const ADAPTERS = {
     oauth: {
       authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
       tokenUrl: 'https://identity.xero.com/connect/token',
-      /* accounting.transactions.read added for the Cash Split tab's
-         GST/PAYG rate, calculated from real BankTransactions/Payments (see
-         fetchXeroCashBasisGst below) - there's no BAS/Activity Statement API
-         to pull a report from (confirmed against Xero's full official
-         OpenAPI spec, not guessed - see that function's comment). Any
-         already-connected org needs to Reconnect on the Connections screen
-         once before this new scope takes effect - the old token was issued
-         without it. */
-      scopes: 'offline_access accounting.reports.profitandloss.read accounting.transactions.read',
+      /* accounting.banktransactions.read + accounting.payments.read added
+         for the Cash Split tab's GST/PAYG rate, calculated from real
+         BankTransactions/Payments (see fetchXeroCashBasisGst below) - no
+         BAS/Activity Statement API exists to pull a report from (confirmed
+         against Xero's full official OpenAPI spec, not guessed - see that
+         function's comment). Note this app is on Xero's new granular-scope
+         system (created after 2 March 2026): the older, broader
+         "accounting.transactions.read" scope is invalid for apps like this
+         one and Xero's OAuth screen rejects it outright with
+         error=invalid_scope - it had to be split into these two specific
+         ones instead. Any already-connected org needs to Reconnect on the
+         Connections screen once before a new scope takes effect - the old
+         token was issued without it. */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
