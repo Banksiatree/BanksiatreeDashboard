@@ -611,15 +611,23 @@ function buildAccountBucketMap(accounts) {
    from an endpoint that can never have data). Picks the Type:'OVERALL'
    budget (matches the spec's whole-of-business-only requirement); falls
    back to the first budget in the list if none is explicitly OVERALL. */
-async function fetchXeroBudgetLines(h, tenantId, debugOut) {
+/* dateFrom/dateTo (YYYY-MM-DD) are passed explicitly to the detail call -
+   left unscoped, live testing against the real org showed Xero silently
+   narrows the response to a default handful of periods clustered around
+   today (three identical-looking months, not real distinct budget data),
+   rather than the whole budget. */
+async function fetchXeroBudgetLines(h, tenantId, dateFrom, dateTo, debugOut) {
   const listData = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
   const list = (listData && listData.Budgets) || [];
   if (debugOut) debugOut.budgetList = list.map((b) => ({ BudgetID: b.BudgetID, Type: b.Type, Description: b.Description, Status: b.Status }));
   if (!list.length) return [];
   const chosen = list.find((b) => b.Type === 'OVERALL') || list[0];
-  const detailData = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets/' + chosen.BudgetID, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const params = new URLSearchParams({ DateFrom: dateFrom, DateTo: dateTo });
+  const detailData = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets/' + chosen.BudgetID + '?' + params.toString(), { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
   const detail = (detailData && detailData.Budgets && detailData.Budgets[0]) || (detailData && detailData.Budgets);
-  return (detail && detail.BudgetLines) || [];
+  const lines = (detail && detail.BudgetLines) || [];
+  if (debugOut) debugOut.sampleFullBudgetBalances = (lines[0] && lines[0].BudgetBalances) || null;
+  return lines;
 }
 
 /* bucketMap/nameMap from buildAccountBucketMap. Returns { 'YYYY-MM':
@@ -672,7 +680,7 @@ function bucketBudgetLinesByMonth(lines, bucketMap, nameMap) {
 /* Thin wrapper kept for apiPL: sums whichever months in byMonth fall in
    [from,to] into one range total, same shape apiPL has always depended on. */
 async function fetchXeroBudget(h, tenantId, from, to, bucketMap, nameMap) {
-  const lines = await fetchXeroBudgetLines(h, tenantId);
+  const lines = await fetchXeroBudgetLines(h, tenantId, from, to);
   const byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
   const fromMonth = from.slice(0, 7), toMonth = to.slice(0, 7);
   const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0 };
@@ -820,7 +828,7 @@ async function apiBudget(env, url) {
     accountsFetched = accounts.length;
     const { bucketMap, nameMap } = buildAccountBucketMap(accounts);
     const debugOut = {};
-    const lines = await fetchXeroBudgetLines(h, tenantId, debugOut);
+    const lines = await fetchXeroBudgetLines(h, tenantId, year + '-01-01', year + '-12-31', debugOut);
     byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
     totalLines = lines.length;
     /* TEMP diagnostic - this exact pipeline (account classification, then
@@ -829,14 +837,15 @@ async function apiBudget(env, url) {
        If it's STILL not matching, surface the raw shape directly instead
        of guessing again. Remove once a real org has confirmed
        budgetAvailable:true. */
-    if (accountsFetched === 0 || totalLines === 0 || Object.keys(byMonth).length === 0) {
+    if (Object.keys(byMonth).length < 12) {
       debug = {
         accountsFetched,
         totalBudgetLines: totalLines,
+        monthsWithData: Object.keys(byMonth).sort(),
         budgetList: debugOut.budgetList || null,
         sampleAccount: accounts[0] || null,
         sampleBudgetLine: (lines && lines[0]) || null,
-        sampleBudgetBalance: (lines && lines[0] && lines[0].BudgetBalances && lines[0].BudgetBalances[0]) || null
+        sampleFullBudgetBalances: debugOut.sampleFullBudgetBalances || null
       };
     }
   } catch (err) {

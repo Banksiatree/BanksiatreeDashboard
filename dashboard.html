@@ -217,7 +217,7 @@ body {
 .pl-figs { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .pl-actual { font-family: 'Khand', sans-serif; font-size: 30px; font-weight: 700; color: var(--black); }
 .pl-budget { font-size: 12.5px; color: var(--muted); }
-.pl-toggle { background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; padding: 0; margin-top: 6px; text-decoration: underline; }
+.pl-toggle { display: inline-block; background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; padding: 8px 4px; margin: 2px 0; text-decoration: underline; min-height: 32px; text-align: left; }
 .pl-breakdown { margin-top: 0.6rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
 .pl-breakdown-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0; }
 .pl-breakdown-row .pl-b-label { color: var(--text); }
@@ -2452,9 +2452,11 @@ function renderBudget(root) {
     return;
   }
   Object.keys(d.errors || {}).forEach(function (k) { if (d.errors[k]) root.appendChild(el('div', 'banner banner-coral', esc(d.errors[k]))); });
-  if (!d.budgetAvailable) {
+  if (!d.budgetAvailable || d.debug) {
     var abanner = el('div', 'banner banner-amber');
-    abanner.innerHTML = 'Budget figures didn’t line up against your chart of accounts this time — the table below is empty. Tell your AI so it can check the account matching.';
+    abanner.innerHTML = d.budgetAvailable
+      ? 'Some months are missing budget data — see the raw detail below. Tell your AI.'
+      : 'Budget figures didn’t line up against your chart of accounts this time — the table below is empty. Tell your AI so it can check the account matching.';
     if (d.debug) {
       var dbg = document.createElement('pre');
       dbg.style.cssText = 'white-space:pre-wrap;font-size:11px;margin-top:8px;font-family:monospace;';
