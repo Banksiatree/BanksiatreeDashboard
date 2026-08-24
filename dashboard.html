@@ -253,6 +253,11 @@ body {
 .budget-cell.sub { color: var(--muted); font-style: italic; }
 .budget-cell.sub.val { font-size: 12px; font-weight: 500; }
 .budget-table.narrow { grid-template-columns: 190px repeat(4, 140px); min-width: 0; }
+.budget-table.single { grid-template-columns: 260px 1fr; min-width: 0; }
+
+/* History tab */
+.hist-select { font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border-med); border-radius: 20px; background: #fff; }
+.hist-import-file { display: block; margin: 10px 0; font-family: 'DM Sans', sans-serif; font-size: 13px; }
 
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
@@ -421,9 +426,9 @@ function defaultSettings() {
     plTolerancePct: 5,
     /* Weekly transactions and average-spend targets - the "operational
        assumptions" the old KPI Tracker sheet fed its $ figures with (see
-       spec 3.3). Not in Xero (Budget Manager holds $ only), and the History
-       tab that would otherwise import them from the old sheet isn't built
-       yet, so they live here until then. */
+       spec 3.3). Not in Xero (Budget Manager holds $ only) - the Budget
+       tab still uses these directly rather than anything week-specific
+       from History, which holds actuals, not targets. */
     transactionsTargetWeekly: 0,
     avgSpendTarget: 0,
     /* "Weeks in month" for the Budget tab, Jan-Dec - the real spreadsheet's
@@ -433,7 +438,13 @@ function defaultSettings() {
        reliably computable from actual dates. Defaults to a standard 4-4-5
        retail calendar (each quarter 4+4+5=13 weeks, 52 weeks/year) - type
        in the real numbers from the sheet to match exactly. */
-    weeksInMonth: [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5]
+    weeksInMonth: [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5],
+    /* History tab's weekly Cash Flow cost target (spec 3.4's "Variance"
+       row) - the old sheet had this as a fixed number (2601) typed
+       straight into the formula rather than a cell anywhere, so there's
+       no real "owner's current value" to seed from; kept editable here
+       for whenever trading costs move on from that figure. */
+    cashFlowCostTargetWeekly: 2601
   };
 }
 function loadSettings() {
@@ -645,6 +656,15 @@ var state = {
     error: null,
     baselineSeeded: false,      /* has a live baseline overwritten the starting inputs yet? */
     inputs: { avgSpend: 0, transactions: 0, cogsPct: 0, wagePct: 0, opexPct: 0 }
+  },
+  history: {
+    loading: false,
+    weeks: null,                /* last /api/history payload's weeks array; null = not fetched yet */
+    error: null,
+    selectedWeek: null,         /* Monday ISO of the week the drill-down shows */
+    trendMetric: null,
+    importing: false,
+    importError: null
   }
 };
 
@@ -924,8 +944,8 @@ function render() {
   /* Nav */
   var nav = el('div', 'nav');
   var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'history', label: 'History' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'history', label: 'History' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -963,6 +983,7 @@ function render() {
   else if (state.view === 'owner') renderOwnerInput(root);
   else if (state.view === 'budget') renderBudget(root);
   else if (state.view === 'whatif') renderWhatIf(root);
+  else if (state.view === 'history') renderHistory(root);
   else if (state.view === 'pl') renderPL(root);
   else if (state.view === 'cashsplit') renderCashSplit(root);
   else if (state.view === 'connections') renderConnections(root);
@@ -2695,6 +2716,287 @@ function renderWhatIf(root) {
   root.appendChild(wrap);
 }
 
+/* ============================================================
+   History tab (banksia-dashboard-spec.md #3.4). A one-time import of the
+   old spreadsheet's two weekly "KPI Tracker" tabs (see the build plan for
+   how history-import.json was produced and hand-verified against the real
+   sheet), then new weeks accumulate on their own whenever Owner Input's
+   Run the Numbers is clicked (worker.js's saveHistorySnapshot) - no more
+   writes back to the sheet after that. Per the owner's explicit choice,
+   matches the old sheet's exact categories rather than a simplified
+   app-native shape. /api/history returns $ and count fields only for every
+   week (source:'import'|'live') - every ratio (COGS/wage % of Bank feeds,
+   profit, avg $/sale, avg $/hour) is computed here, same "Worker/data
+   supplies raw numbers only" rule as the rest of the file, so import and
+   live weeks run through the exact same maths.
+============================================================ */
+function historyRevenueTotal(rev) {
+  if (!rev) return null;
+  var food = rev.food || 0, bev = rev.bev || 0, uber = rev.uber || 0, event = rev.event || 0, retail = rev.retail || 0;
+  return (food + bev + uber + event + retail) - uber * 0.3; /* nets out Uber's ~30% platform fee, same as the sheet's own R formula */
+}
+function historyCogsTotal(cogs) {
+  if (!cogs) return null;
+  return (cogs.food || 0) + (cogs.bev || 0) + (cogs.retail || 0);
+}
+function historyPctOfBank(v, bankFeeds) { return (v == null || !bankFeeds) ? null : (v / bankFeeds) * 100; }
+function historyProfit(rec) {
+  var cogs = historyCogsTotal(rec.cogs), wages = rec.wages ? rec.wages.total : null;
+  if (rec.bankFeeds == null || cogs == null || wages == null) return null;
+  return rec.bankFeeds - cogs - wages;
+}
+function historyCashFlowProfit(rec) {
+  var p = historyProfit(rec);
+  if (p == null || rec.cashFlowCost == null) return null;
+  var ownerSuper = (rec.legacyOwnerPersonal && rec.legacyOwnerPersonal.super) || 0;
+  return p - rec.cashFlowCost - ownerSuper;
+}
+function historyOpexPct(rec) { return historyPctOfBank(rec.cashFlowCost, rec.bankFeeds); }
+function historyVariance(rec) {
+  if (rec.cashFlowCost == null) return null;
+  var target = (typeof SETTINGS.cashFlowCostTargetWeekly === 'number') ? SETTINGS.cashFlowCostTargetWeekly : 2601;
+  return rec.cashFlowCost - target;
+}
+function historyAvgPerHour(w) { return (w && w.total != null && w.hours) ? w.total / w.hours : null; }
+function historyAvgSale(rec) { return (rec.bankFeeds != null && rec.covers) ? rec.bankFeeds / rec.covers : null; }
+
+/* Auto-loads on tab open (cheap KV-only read, same as Owner Input) - a
+   wide range so every imported + live week comes back in one call; ~90
+   weeks even a couple of years in, trivial either way. */
+function fetchHistory() {
+  var h = state.history;
+  if (h.loading) return;
+  h.loading = true; h.error = null;
+  render();
+  var from = iso(addYears(tradingToday(), -3));
+  var to = iso(addDays(tradingToday(), 7));
+  fetch('/api/history?from=' + from + '&to=' + to).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    h.weeks = json.weeks || []; h.loading = false;
+    if (h.weeks.length && !h.selectedWeek) h.selectedWeek = h.weeks[h.weeks.length - 1].week;
+    render();
+  }).catch(function () {
+    h.loading = false; h.error = 'Could not reach the dashboard just now. Try refresh.'; render();
+  });
+}
+
+/* One-time import panel - only ever shown while history:week: is empty on
+   the server (worker.js's apiHistoryImport refuses a second import once
+   any record exists). Reads the file entirely in the owner's own browser
+   session, under their own auth - nothing about the file passes through
+   me. */
+function renderHistoryImport(root) {
+  var hi = state.history;
+  var card = el('div', 'oi-card');
+  card.appendChild(el('div', 'oi-card-title', 'One-time import from your old spreadsheet'));
+  card.appendChild(el('div', 'set-note', 'No weeks yet. Choose the history-import.json file your AI prepared (it’s in the dashboard project folder, pulled down next time you Fetch in GitHub Desktop) to bring in every week back to January 2025. This runs once - the moment it succeeds this panel disappears for good, and new weeks accumulate on their own from Owner Input’s Run the Numbers.'));
+  var fileInp = document.createElement('input');
+  fileInp.type = 'file'; fileInp.accept = 'application/json'; fileInp.className = 'hist-import-file';
+  card.appendChild(fileInp);
+  var importBtn = el('button', 'btn-primary-dash', hi.importing ? 'Importing…' : 'Import');
+  importBtn.disabled = hi.importing;
+  importBtn.onclick = function () {
+    var file = fileInp.files && fileInp.files[0];
+    if (!file) { hi.importError = 'Choose the file first.'; render(); return; }
+    hi.importing = true; hi.importError = null; render();
+    var reader = new FileReader();
+    reader.onload = function () {
+      var body;
+      try { body = JSON.parse(reader.result); } catch (e) {
+        hi.importing = false; hi.importError = 'That file isn’t valid JSON.'; render(); return;
+      }
+      fetch('/api/history/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, j: j }; }); })
+        .then(function (r) {
+          hi.importing = false;
+          if (!r.ok) { hi.importError = (r.j && r.j.error) || 'Import failed.'; render(); return; }
+          hi.weeks = null; fetchHistory();
+        })
+        .catch(function () { hi.importing = false; hi.importError = 'Could not reach the dashboard just now.'; render(); });
+    };
+    reader.readAsText(file);
+  };
+  card.appendChild(importBtn);
+  if (hi.importError) card.appendChild(el('div', 'banner banner-coral', esc(hi.importError)));
+  root.appendChild(card);
+}
+
+/* Single-week drill-down - every field the old sheet tracked for that
+   week, in the sheet's own row order, reusing the .budget-table card
+   layout (single value column instead of 12 months/4 scales). */
+function renderHistoryDrilldown(root, weeks) {
+  var h = state.history;
+  var pbar = el('div', 'period-bar');
+  pbar.appendChild(el('span', 'period-label', 'Week'));
+  var sel = document.createElement('select');
+  sel.className = 'hist-select';
+  weeks.slice().reverse().forEach(function (w) {
+    var o = document.createElement('option'); o.value = w.week;
+    o.textContent = fmtRange({ from: fromIso(w.week), to: fromIso(w.weekEnding) }) + (w.source === 'import' ? ' · imported' : ' · live');
+    if (w.week === h.selectedWeek) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = function () { h.selectedWeek = sel.value; render(); };
+  pbar.appendChild(sel);
+  root.appendChild(pbar);
+
+  var rec = weeks.filter(function (w) { return w.week === h.selectedWeek; })[0];
+  if (!rec) { root.appendChild(el('div', 'pl-empty', 'Pick a week above.')); return; }
+
+  var revTotal = historyRevenueTotal(rec.revenue);
+  var cogsTotal = historyCogsTotal(rec.cogs);
+  var wagesTotal = rec.wages ? rec.wages.total : null;
+
+  var wrap = el('div', 'budget-table-wrap');
+  var table = el('div', 'budget-table single');
+  function row(label, val, cls) {
+    table.appendChild(el('div', 'budget-cell rowlabel' + (cls ? ' ' + cls : ''), esc(label)));
+    table.appendChild(el('div', 'budget-cell val' + (cls ? ' ' + cls : ''), esc(val)));
+  }
+  row('Revenue (channels, Uber netted)', fmtMoneyOrDash(revTotal), 'total');
+  row('· Food', fmtMoneyOrDash(rec.revenue && rec.revenue.food), 'sub');
+  row('· Bev', fmtMoneyOrDash(rec.revenue && rec.revenue.bev), 'sub');
+  row('· Uber', fmtMoneyOrDash(rec.revenue && rec.revenue.uber), 'sub');
+  row('· Event/catering', fmtMoneyOrDash(rec.revenue && rec.revenue.event), 'sub');
+  row('· Retail', fmtMoneyOrDash(rec.revenue && rec.revenue.retail), 'sub');
+  if (rec.revenueUncategorised) row('· Uncategorised', fmtMoneyOrDash(rec.revenueUncategorised), 'sub');
+  row('Bank feeds', fmtMoneyOrDash(rec.bankFeeds), 'total');
+  if (rec.forecast != null) row('Forecast (from sheet)', fmtMoneyOrDash(rec.forecast), 'sub');
+  row('COGS total', fmtMoneyOrDash(cogsTotal));
+  row('· Food', fmtMoneyOrDash(rec.cogs && rec.cogs.food), 'sub');
+  row('· Bev', fmtMoneyOrDash(rec.cogs && rec.cogs.bev), 'sub');
+  row('· Retail', fmtMoneyOrDash(rec.cogs && rec.cogs.retail), 'sub');
+  if (rec.cogsUncategorised) row('· Uncategorised', fmtMoneyOrDash(rec.cogsUncategorised), 'sub');
+  row('COGS % of Bank feeds', fmtPctVal(historyPctOfBank(cogsTotal, rec.bankFeeds)), 'sub');
+  row('Wages total', fmtMoneyOrDash(wagesTotal));
+  row('· Kitchen', fmtMoneyOrDash(rec.wages && rec.wages.kitchen), 'sub');
+  row('· FOH', fmtMoneyOrDash(rec.wages && rec.wages.foh), 'sub');
+  row('Wage % of Bank feeds', fmtPctVal(historyPctOfBank(wagesTotal, rec.bankFeeds)), 'sub');
+  row('Hours worked', (rec.wages && rec.wages.hours != null) ? String(rec.wages.hours) : '—', 'sub');
+  row('Avg $/hour', fmtMoneyOrDash(historyAvgPerHour(rec.wages)), 'sub');
+  row('Covers', (rec.covers != null) ? fmtInt(rec.covers) : '—');
+  row('Avg $/sale', fmtMoneyOrDash(historyAvgSale(rec)), 'sub');
+  row('Profit (Bank feeds − COGS − Wages)', fmtMoneyOrDash(historyProfit(rec)), 'total');
+  if (rec.cashFlowCost != null) {
+    row('Cash Flow cost', fmtMoneyOrDash(rec.cashFlowCost));
+    row('Cash Flow Profit', fmtMoneyOrDash(historyCashFlowProfit(rec)), 'total');
+    row('Opex % of Bank feeds', fmtPctVal(historyOpexPct(rec)), 'sub');
+    row('Variance vs weekly target', fmtMoneyOrDash(historyVariance(rec)), 'sub');
+  }
+  wrap.appendChild(table);
+  root.appendChild(wrap);
+
+  if (rec.notes) {
+    var noteCard = el('div', 'oi-card');
+    noteCard.appendChild(el('div', 'oi-card-title', 'Notes'));
+    noteCard.appendChild(el('div', 'set-note', esc(rec.notes)));
+    root.appendChild(noteCard);
+  }
+  root.appendChild(el('div', 'set-note', 'Source: ' + (rec.source === 'import' ? 'imported from the old spreadsheet' : 'pulled live via Run the Numbers') + (rec.savedAt ? (' · saved ' + new Date(rec.savedAt).toLocaleString()) : '') + '.'));
+}
+
+/* Decoupled from METRIC_DEFS/trendSeries (unlike the dashboard's own
+   trendBars) - History has its own weekly series, no target/good-bad
+   colouring, just plain accent bars with a hover tooltip. Reuses the same
+   .tbars/.tbar CSS and the shared attachBarTip wiring. */
+function historyTrendBars(labels, values, fmtFn) {
+  var wrap = el('div');
+  var nums = values.filter(function (x) { return x != null; });
+  if (!nums.length) {
+    wrap.appendChild(el('div', 'notconf-msg', 'No data in this range yet.'));
+    return wrap;
+  }
+  var maxv = Math.max.apply(null, nums.concat([0]));
+  var minv = Math.min.apply(null, nums.concat([0]));
+  var span = (maxv - minv) || 1;
+  var W = 600, H = 60, gap = 2, NS = 'http://www.w3.org/2000/svg';
+  var bw = (W - gap * (values.length - 1)) / values.length;
+  var zeroY = H - ((0 - minv) / span) * H;
+  var svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.cssText = 'display:block;width:100%;height:60px';
+  for (var i = 0; i < values.length; i++) {
+    if (values[i] == null) continue;
+    var x = i * (bw + gap);
+    var vy = H - ((values[i] - minv) / span) * H;
+    var top = Math.min(vy, zeroY), hgt = Math.max(1.5, Math.abs(zeroY - vy));
+    var rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('class', 'tbar');
+    rect.setAttribute('x', x.toFixed(1));
+    rect.setAttribute('y', top.toFixed(1));
+    rect.setAttribute('width', bw.toFixed(1));
+    rect.setAttribute('height', hgt.toFixed(1));
+    rect.setAttribute('rx', '1');
+    rect.setAttribute('data-lab', labels[i] + ' · ' + fmtFn(values[i]));
+    svg.appendChild(rect);
+  }
+  var holder = el('div', 'tbars-svg');
+  holder.appendChild(svg);
+  attachBarTip(holder);
+  wrap.appendChild(holder);
+  return wrap;
+}
+
+var HISTORY_TREND_METRICS = [
+  { key: 'bankFeeds', label: 'Bank feeds', get: function (r) { return r.bankFeeds; }, fmt: fmtMoneyOrDash },
+  { key: 'revenue', label: 'Revenue (netted)', get: function (r) { return historyRevenueTotal(r.revenue); }, fmt: fmtMoneyOrDash },
+  { key: 'profit', label: 'Profit', get: historyProfit, fmt: fmtMoneyOrDash },
+  { key: 'cogsPct', label: 'COGS % of Bank feeds', get: function (r) { return historyPctOfBank(historyCogsTotal(r.cogs), r.bankFeeds); }, fmt: fmtPctVal },
+  { key: 'wagePct', label: 'Wage % of Bank feeds', get: function (r) { return historyPctOfBank(r.wages ? r.wages.total : null, r.bankFeeds); }, fmt: fmtPctVal },
+  { key: 'avgSale', label: 'Avg $/sale', get: historyAvgSale, fmt: fmtMoneyOrDash },
+  { key: 'avgHour', label: 'Avg $/hour', get: function (r) { return historyAvgPerHour(r.wages); }, fmt: fmtMoneyOrDash },
+  { key: 'covers', label: 'Covers', get: function (r) { return r.covers; }, fmt: fmtInt }
+];
+
+function renderHistoryTrend(root, weeks) {
+  var h = state.history;
+  if (!h.trendMetric) h.trendMetric = 'bankFeeds';
+  var card = el('div', 'oi-card');
+  card.appendChild(el('div', 'oi-card-title', 'Trend'));
+  var pbar = el('div', 'period-bar');
+  pbar.appendChild(el('span', 'period-label', 'Metric'));
+  var sel = document.createElement('select');
+  sel.className = 'hist-select';
+  HISTORY_TREND_METRICS.forEach(function (m) {
+    var o = document.createElement('option'); o.value = m.key; o.textContent = m.label;
+    if (h.trendMetric === m.key) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = function () { h.trendMetric = sel.value; render(); };
+  pbar.appendChild(sel);
+  card.appendChild(pbar);
+
+  var metric = HISTORY_TREND_METRICS.filter(function (m) { return m.key === h.trendMetric; })[0];
+  var shown = weeks.slice(-26); /* last 26 weeks (~6 months) - keeps bars legible */
+  var labels = shown.map(function (w) { return w.week; });
+  var values = shown.map(function (w) { return metric.get(w); });
+  card.appendChild(el('div', 'set-note', 'Last ' + shown.length + ' weeks · hover a bar for detail'));
+  card.appendChild(historyTrendBars(labels, values, metric.fmt));
+  root.appendChild(card);
+}
+
+function renderHistory(root) {
+  root.appendChild(el('div', 'screen-title', 'History'));
+  root.appendChild(el('p', 'screen-sub', 'Every week back to January 2025, matching your old spreadsheet’s exact categories - imported once, then added to automatically from Owner Input’s Run the Numbers.'));
+
+  var h = state.history;
+  if (h.weeks == null && !h.loading) fetchHistory();
+  if (h.error) root.appendChild(el('div', 'banner banner-coral', esc(h.error)));
+  if (h.loading || h.weeks == null) {
+    root.appendChild(el('div', 'pl-empty', 'Loading…'));
+    return;
+  }
+  if (!h.weeks.length) {
+    renderHistoryImport(root);
+    return;
+  }
+  renderHistoryDrilldown(root, h.weeks);
+  renderHistoryTrend(root, h.weeks);
+}
+
 function renderSettings(root) {
   root.appendChild(el('div', 'screen-title', 'Settings'));
   root.appendChild(el('p', 'screen-sub', 'The bits you might want to change, with no code anywhere. Your AI set the rest up during the build.'));
@@ -2956,6 +3258,27 @@ function renderSettings(root) {
     wimGrid.appendChild(cell);
   });
   root.appendChild(wimGrid);
+
+  /* History tab: the weekly Cash Flow cost target ("Variance" row, spec
+     3.4) - a fixed number the old sheet had hardcoded into its own
+     formula rather than a cell, so there's no "owner's current value" to
+     read back from anywhere. */
+  root.appendChild(el('div', 'screen-title', 'History'));
+  root.appendChild(el('p', 'screen-sub', 'The one target number the old spreadsheet had hardcoded rather than in a cell.'));
+  var histGrid = el('div', 'set-grid');
+  var hc1 = el('div', 'set-cell');
+  hc1.appendChild(el('div', 'set-label', 'Cash Flow cost target · per week'));
+  var hi1 = document.createElement('input'); hi1.type = 'number'; hi1.step = 'any'; hi1.min = '0';
+  hi1.value = (typeof SETTINGS.cashFlowCostTargetWeekly === 'number') ? SETTINGS.cashFlowCostTargetWeekly : '';
+  hi1.onchange = function () {
+    var val = parseFloat(hi1.value);
+    SETTINGS.cashFlowCostTargetWeekly = isFinite(val) ? val : 0;
+    saveSettings(); render();
+  };
+  hc1.appendChild(hi1);
+  hc1.appendChild(el('div', 'set-note', 'History’s Variance row is each week’s Cash Flow cost minus this.'));
+  histGrid.appendChild(hc1);
+  root.appendChild(histGrid);
 
   if (!isManual()) {
     root.appendChild(el('div', 'section-sub', 'Session'));

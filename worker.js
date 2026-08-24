@@ -418,6 +418,58 @@ function walkXeroCogsSplit(section, periodIndex, acc) {
   }
 }
 
+/* Revenue-by-channel split for the History tab (banksia-dashboard-spec.md
+   #3.4) - matches the old spreadsheet's Food/Bev/Uber/Event/Retail revenue
+   columns. Nothing else in this app splits revenue at all; same keyword-
+   match-with-visible-catch-all pattern as walkXeroCogsSplit above, checked
+   in this order (Uber before Retail/Food/Bev - a delivery-platform account
+   name is the one most likely to also contain "food"). */
+const REV_UBER_RE = /uber/i;
+const REV_RETAIL_RE = /retail|merchandise/i;
+const REV_EVENT_RE = /event|catering|function/i;
+const REV_BEV_RE = /beverage|\bbar\b|wine|beer|liquor|drinks?/i;
+const REV_FOOD_RE = /food|kitchen|meals?|dining/i;
+
+function walkXeroRevenueSplit(section, periodIndex, acc) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      const value = xeroCellValue(row, periodIndex);
+      let bucket;
+      if (REV_UBER_RE.test(label)) bucket = 'uber';
+      else if (REV_RETAIL_RE.test(label)) bucket = 'retail';
+      else if (REV_EVENT_RE.test(label)) bucket = 'event';
+      else if (REV_BEV_RE.test(label)) bucket = 'bev';
+      else if (REV_FOOD_RE.test(label)) bucket = 'food';
+      else bucket = 'uncategorised';
+      acc.buckets[bucket] += value;
+      acc.lines.push({ label, value, bucket });
+    } else if (row.RowType === 'Section') {
+      walkXeroRevenueSplit(row, periodIndex, acc);
+    }
+  }
+}
+
+/* Own report call (not reused from fetchXeroPLSplit) - History needs the
+   Income section walked by channel keyword instead of just summed, and
+   this keeps that walk fully independent of the already-shipped P&L/
+   Budget/What-If code paths rather than risking a shared-function change
+   touching them. */
+async function fetchXeroRevenueSplit(h, tenantId, from, to) {
+  const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+  const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+  const acc = { buckets: { food: 0, bev: 0, uber: 0, event: 0, retail: 0, uncategorised: 0 }, lines: [] };
+  for (const row of rows) {
+    if (row.RowType !== 'Section') continue;
+    const title = (row.Title || '').toLowerCase();
+    if (!title.includes('other') && (title.includes('income') || title.includes('revenue') || title.includes('trading income'))) {
+      walkXeroRevenueSplit(row, 0, acc);
+    }
+  }
+  return acc;
+}
+
 /* Splits Operating Expenses into: owner's own equity-style drawings
    (excluded from every other bucket, same OWNER_WAGE_RE/OWNER_SUPER_RE/
    DISTRIBUTION_OF_PROFIT_RE as walkXeroOpex - becomes the waterfall's
@@ -980,6 +1032,17 @@ async function fetchXeroPaged(h, tenantId, path, whereClause, dateField, from, t
   return out;
 }
 
+/* "Bank feeds" for the History tab (banksia-dashboard-spec.md #3.4) - the
+   old spreadsheet's own denominator for nearly every %, a raw weekly $
+   figure the owner typed by hand from their bank statement. Reuses the
+   RECEIVE-type BankTransactions pull already built for Cash Split's GST
+   calc (fetchXeroPaged), just summed over a week instead of a quarter. */
+async function fetchXeroBankFeeds(h, tenantId, from, to) {
+  const dateWhere = 'Date >= DateTime(' + from.split('-').map(Number).join(',') + ') && Date <= DateTime(' + to.split('-').map(Number).join(',') + ') && Type=="RECEIVE"';
+  const items = await fetchXeroPaged(h, tenantId, 'BankTransactions', dateWhere, 'Date', from, to);
+  return items.reduce((sum, t) => sum + (Number(t.Total) || 0), 0);
+}
+
 /* Calculates G1/1A/1B for a date range from real transactions - see the
    block comment above for the full method. Known scope gap: doesn't include
    RECEIVE-OVERPAYMENT/RECEIVE-PREPAYMENT/SPEND-OVERPAYMENT/SPEND-PREPAYMENT
@@ -1434,10 +1497,140 @@ async function apiOwnerWages(env, url) {
   try {
     const split = await fetchXeroPLSplit(h, tenantId, from, to);
     await noteSync(env, 'accounting');
+    /* Also extends this same "Run the Numbers" click to capture a full
+       History snapshot (#3.4) for the week, since from/to here is always
+       a real Mon-Sun trading week already. Best-effort: a History-saving
+       failure (e.g. the "4 Labour" tracking category lookup hiccupping)
+       must never break the owner-wage figure this endpoint has always
+       returned, so it's wrapped in its own try/catch and swallowed. */
+    try { await saveHistorySnapshot(env, h, tenantId, from); } catch (e) {}
     return json({ available: true, actual: split.opex.ownerWages });
   } catch (err) {
     return json({ available: false, error: plainError(err.status || 500) });
   }
+}
+
+/* ----------------------------------------------------------------------------
+   History tab (banksia-dashboard-spec.md #3.4): a one-time import of the old
+   spreadsheet's two "KPI Tracker" tabs (weekly rows going back to Jan 2025),
+   then new weeks accumulate live whenever Owner Input's "Run the Numbers" is
+   clicked (see saveHistorySnapshot above) - no more writes back to the sheet
+   after that. Per the owner's explicit choice, going-forward weeks match the
+   old sheet's exact categories (revenue by channel, COGS/wages by
+   department, Bank feeds) rather than a simplified app-native shape.
+
+   One record per week at history:week:<mondayISO>, source:'import'|'live'
+   distinguishing sheet-imported weeks (which carry fields - Bank feeds
+   typed by hand, weekly notes, the legacy personal-stats block - a live
+   pull can't originate identically) from ones the app generated itself.
+   Every derived figure (COGS/wage % of Bank feeds, profit, avg $/sale,
+   avg $/hour) is left to dashboard.html, same "Worker/data supplies raw
+   numbers only" rule as the rest of this file - stored records hold $ and
+   count fields only, no precomputed ratios, so both import and live weeks
+   run through the exact same client-side maths.
+---------------------------------------------------------------------------- */
+
+/* Best-effort weekly capture - fetches revenue-by-channel, COGS/wages
+   splits (reusing exactly what P&L and Owner Wages already fetch, not
+   rebuilt), Bank feeds, Covers, and whatever staff hours are already
+   logged for the week, and writes one history:week: record. Called from
+   apiOwnerWages, always with a real Mon-Sun week. Overwrites any existing
+   record for the week (including a prior import) - the live figures are
+   the more current source once the app is actually being used weekly. */
+async function saveHistorySnapshot(env, h, tenantId, week) {
+  const to = shiftIsoDate(week, 6);
+  const [split, revSplit, bankFeeds, staffHoursRaw] = await Promise.all([
+    fetchXeroPLSplit(h, tenantId, week, to),
+    fetchXeroRevenueSplit(h, tenantId, week, to),
+    fetchXeroBankFeeds(h, tenantId, week, to),
+    env.TOKENS.get('ownerinput:staffhours:' + week)
+  ]);
+
+  let wagesSplit = null;
+  const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, '4 labour');
+  if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, week, to, trackingCategoryId);
+
+  let covers = null;
+  const posAdapter = ADAPTERS.pos;
+  if (posAdapter && posAdapter.configured) {
+    covers = (await posAdapter.fetchRange(env, h, { from: week, to })).count;
+  }
+
+  let staffHours = null;
+  if (staffHoursRaw) { try { staffHours = JSON.parse(staffHoursRaw).staffHours; } catch (e) {} }
+
+  const record = {
+    week,
+    weekEnding: to,
+    source: 'live',
+    savedAt: new Date().toISOString(),
+    revenue: { food: revSplit.buckets.food, bev: revSplit.buckets.bev, uber: revSplit.buckets.uber, event: revSplit.buckets.event, retail: revSplit.buckets.retail },
+    revenueUncategorised: revSplit.buckets.uncategorised,
+    bankFeeds,
+    forecast: null,
+    cogs: { food: split.cogs.buckets.boh, bev: split.cogs.buckets.foh, retail: split.cogs.buckets.retail },
+    cogsUncategorised: split.cogs.buckets.uncategorised,
+    wages: {
+      kitchen: wagesSplit ? wagesSplit.kitchenBoh : null,
+      foh: wagesSplit ? wagesSplit.foh : null,
+      hours: staffHours,
+      total: split.opex.wagesSuperExclOwner
+    },
+    covers,
+    cashFlowCost: null,
+    legacyOwnerPersonal: null,
+    notes: null
+  };
+  await env.TOKENS.put('history:week:' + week, JSON.stringify(record));
+}
+
+/* POST /api/history/import - the one-time bulk write from the pre-parsed
+   sheet JSON (see the History tab build plan for how that file was made
+   and hand-verified). Body: { weeks: [ {week, weekEnding, source, ...}, ... ] }.
+   Refuses outright if any history:week: record already exists - a second
+   import is never the right move once the app has started generating its
+   own live weeks, and this keeps the one-time panel genuinely one-time
+   (dashboard.html hides it the moment this has succeeded once). */
+async function apiHistoryImport(env, request) {
+  const existing = await env.TOKENS.list({ prefix: 'history:week:', limit: 1 });
+  if (existing.keys.length) return json({ ok: false, error: 'History already has data - import refused to avoid overwriting it.' }, 409);
+
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'bad json' }, 400); }
+  const weeks = body && Array.isArray(body.weeks) ? body.weeks : null;
+  if (!weeks || !weeks.length) return json({ ok: false, error: 'no weeks in file' }, 400);
+  for (const w of weeks) {
+    if (!w || !WEEK_RE.test(w.week)) return json({ ok: false, error: 'bad week in file: ' + JSON.stringify(w && w.week) }, 400);
+  }
+
+  await Promise.all(weeks.map((w) => env.TOKENS.put('history:week:' + w.week, JSON.stringify(w))));
+  return json({ ok: true, imported: weeks.length });
+}
+
+/* GET /api/history?from=&to= - reads whichever history:week: records fall
+   in [from,to] (both Monday ISO dates), for the drill-down/trend views.
+   KV has no range query, so this lists every history:week: key (~90 of
+   them even a couple of years in) and filters client-side of the list -
+   trivially cheap at this scale, same "just list it" approach
+   getOwnerWeekEntries already uses. */
+async function apiHistoryGet(env, url) {
+  const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+  if (!from || !to || !WEEK_RE.test(from) || !WEEK_RE.test(to)) return json({ error: 'bad range' }, 400);
+
+  const out = [];
+  let cursor;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix: 'history:week:', cursor } : { prefix: 'history:week:' });
+    const keys = page.keys.filter((k) => {
+      const week = k.name.slice('history:week:'.length);
+      return week >= from && week <= to;
+    });
+    const raws = await Promise.all(keys.map((k) => env.TOKENS.get(k.name)));
+    raws.forEach((raw) => { if (raw) { try { out.push(JSON.parse(raw)); } catch (e) {} } });
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  out.sort((a, b) => (a.week < b.week ? -1 : a.week > b.week ? 1 : 0));
+  return json({ weeks: out });
 }
 
 /* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the
@@ -2325,6 +2518,14 @@ export default {
     if (path === '/api/whatif' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiWhatIf(env, url);
+    }
+    if (path === '/api/history' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryGet(env, url);
+    }
+    if (path === '/api/history/import' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryImport(env, request);
     }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {

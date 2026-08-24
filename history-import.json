@@ -1,0 +1,3149 @@
+{
+  "weeks": [
+    {
+      "week": "2024-12-30",
+      "weekEnding": "2025-01-05",
+      "source": "import",
+      "revenue": {
+        "food": 27425.0,
+        "bev": 10914.0,
+        "uber": 1417.0,
+        "event": 626.0,
+        "retail": 342.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 38531.0,
+      "forecast": 32338.0,
+      "cogs": {
+        "food": 4904.0,
+        "bev": 1284.0,
+        "retail": 507.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 7876.0,
+        "foh": 5708.0,
+        "hours": 348.0,
+        "total": 15146.16
+      },
+      "covers": 1034.0,
+      "cashFlowCost": 2718.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 0.0,
+        "hoursWorked": 18.0,
+        "wage": 1992.0,
+        "super": 2221.08
+      },
+      "notes": "LObster fest-need lots more lobster/Big week/head chef took all his sick leave and sous had to work 6 me too"
+    },
+    {
+      "week": "2025-01-06",
+      "weekEnding": "2025-01-12",
+      "source": "import",
+      "revenue": {
+        "food": 13687.0,
+        "bev": 6614.0,
+        "uber": 1208.0,
+        "event": 741.0,
+        "retail": 411.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25644.0,
+      "forecast": 26548.0,
+      "cogs": {
+        "food": 3390.0,
+        "bev": 1594.0,
+        "retail": 403.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4052.93,
+        "foh": 3414.05,
+        "hours": 233.0,
+        "total": 8325.6827
+      },
+      "covers": 721.0,
+      "cashFlowCost": 3663.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 0.0,
+        "hoursWorked": 25.0,
+        "wage": 1470.0,
+        "super": 1639.05
+      },
+      "notes": "quiet mid week and sat but otherwise slightly busier than expected."
+    },
+    {
+      "week": "2025-01-13",
+      "weekEnding": "2025-01-19",
+      "source": "import",
+      "revenue": {
+        "food": 13791.0,
+        "bev": 7029.0,
+        "uber": 1124.0,
+        "event": 400.0,
+        "retail": 317.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21787.0,
+      "forecast": 18422.0,
+      "cogs": {
+        "food": 2904.0,
+        "bev": 1420.0,
+        "retail": 107.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3837.0,
+        "foh": 3387.0,
+        "hours": 237.0,
+        "total": 8054.76
+      },
+      "covers": 748.0,
+      "cashFlowCost": 2506.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 22.5,
+        "wage": 2280.0,
+        "super": 2542.2
+      },
+      "notes": "good week/hot and quiet friday and weekend/NFS sat night"
+    },
+    {
+      "week": "2025-01-20",
+      "weekEnding": "2025-01-26",
+      "source": "import",
+      "revenue": {
+        "food": 12034.0,
+        "bev": 5555.0,
+        "uber": 1276.0,
+        "event": 509.0,
+        "retail": 237.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21066.0,
+      "forecast": 15030.0,
+      "cogs": {
+        "food": 2717.0,
+        "bev": 1574.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3677.25,
+        "foh": 3019.88,
+        "hours": 217.0,
+        "total": 7467.2999
+      },
+      "covers": 651.0,
+      "cashFlowCost": 4934.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 14.25,
+        "wage": 2094.0,
+        "super": 2334.81
+      },
+      "notes": "ok week-dead weekend/last week of holidays/slow monday"
+    },
+    {
+      "week": "2025-01-27",
+      "weekEnding": "2025-02-02",
+      "source": "import",
+      "revenue": {
+        "food": 12197.0,
+        "bev": 5935.0,
+        "uber": 842.0,
+        "event": 523.0,
+        "retail": 193.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19231.0,
+      "forecast": 22081.0,
+      "cogs": {
+        "food": 2489.0,
+        "bev": 1119.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3856.75,
+        "foh": 3263.0,
+        "hours": 211.0,
+        "total": 7938.5212
+      },
+      "covers": 655.0,
+      "cashFlowCost": 4049.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 16.25,
+        "wage": 1009.0,
+        "super": 1125.035
+      },
+      "notes": "quiet week/dead w/end but very fuckign hot!"
+    },
+    {
+      "week": "2025-02-03",
+      "weekEnding": "2025-02-09",
+      "source": "import",
+      "revenue": {
+        "food": 9864.0,
+        "bev": 5443.0,
+        "uber": 1189.0,
+        "event": 1189.0,
+        "retail": 321.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 17143.0,
+      "forecast": 18233.0,
+      "cogs": {
+        "food": 2324.0,
+        "bev": 1018.0,
+        "retail": 50.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3207.9,
+        "foh": 2606.0,
+        "hours": 184.0,
+        "total": 6482.4985
+      },
+      "covers": 577.0,
+      "cashFlowCost": 3034.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 21.0,
+        "wage": 1830.0,
+        "super": 2040.45
+      },
+      "notes": "dead week/dockside-shit turnout on weekend-$1k of catering saved us"
+    },
+    {
+      "week": "2025-02-10",
+      "weekEnding": "2025-02-16",
+      "source": "import",
+      "revenue": {
+        "food": 13946.0,
+        "bev": 6765.0,
+        "uber": 1500.0,
+        "event": 2372.0,
+        "retail": 209.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 17742.0,
+      "forecast": 18913.0,
+      "cogs": {
+        "food": 2574.0,
+        "bev": 1200.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3445.0,
+        "foh": 2884.0,
+        "hours": 205.0,
+        "total": 7056.835
+      },
+      "covers": 726.0,
+      "cashFlowCost": 3415.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 20.0,
+        "wage": 1248.0,
+        "super": 1391.52
+      },
+      "notes": "dead start of week(hot) val dinner/liv golf meant busy weekend"
+    },
+    {
+      "week": "2025-02-17",
+      "weekEnding": "2025-02-23",
+      "source": "import",
+      "revenue": {
+        "food": 10798.0,
+        "bev": 5295.0,
+        "uber": 1386.0,
+        "event": 672.0,
+        "retail": 111.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22770.0,
+      "forecast": 20966.0,
+      "cogs": {
+        "food": 2881.0,
+        "bev": 1570.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3629.0,
+        "foh": 2979.0,
+        "hours": 204.0,
+        "total": 7367.92
+      },
+      "covers": 646.0,
+      "cashFlowCost": 5892.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 25.0,
+        "wage": 2388.0,
+        "super": 2662.62
+      },
+      "notes": "very quiet week for no real reason..."
+    },
+    {
+      "week": "2025-02-24",
+      "weekEnding": "2025-03-02",
+      "source": "import",
+      "revenue": {
+        "food": 14442.0,
+        "bev": 6720.0,
+        "uber": 1342.0,
+        "event": 531.0,
+        "retail": 370.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 17862.0,
+      "forecast": 19180.0,
+      "cogs": {
+        "food": 2698.0,
+        "bev": 1222.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3513.0,
+        "foh": 3420.0,
+        "hours": 230.0,
+        "total": 7730.295
+      },
+      "covers": 786.0,
+      "cashFlowCost": 5943.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 3.0,
+        "hoursWorked": 25.0,
+        "wage": 1560.0,
+        "super": 1739.4
+      },
+      "notes": "quiet start of week-huge fri-sun due to music festivals"
+    },
+    {
+      "week": "2025-03-03",
+      "weekEnding": "2025-03-09",
+      "source": "import",
+      "revenue": {
+        "food": 11312.0,
+        "bev": 5854.0,
+        "uber": 902.0,
+        "event": 493.0,
+        "retail": 328.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22297.0,
+      "forecast": 20065.0,
+      "cogs": {
+        "food": 3014.0,
+        "bev": 1827.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3754.0,
+        "foh": 3135.0,
+        "hours": 217.0,
+        "total": 7681.235
+      },
+      "covers": 648.0,
+      "cashFlowCost": 4227.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 4.0,
+        "hoursWorked": 25.0,
+        "wage": 2460.0,
+        "super": 2742.9
+      },
+      "notes": "slow week-fringe-hot weekend"
+    },
+    {
+      "week": "2025-03-10",
+      "weekEnding": "2025-03-16",
+      "source": "import",
+      "revenue": {
+        "food": 14000.0,
+        "bev": 7297.0,
+        "uber": 692.0,
+        "event": 585.0,
+        "retail": 307.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21628.0,
+      "forecast": 21585.0,
+      "cogs": {
+        "food": 2543.0,
+        "bev": 1423.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4223.5,
+        "foh": 3744.0,
+        "hours": 212.0,
+        "total": 8883.7625
+      },
+      "covers": 699.0,
+      "cashFlowCost": 2824.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 5.0,
+        "workouts": 2.0,
+        "hoursWorked": 15.0,
+        "wage": 2142.0,
+        "super": 2388.33
+      },
+      "notes": "PH mon-slower week and ok weekend-retreat"
+    },
+    {
+      "week": "2025-03-17",
+      "weekEnding": "2025-03-23",
+      "source": "import",
+      "revenue": {
+        "food": 12459.19,
+        "bev": 6525.72,
+        "uber": 1303.6,
+        "event": 270.01,
+        "retail": 326.8
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19534.0,
+      "forecast": 18661.0,
+      "cogs": {
+        "food": 2947.0,
+        "bev": 1972.0,
+        "retail": 617.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3351.5,
+        "foh": 3184.0,
+        "hours": 209.0,
+        "total": 7287.0825
+      },
+      "covers": 723.0,
+      "cashFlowCost": 4302.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 5.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2430.0,
+        "super": 2709.45
+      },
+      "notes": "not a bad week-owner in hospital-last week of fringe"
+    },
+    {
+      "week": "2025-03-24",
+      "weekEnding": "2025-03-30",
+      "source": "import",
+      "revenue": {
+        "food": 12237.0,
+        "bev": 6651.0,
+        "uber": 1316.0,
+        "event": 2096.0,
+        "retail": 197.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20408.0,
+      "forecast": 19048.0,
+      "cogs": {
+        "food": 2895.0,
+        "bev": 1524.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3461.0,
+        "foh": 3103.0,
+        "hours": 222.0,
+        "total": 7318.86
+      },
+      "covers": 732.0,
+      "cashFlowCost": 5346.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 6.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2580.0,
+        "super": 2876.7
+      },
+      "notes": "owner back in hospital-busy week/friday event big weekend"
+    },
+    {
+      "week": "2025-03-31",
+      "weekEnding": "2025-04-06",
+      "source": "import",
+      "revenue": {
+        "food": 12574.0,
+        "bev": 6982.0,
+        "uber": 1276.0,
+        "event": 2364.0,
+        "retail": 365.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23334.0,
+      "forecast": 24024.0,
+      "cogs": {
+        "food": 3145.0,
+        "bev": 2250.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4453.0,
+        "foh": 3530.0,
+        "hours": 236.0,
+        "total": 8901.045
+      },
+      "covers": 767.0,
+      "cashFlowCost": 6348.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 20.0,
+        "wage": 2154.0,
+        "super": 2401.71
+      },
+      "notes": "good week/pasta night friday/big weekend"
+    },
+    {
+      "week": "2025-04-07",
+      "weekEnding": "2025-04-13",
+      "source": "import",
+      "revenue": {
+        "food": 14826.0,
+        "bev": 7869.0,
+        "uber": 1454.0,
+        "event": 1222.0,
+        "retail": 185.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23432.0,
+      "forecast": 25411.0,
+      "cogs": {
+        "food": 3598.0,
+        "bev": 1129.0,
+        "retail": 200.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3835.0,
+        "foh": 3403.0,
+        "hours": 231.0,
+        "total": 8070.37
+      },
+      "covers": 889.0,
+      "cashFlowCost": 3794.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2748.0,
+        "super": 3064.02
+      },
+      "notes": "gather round/busy busy/catering wid week/back in hospital (DElish)"
+    },
+    {
+      "week": "2025-04-14",
+      "weekEnding": "2025-04-20",
+      "source": "import",
+      "revenue": {
+        "food": 14419.0,
+        "bev": 6899.0,
+        "uber": 410.0,
+        "event": 590.0,
+        "retail": 288.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23375.0,
+      "forecast": 22295.0,
+      "cogs": {
+        "food": 3286.0,
+        "bev": 2131.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3863.0,
+        "foh": 4017.0,
+        "hours": 202.0,
+        "total": 8786.2
+      },
+      "covers": 695.0,
+      "cashFlowCost": 6902.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 6.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2496.0,
+        "super": 2783.04
+      },
+      "notes": "easter weekend/owner in hospital-closed sunday"
+    },
+    {
+      "week": "2025-04-21",
+      "weekEnding": "2025-04-27",
+      "source": "import",
+      "revenue": {
+        "food": 16197.0,
+        "bev": 7371.0,
+        "uber": 714.0,
+        "event": 502.0,
+        "retail": 107.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19276.0,
+      "forecast": 20835.0,
+      "cogs": {
+        "food": 2909.0,
+        "bev": 950.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3708.0,
+        "foh": 3530.0,
+        "hours": 207.0,
+        "total": 8070.37
+      },
+      "covers": 738.0,
+      "cashFlowCost": 2568.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2628.0,
+        "super": 2930.22
+      },
+      "notes": "closed monday/PH Friday-opened at 7am-winner!!!!!!!! reset meeting"
+    },
+    {
+      "week": "2025-04-28",
+      "weekEnding": "2025-05-04",
+      "source": "import",
+      "revenue": {
+        "food": 12406.0,
+        "bev": 5972.0,
+        "uber": 1068.0,
+        "event": 757.0,
+        "retail": 303.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 26865.0,
+      "forecast": 25371.0,
+      "cogs": {
+        "food": 3107.0,
+        "bev": 1289.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3489.0,
+        "foh": 3171.0,
+        "hours": 207.0,
+        "total": 7425.9
+      },
+      "covers": 735.0,
+      "cashFlowCost": 3866.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 12.0,
+        "wage": 2628.0,
+        "super": 2930.22
+      },
+      "notes": "quiet week, slow election day sat-big sunday-big bookings tho-amazing team"
+    },
+    {
+      "week": "2025-05-05",
+      "weekEnding": "2025-05-11",
+      "source": "import",
+      "revenue": {
+        "food": 13826.0,
+        "bev": 6625.0,
+        "uber": 1200.0,
+        "event": 2294.0,
+        "retail": 1682.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20031.0,
+      "forecast": 19641.0,
+      "cogs": {
+        "food": 3841.0,
+        "bev": 1391.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4247.0,
+        "foh": 3753.0,
+        "hours": 255.3,
+        "total": 8920.0
+      },
+      "covers": 758.0,
+      "cashFlowCost": 4018.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 1980.0,
+        "super": 2207.7
+      },
+      "notes": "mothers day huge-dont do high tea again tho"
+    },
+    {
+      "week": "2025-05-12",
+      "weekEnding": "2025-05-18",
+      "source": "import",
+      "revenue": {
+        "food": 11537.0,
+        "bev": 5245.0,
+        "uber": 1237.0,
+        "event": 204.0,
+        "retail": 226.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21948.0,
+      "forecast": 22724.0,
+      "cogs": {
+        "food": 2710.0,
+        "bev": 1836.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3875.0,
+        "foh": 2260.0,
+        "hours": 199.0,
+        "total": 6840.525
+      },
+      "covers": 655.0,
+      "cashFlowCost": 6614.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 0.0,
+        "hoursWorked": 5.0,
+        "wage": 2628.0,
+        "super": 2930.22
+      },
+      "notes": "quiet week-head chef on leave"
+    },
+    {
+      "week": "2025-05-19",
+      "weekEnding": "2025-05-25",
+      "source": "import",
+      "revenue": {
+        "food": 10747.0,
+        "bev": 5976.0,
+        "uber": 1238.0,
+        "event": 150.0,
+        "retail": 233.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 17104.0,
+      "forecast": 16765.0,
+      "cogs": {
+        "food": 2962.0,
+        "bev": 1084.0,
+        "retail": 1468.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3655.0,
+        "foh": 3014.0,
+        "hours": 214.0,
+        "total": 7435.935
+      },
+      "covers": 696.0,
+      "cashFlowCost": 3562.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 15.0,
+        "wage": 2640.0,
+        "super": 2943.6
+      },
+      "notes": "quiet week/bad weather end of week/2x catering/ new menu friday"
+    },
+    {
+      "week": "2025-05-26",
+      "weekEnding": "2025-06-01",
+      "source": "import",
+      "revenue": {
+        "food": 10747.0,
+        "bev": 5976.0,
+        "uber": 1238.0,
+        "event": 150.0,
+        "retail": 233.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21543.0,
+      "forecast": 19569.0,
+      "cogs": {
+        "food": 3006.0,
+        "bev": 878.0,
+        "retail": 122.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3602.98,
+        "foh": 3120.42,
+        "hours": 198.15,
+        "total": 7496.591
+      },
+      "covers": 639.0,
+      "cashFlowCost": 4104.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 10.0,
+        "wage": 3000.0,
+        "super": 3345.0
+      },
+      "notes": "quiet all week-owner in hospital-quiet weekend."
+    },
+    {
+      "week": "2025-06-02",
+      "weekEnding": "2025-06-08",
+      "source": "import",
+      "revenue": {
+        "food": 13100.0,
+        "bev": 7240.0,
+        "uber": 1607.0,
+        "event": 653.0,
+        "retail": 280.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 17612.7,
+      "forecast": 19188.0,
+      "cogs": {
+        "food": 3236.0,
+        "bev": 1102.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3286.0,
+        "foh": 4001.0,
+        "hours": 203.3,
+        "total": 8125.005
+      },
+      "covers": 818.0,
+      "cashFlowCost": 3642.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 5.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2664.0,
+        "super": 2970.36
+      },
+      "notes": "owner is hospital again/quiest week till (birthday) fri/long weekend"
+    },
+    {
+      "week": "2025-06-09",
+      "weekEnding": "2025-06-15",
+      "source": "import",
+      "revenue": {
+        "food": 16155.0,
+        "bev": 6976.0,
+        "uber": 1186.0,
+        "event": 380.0,
+        "retail": 302.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25333.0,
+      "forecast": 21163.0,
+      "cogs": {
+        "food": 3034.0,
+        "bev": 2230.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3788.0,
+        "foh": 4193.0,
+        "hours": 214.0,
+        "total": 8898.815
+      },
+      "covers": 692.0,
+      "cashFlowCost": 3521.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 2628.0,
+        "super": 2930.22
+      },
+      "notes": "PH(good) ok week, some catering, markets on sunday.(owner well)"
+    },
+    {
+      "week": "2025-06-16",
+      "weekEnding": "2025-06-22",
+      "source": "import",
+      "revenue": {
+        "food": 11708.0,
+        "bev": 6135.0,
+        "uber": 1830.0,
+        "event": 1386.0,
+        "retail": 63.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20686.0,
+      "forecast": 21384.0,
+      "cogs": {
+        "food": 3206.0,
+        "bev": 1333.0,
+        "retail": 339.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3556.0,
+        "foh": 3362.0,
+        "hours": 218.0,
+        "total": 7713.57
+      },
+      "covers": 667.0,
+      "cashFlowCost": 6157.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 0.0,
+        "hoursWorked": 15.0,
+        "wage": 2907.5,
+        "super": 3241.8625
+      },
+      "notes": "slow start to the week/busy friday and sat/slow sun."
+    },
+    {
+      "week": "2025-06-23",
+      "weekEnding": "2025-06-29",
+      "source": "import",
+      "revenue": {
+        "food": 12187.0,
+        "bev": 6782.0,
+        "uber": 2047.0,
+        "event": 581.0,
+        "retail": 200.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21325.0,
+      "forecast": 19180.0,
+      "cogs": {
+        "food": 3070.0,
+        "bev": 1415.0,
+        "retail": 610.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3464.0,
+        "foh": 2958.0,
+        "hours": 208.0,
+        "total": 7160.53
+      },
+      "covers": 746.0,
+      "cashFlowCost": 4662.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 2.0,
+        "hoursWorked": 15.0,
+        "wage": 2587.0,
+        "super": 2884.505
+      },
+      "notes": "ok week/winter warmers started/huge sunday!!!"
+    },
+    {
+      "week": "2025-06-30",
+      "weekEnding": "2025-07-06",
+      "source": "import",
+      "revenue": {
+        "food": 12905.0,
+        "bev": 7508.0,
+        "uber": 1762.0,
+        "event": 1932.0,
+        "retail": 240.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 18948.0,
+      "forecast": 18801.0,
+      "cogs": {
+        "food": 3164.0,
+        "bev": 2329.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3467.0,
+        "foh": 3452.0,
+        "hours": 229.0,
+        "total": 7749.28
+      },
+      "covers": 852.0,
+      "cashFlowCost": 13144.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 3.0,
+        "hoursWorked": 15.0,
+        "wage": 2601.0,
+        "super": 2913.12
+      },
+      "notes": "huge catering-quest/good week/pvt sch holidays/good sunday"
+    },
+    {
+      "week": "2025-07-07",
+      "weekEnding": "2025-07-13",
+      "source": "import",
+      "revenue": {
+        "food": 13859.0,
+        "bev": 8366.0,
+        "uber": 1779.0,
+        "event": 350.0,
+        "retail": 281.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22534.0,
+      "forecast": 20486.0,
+      "cogs": {
+        "food": 3878.0,
+        "bev": 1715.0,
+        "retail": 289.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3717.06,
+        "foh": 3285.0,
+        "hours": 213.0,
+        "total": 7842.3072
+      },
+      "covers": 849.0,
+      "cashFlowCost": 2987.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 3.0,
+        "hoursWorked": 15.0,
+        "wage": 2521.0,
+        "super": 2823.52
+      },
+      "notes": "good week/shoit weather tho!!/schol hols/great weekend"
+    },
+    {
+      "week": "2025-07-14",
+      "weekEnding": "2025-07-20",
+      "source": "import",
+      "revenue": {
+        "food": 15824.0,
+        "bev": 8662.0,
+        "uber": 2212.0,
+        "event": 300.0,
+        "retail": 426.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25258.0,
+      "forecast": 22368.0,
+      "cogs": {
+        "food": 3134.0,
+        "bev": 1921.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4119.0,
+        "foh": 3950.0,
+        "hours": 250.0,
+        "total": 9037.28
+      },
+      "covers": 973.0,
+      "cashFlowCost": 6607.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 4.0,
+        "hoursWorked": 15.0,
+        "wage": 2907.0,
+        "super": 3255.84
+      },
+      "notes": "insane week/insane weekend/last week school hols but madness"
+    },
+    {
+      "week": "2025-07-21",
+      "weekEnding": "2025-07-27",
+      "source": "import",
+      "revenue": {
+        "food": 14047.0,
+        "bev": 6195.0,
+        "uber": 2754.0,
+        "event": 1921.0,
+        "retail": 90.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 24867.0,
+      "forecast": 19764.0,
+      "cogs": {
+        "food": 3723.0,
+        "bev": 1501.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4183.0,
+        "foh": 3506.0,
+        "hours": 243.0,
+        "total": 8611.68
+      },
+      "covers": 710.0,
+      "cashFlowCost": 4684.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 1.0,
+        "hoursWorked": 6.0,
+        "wage": 2845.0,
+        "super": 3186.4
+      },
+      "notes": "big catering/woolworths opened on wed/great weekend"
+    },
+    {
+      "week": "2025-07-28",
+      "weekEnding": "2025-08-03",
+      "source": "import",
+      "revenue": {
+        "food": 15214.0,
+        "bev": 7267.0,
+        "uber": 2172.0,
+        "event": 3134.0,
+        "retail": 447.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22623.0,
+      "forecast": 22444.0,
+      "cogs": {
+        "food": 4301.0,
+        "bev": 2133.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4815.0,
+        "foh": 3932.0,
+        "hours": 267.0,
+        "total": 9796.64
+      },
+      "covers": 737.0,
+      "cashFlowCost": 3393.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 0.0,
+        "hoursWorked": 12.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "big catering/good week/dinner event sat night"
+    },
+    {
+      "week": "2025-08-04",
+      "weekEnding": "2025-08-10",
+      "source": "import",
+      "revenue": {
+        "food": 15293.0,
+        "bev": 7360.0,
+        "uber": 1977.0,
+        "event": 100.0,
+        "retail": 378.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 24947.0,
+      "forecast": 19255.0,
+      "cogs": {
+        "food": 3052.0,
+        "bev": 1381.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3772.0,
+        "foh": 3934.0,
+        "hours": 232.0,
+        "total": 8630.72
+      },
+      "covers": 783.0,
+      "cashFlowCost": 3072.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 15.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "no catering but good week! great weekend!"
+    },
+    {
+      "week": "2025-08-11",
+      "weekEnding": "2025-08-17",
+      "source": "import",
+      "revenue": {
+        "food": 13528.0,
+        "bev": 6742.0,
+        "uber": 1467.0,
+        "event": 1395.0,
+        "retail": 447.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23476.0,
+      "forecast": 16072.0,
+      "cogs": {
+        "food": 3722.0,
+        "bev": 1260.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4450.0,
+        "foh": 3446.0,
+        "hours": 234.0,
+        "total": 8843.52
+      },
+      "covers": 736.0,
+      "cashFlowCost": 4863.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 5.0,
+        "hoursWorked": 15.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "small catering, slower week, good weekend, lots of leave tho"
+    },
+    {
+      "week": "2025-08-18",
+      "weekEnding": "2025-08-24",
+      "source": "import",
+      "revenue": {
+        "food": 13015.0,
+        "bev": 6826.0,
+        "uber": 1678.0,
+        "event": 1100.0,
+        "retail": 186.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21812.0,
+      "forecast": 17110.0,
+      "cogs": {
+        "food": 3501.0,
+        "bev": 1906.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3916.0,
+        "foh": 3642.0,
+        "hours": 231.0,
+        "total": 8464.96
+      },
+      "covers": 730.0,
+      "cashFlowCost": 2419.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 5.0,
+        "hoursWorked": 15.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "small catering, slower week, good weekend"
+    },
+    {
+      "week": "2025-08-25",
+      "weekEnding": "2025-08-31",
+      "source": "import",
+      "revenue": {
+        "food": 13367.0,
+        "bev": 6465.0,
+        "uber": 1408.0,
+        "event": null,
+        "retail": 177.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19730.0,
+      "forecast": 17049.0,
+      "cogs": {
+        "food": 3113.0,
+        "bev": 2010.0,
+        "retail": 659.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3772.26,
+        "foh": 3355.93,
+        "hours": 214.0,
+        "total": 7983.5728
+      },
+      "covers": 655.0,
+      "cashFlowCost": 2898.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 4.0,
+        "hoursWorked": 12.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "slower week-too much over spending"
+    },
+    {
+      "week": "2025-09-01",
+      "weekEnding": "2025-09-07",
+      "source": "import",
+      "revenue": {
+        "food": 15228.0,
+        "bev": 7027.0,
+        "uber": 2304.0,
+        "event": 1252.0,
+        "retail": 272.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 17961.0,
+      "forecast": 23589.0,
+      "cogs": {
+        "food": 3246.0,
+        "bev": 1332.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4184.46,
+        "foh": 3552.24,
+        "hours": 238.0,
+        "total": 8665.104
+      },
+      "covers": 730.0,
+      "cashFlowCost": 1598.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 4.0,
+        "hoursWorked": 15.0,
+        "wage": 2833.0,
+        "super": 3172.96
+      },
+      "notes": "ok week, slower start but ok end, huge fathers day and wolrd egg slut day."
+    },
+    {
+      "week": "2025-09-08",
+      "weekEnding": "2025-09-14",
+      "source": "import",
+      "revenue": {
+        "food": 11366.0,
+        "bev": 5653.0,
+        "uber": 899.0,
+        "event": null,
+        "retail": 599.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25619.0,
+      "forecast": 21993.0,
+      "cogs": {
+        "food": 3177.0,
+        "bev": 1556.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3730.06,
+        "foh": 3315.03,
+        "hours": 235.0,
+        "total": 7890.5008
+      },
+      "covers": 639.0,
+      "cashFlowCost": 4162.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 5.0,
+        "hoursWorked": 14.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "slow week, warmer weather, dead sunday-cas chef quit and didnt show up"
+    },
+    {
+      "week": "2025-09-15",
+      "weekEnding": "2025-09-21",
+      "source": "import",
+      "revenue": {
+        "food": 13684.0,
+        "bev": 6947.0,
+        "uber": 1612.0,
+        "event": 1290.0,
+        "retail": 59.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 18539.0,
+      "forecast": 23227.0,
+      "cogs": {
+        "food": 2959.0,
+        "bev": 1376.0,
+        "retail": 890.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3771.08,
+        "foh": 3577.25,
+        "hours": 228.0,
+        "total": 8230.1296
+      },
+      "covers": 728.0,
+      "cashFlowCost": 7507.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 5.0,
+        "hoursWorked": 8.0,
+        "wage": 2473.0,
+        "super": 2769.76
+      },
+      "notes": "slow week/fabian in kitchen/3cBB sat/markets sunday"
+    },
+    {
+      "week": "2025-09-22",
+      "weekEnding": "2025-09-28",
+      "source": "import",
+      "revenue": {
+        "food": 14227.0,
+        "bev": 6480.0,
+        "uber": 1085.0,
+        "event": 300.0,
+        "retail": 340.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21887.0,
+      "forecast": 19183.0,
+      "cogs": {
+        "food": 2882.0,
+        "bev": 1614.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4259.95,
+        "foh": 3424.78,
+        "hours": 238.0,
+        "total": 8606.8976
+      },
+      "covers": 685.0,
+      "cashFlowCost": 3875.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 5.0,
+        "hoursWorked": 15.0,
+        "wage": 2658.0,
+        "super": 2976.96
+      },
+      "notes": "ok week-slow days/big w/end-Admiral markets.training in kitchen"
+    },
+    {
+      "week": "2025-09-29",
+      "weekEnding": "2025-10-05",
+      "source": "import",
+      "revenue": {
+        "food": 16416.0,
+        "bev": 7509.0,
+        "uber": 989.0,
+        "event": 235.0,
+        "retail": 129.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 27041.0,
+      "forecast": 17677.0,
+      "cogs": {
+        "food": 3528.0,
+        "bev": 1584.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4131.0,
+        "foh": 4229.0,
+        "hours": 265.0,
+        "total": 9363.2
+      },
+      "covers": 728.0,
+      "cashFlowCost": 4039.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 2.0,
+        "hoursWorked": 15.0,
+        "wage": 2627.0,
+        "super": 2942.24
+      },
+      "notes": "good week/great sat/semaphore sun so slower/lots of sick and A leave"
+    },
+    {
+      "week": "2025-10-06",
+      "weekEnding": "2025-10-12",
+      "source": "import",
+      "revenue": {
+        "food": 16126.0,
+        "bev": 7676.0,
+        "uber": 1183.0,
+        "event": null,
+        "retail": 439.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 26864.0,
+      "forecast": 26971.0,
+      "cogs": {
+        "food": 3467.0,
+        "bev": 1692.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4309.0,
+        "foh": 4192.0,
+        "hours": 243.0,
+        "total": 9521.12
+      },
+      "covers": 702.0,
+      "cashFlowCost": 1414.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "PH -good/week-ok/weekend-shit."
+    },
+    {
+      "week": "2025-10-13",
+      "weekEnding": "2025-10-19",
+      "source": "import",
+      "revenue": {
+        "food": 11854.0,
+        "bev": 6618.0,
+        "uber": 1468.0,
+        "event": 1879.0,
+        "retail": 295.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 18493.0,
+      "forecast": 19222.0,
+      "cogs": {
+        "food": 3439.0,
+        "bev": 1656.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3869.0,
+        "foh": 3357.0,
+        "hours": 209.0,
+        "total": 8093.12
+      },
+      "covers": 685.0,
+      "cashFlowCost": 3192.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "terrible week/catering/large groups on sunday saved the day"
+    },
+    {
+      "week": "2025-10-20",
+      "weekEnding": "2025-10-26",
+      "source": "import",
+      "revenue": {
+        "food": 14590.0,
+        "bev": 7397.0,
+        "uber": 1264.0,
+        "event": 1361.0,
+        "retail": 83.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20764.0,
+      "forecast": 18478.0,
+      "cogs": {
+        "food": 2813.0,
+        "bev": 1707.0,
+        "retail": 1523.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3851.0,
+        "foh": 3471.0,
+        "hours": 223.0,
+        "total": 8200.64
+      },
+      "covers": 745.0,
+      "cashFlowCost": 4229.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 2736.0,
+        "super": 3064.32
+      },
+      "notes": "big catering monday/catering friday/markets sat/wild weather"
+    },
+    {
+      "week": "2025-10-27",
+      "weekEnding": "2025-11-02",
+      "source": "import",
+      "revenue": {
+        "food": 13414.0,
+        "bev": 6631.0,
+        "uber": 1864.0,
+        "event": 10.0,
+        "retail": 334.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25133.0,
+      "forecast": 16283.0,
+      "cogs": {
+        "food": 3253.0,
+        "bev": 1531.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4364.94,
+        "foh": 3238.0,
+        "hours": 220.45,
+        "total": 8515.2928
+      },
+      "covers": 745.0,
+      "cashFlowCost": 3055.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 2850.0,
+        "super": 3192.0
+      },
+      "notes": "ok week/poor weekend-terrible weather tho"
+    },
+    {
+      "week": "2025-11-03",
+      "weekEnding": "2025-11-09",
+      "source": "import",
+      "revenue": {
+        "food": 14727.0,
+        "bev": 6959.0,
+        "uber": 1537.0,
+        "event": 1214.0,
+        "retail": 560.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21790.0,
+      "forecast": 17248.0,
+      "cogs": {
+        "food": 3467.0,
+        "bev": 1560.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4595.93,
+        "foh": 3295.13,
+        "hours": 265.0,
+        "total": 8837.9872
+      },
+      "covers": 693.0,
+      "cashFlowCost": 2174.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 3.0,
+        "hoursWorked": 15.0,
+        "wage": 1968.0,
+        "super": 2204.16
+      },
+      "notes": "good week/catering jobs/fight at harts mill on saturday(sous on leave)"
+    },
+    {
+      "week": "2025-11-10",
+      "weekEnding": "2025-11-16",
+      "source": "import",
+      "revenue": {
+        "food": 15118.0,
+        "bev": 7621.0,
+        "uber": 1269.0,
+        "event": 2075.0,
+        "retail": 522.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23158.74,
+      "forecast": 18428.0,
+      "cogs": {
+        "food": 3842.0,
+        "bev": 2059.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4623.2,
+        "foh": 3634.12,
+        "hours": 253.15,
+        "total": 9248.1984
+      },
+      "covers": 776.0,
+      "cashFlowCost": 2787.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 1.0,
+        "hoursWorked": 15.0,
+        "wage": 2274.0,
+        "super": 2546.88
+      },
+      "notes": "big week/huge catering on thurs/good weekend(sous on leave)"
+    },
+    {
+      "week": "2025-11-17",
+      "weekEnding": "2025-11-23",
+      "source": "import",
+      "revenue": {
+        "food": 14982.0,
+        "bev": 7706.0,
+        "uber": 1089.0,
+        "event": null,
+        "retail": 286.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22883.0,
+      "forecast": 21517.0,
+      "cogs": {
+        "food": 3174.0,
+        "bev": 1905.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4013.1,
+        "foh": 4113.23,
+        "hours": 235.15,
+        "total": 9101.4896
+      },
+      "covers": 736.0,
+      "cashFlowCost": 5422.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 2364.0,
+        "super": 2647.68
+      },
+      "notes": "good week except friday, markets on sunday Plus cruise ship so busy"
+    },
+    {
+      "week": "2025-11-24",
+      "weekEnding": "2025-11-30",
+      "source": "import",
+      "revenue": {
+        "food": 16332.0,
+        "bev": 7257.0,
+        "uber": 1576.0,
+        "event": null,
+        "retail": 551.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23447.0,
+      "forecast": 21040.0,
+      "cogs": {
+        "food": 3365.0,
+        "bev": 1689.0,
+        "retail": 35.84
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4669.35,
+        "foh": 4208.9,
+        "hours": 231.45,
+        "total": 9943.64
+      },
+      "covers": 706.0,
+      "cashFlowCost": 3138.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 0.0,
+        "workouts": 4.0,
+        "hoursWorked": 5.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "good week, HUGE weekend-new casual chef/head on holidays"
+    },
+    {
+      "week": "2025-12-01",
+      "weekEnding": "2025-12-07",
+      "source": "import",
+      "revenue": {
+        "food": 15606.0,
+        "bev": 8130.0,
+        "uber": 1085.0,
+        "event": 385.0,
+        "retail": 453.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 24482.32,
+      "forecast": 18630.0,
+      "cogs": {
+        "food": 3252.0,
+        "bev": 1524.0,
+        "retail": 84.5
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4154.18,
+        "foh": 3879.42,
+        "hours": 230.0,
+        "total": 8997.632
+      },
+      "covers": 809.0,
+      "cashFlowCost": 3817.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 4.0,
+        "hoursWorked": 16.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "PA Pageant, lots of dining cashback being used-some holiday pay"
+    },
+    {
+      "week": "2025-12-08",
+      "weekEnding": "2025-12-14",
+      "source": "import",
+      "revenue": {
+        "food": 16731.0,
+        "bev": 7522.0,
+        "uber": 603.0,
+        "event": 1402.0,
+        "retail": 696.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23417.48,
+      "forecast": 22191.0,
+      "cogs": {
+        "food": 2843.0,
+        "bev": 2325.0,
+        "retail": 66.5
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3956.12,
+        "foh": 4008.53,
+        "hours": 215.75,
+        "total": 8920.408
+      },
+      "covers": 749.0,
+      "cashFlowCost": 8642.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 25.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "good week/catering/xmas party sat/markets at the mill sun"
+    },
+    {
+      "week": "2025-12-15",
+      "weekEnding": "2025-12-21",
+      "source": "import",
+      "revenue": {
+        "food": 16944.0,
+        "bev": 8283.0,
+        "uber": 1165.0,
+        "event": 1531.0,
+        "retail": 994.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 27687.45,
+      "forecast": 21488.0,
+      "cogs": {
+        "food": 4230.0,
+        "bev": 3921.0,
+        "retail": 235.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4488.22,
+        "foh": 3851.54,
+        "hours": 258.0,
+        "total": 9340.5312
+      },
+      "covers": 797.0,
+      "cashFlowCost": 7286.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 3.0,
+        "hoursWorked": 25.0,
+        "wage": 2652.0,
+        "super": 2970.24
+      },
+      "notes": "great week-catering +breakfast with santa+markets on sunday!"
+    },
+    {
+      "week": "2025-12-22",
+      "weekEnding": "2025-12-28",
+      "source": "import",
+      "revenue": {
+        "food": 15378.0,
+        "bev": 6928.0,
+        "uber": 404.0,
+        "event": 1351.0,
+        "retail": 795.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23553.78,
+      "forecast": 20765.0,
+      "cogs": {
+        "food": 5034.0,
+        "bev": 954.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3804.0,
+        "foh": 3448.0,
+        "hours": 223.0,
+        "total": 8122.24
+      },
+      "covers": 558.0,
+      "cashFlowCost": 1416.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 1.0,
+        "hoursWorked": 20.0,
+        "wage": 3000.0,
+        "super": 3360.0
+      },
+      "notes": "xmas week-short week-great days-small catering on xmas eve/slow sat-hot"
+    },
+    {
+      "week": "2025-12-29",
+      "weekEnding": "2026-01-04",
+      "source": "import",
+      "revenue": {
+        "food": 28289.0,
+        "bev": 12527.0,
+        "uber": 1016.0,
+        "event": 150.0,
+        "retail": 485.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 31547.8,
+      "forecast": 35000.0,
+      "cogs": {
+        "food": 4180.0,
+        "bev": 1102.0,
+        "retail": 74.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 6188.0,
+        "foh": 6436.71,
+        "hours": 371.0,
+        "total": 14139.6752
+      },
+      "covers": 960.0,
+      "cashFlowCost": 4696.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 5.0,
+        "wage": 1176.0,
+        "super": 1311.24
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-01-05",
+      "weekEnding": "2026-01-11",
+      "source": "import",
+      "revenue": {
+        "food": 16452.0,
+        "bev": 8025.0,
+        "uber": 790.0,
+        "event": 605.0,
+        "retail": 307.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 35525.0,
+      "forecast": 23000.0,
+      "cogs": {
+        "food": 3660.0,
+        "bev": 1391.0,
+        "retail": 278.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4858.0,
+        "foh": 3826.0,
+        "hours": 258.0,
+        "total": 9726.08
+      },
+      "covers": 724.0,
+      "cashFlowCost": 3100.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-01-12",
+      "weekEnding": "2026-01-18",
+      "source": "import",
+      "revenue": {
+        "food": 14373.0,
+        "bev": 7560.0,
+        "uber": 1323.0,
+        "event": 140.0,
+        "retail": 365.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22876.62,
+      "forecast": 22000.0,
+      "cogs": {
+        "food": 4854.0,
+        "bev": 1842.0,
+        "retail": 191.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3742.0,
+        "foh": 3387.0,
+        "hours": 224.0,
+        "total": 7984.48
+      },
+      "covers": 743.0,
+      "cashFlowCost": 3037.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 7.0,
+        "workouts": 2.0,
+        "hoursWorked": 1.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-01-19",
+      "weekEnding": "2026-01-25",
+      "source": "import",
+      "revenue": {
+        "food": 12871.0,
+        "bev": 7125.0,
+        "uber": 1309.0,
+        "event": null,
+        "retail": 167.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23794.0,
+      "forecast": 19000.0,
+      "cogs": {
+        "food": 4255.0,
+        "bev": 1298.0,
+        "retail": 62.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4375.0,
+        "foh": 3166.0,
+        "hours": 229.0,
+        "total": 8445.92
+      },
+      "covers": 690.0,
+      "cashFlowCost": 5434.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 0.0,
+        "hoursWorked": 0.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-01-26",
+      "weekEnding": "2026-02-01",
+      "source": "import",
+      "revenue": {
+        "food": 14782.0,
+        "bev": 7781.0,
+        "uber": 2052.0,
+        "event": 200.0,
+        "retail": 256.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20788.28,
+      "forecast": 20000.0,
+      "cogs": {
+        "food": 2847.0,
+        "bev": 2076.0,
+        "retail": 389.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4164.0,
+        "foh": 4017.0,
+        "hours": 226.0,
+        "total": 9162.72
+      },
+      "covers": 693.0,
+      "cashFlowCost": 3109.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 2.0,
+        "hoursWorked": 15.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-02-02",
+      "weekEnding": "2026-02-08",
+      "source": "import",
+      "revenue": {
+        "food": 14419.0,
+        "bev": 7381.0,
+        "uber": 586.0,
+        "event": 660.0,
+        "retail": 183.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21884.0,
+      "forecast": 17000.0,
+      "cogs": {
+        "food": 2881.0,
+        "bev": 1727.0,
+        "retail": 349.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3992.0,
+        "foh": 3536.0,
+        "hours": 236.0,
+        "total": 8431.36
+      },
+      "covers": 731.0,
+      "cashFlowCost": 1442.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 5.0,
+        "hoursWorked": 15.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-02-09",
+      "weekEnding": "2026-02-15",
+      "source": "import",
+      "revenue": {
+        "food": 19186.0,
+        "bev": 9097.0,
+        "uber": 628.0,
+        "event": 2117.0,
+        "retail": 567.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21337.32,
+      "forecast": 24000.0,
+      "cogs": {
+        "food": 3661.0,
+        "bev": 1981.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4592.49,
+        "foh": 4620.18,
+        "hours": 278.0,
+        "total": 10318.1904
+      },
+      "covers": 828.0,
+      "cashFlowCost": 3816.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 20.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-02-16",
+      "weekEnding": "2026-02-22",
+      "source": "import",
+      "revenue": {
+        "food": 16753.0,
+        "bev": 8460.0,
+        "uber": 1245.0,
+        "event": 201.0,
+        "retail": 566.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 34908.96,
+      "forecast": 17500.0,
+      "cogs": {
+        "food": 4414.0,
+        "bev": 1566.0,
+        "retail": 50.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4273.0,
+        "foh": 4268.0,
+        "hours": 237.0,
+        "total": 9565.92
+      },
+      "covers": 799.0,
+      "cashFlowCost": 6202.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 2787.0,
+        "super": 3107.505
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-02-23",
+      "weekEnding": "2026-03-01",
+      "source": "import",
+      "revenue": {
+        "food": 14258.0,
+        "bev": 7221.0,
+        "uber": 151.0,
+        "event": 1670.0,
+        "retail": 177.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23094.13,
+      "forecast": 22000.0,
+      "cogs": {
+        "food": 3335.48,
+        "bev": 2372.14,
+        "retail": 536.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4228.77,
+        "foh": 3541.88,
+        "hours": 249.5,
+        "total": 8703.128
+      },
+      "covers": 732.0,
+      "cashFlowCost": 5069.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 5.0,
+        "hoursWorked": 20.0,
+        "wage": 3050.0,
+        "super": 3400.75
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-03-02",
+      "weekEnding": "2026-03-08",
+      "source": "import",
+      "revenue": {
+        "food": 14264.0,
+        "bev": 7012.0,
+        "uber": 1283.0,
+        "event": 655.0,
+        "retail": 404.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22540.93,
+      "forecast": 20000.0,
+      "cogs": {
+        "food": 4151.41,
+        "bev": 896.95,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4097.0,
+        "foh": 3704.0,
+        "hours": 234.0,
+        "total": 8737.12
+      },
+      "covers": 739.0,
+      "cashFlowCost": 4571.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 3.0,
+        "hoursWorked": 20.0,
+        "wage": 3232.0,
+        "super": 3603.68
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-03-09",
+      "weekEnding": "2026-03-15",
+      "source": "import",
+      "revenue": {
+        "food": 15518.0,
+        "bev": 7631.0,
+        "uber": 1250.0,
+        "event": 231.0,
+        "retail": 383.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 24945.36,
+      "forecast": 23000.0,
+      "cogs": {
+        "food": 3329.29,
+        "bev": 2575.98,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4016.0,
+        "foh": 4376.96,
+        "hours": 234.0,
+        "total": 9400.1152
+      },
+      "covers": 755.0,
+      "cashFlowCost": 2824.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 1.0,
+        "hoursWorked": 5.0,
+        "wage": 1230.0,
+        "super": 1371.45
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-03-16",
+      "weekEnding": "2026-03-22",
+      "source": "import",
+      "revenue": {
+        "food": 11049.0,
+        "bev": 6822.0,
+        "uber": 943.0,
+        "event": null,
+        "retail": 422.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20186.78,
+      "forecast": 20000.0,
+      "cogs": {
+        "food": 2217.0,
+        "bev": 1300.85,
+        "retail": 38.86
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3568.0,
+        "foh": 3253.0,
+        "hours": 202.0,
+        "total": 7639.52
+      },
+      "covers": 686.0,
+      "cashFlowCost": 5000.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 1.0,
+        "hoursWorked": 5.0,
+        "wage": 2260.0,
+        "super": 2519.9
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-03-23",
+      "weekEnding": "2026-03-29",
+      "source": "import",
+      "revenue": {
+        "food": 13785.0,
+        "bev": 7240.0,
+        "uber": 888.0,
+        "event": 100.0,
+        "retail": 765.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 21266.45,
+      "forecast": 22000.0,
+      "cogs": {
+        "food": 2672.54,
+        "bev": 876.02,
+        "retail": 70.66
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3894.0,
+        "foh": 3697.0,
+        "hours": 224.5,
+        "total": 8501.92
+      },
+      "covers": 696.0,
+      "cashFlowCost": 3790.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 0.0,
+        "hoursWorked": 5.0,
+        "wage": 2552.0,
+        "super": 2845.48
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-03-30",
+      "weekEnding": "2026-04-05",
+      "source": "import",
+      "revenue": {
+        "food": 12008.0,
+        "bev": 6311.0,
+        "uber": 950.0,
+        "event": 323.0,
+        "retail": 300.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19658.18,
+      "forecast": 22000.0,
+      "cogs": {
+        "food": 2964.0,
+        "bev": 1605.14,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4194.63,
+        "foh": 3001.38,
+        "hours": 184.75,
+        "total": 8059.5312
+      },
+      "covers": 625.0,
+      "cashFlowCost": 2996.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 10.0,
+        "wage": 3140.0,
+        "super": 3501.1
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-04-06",
+      "weekEnding": "2026-04-12",
+      "source": "import",
+      "revenue": {
+        "food": 13797.0,
+        "bev": 6808.0,
+        "uber": 1240.0,
+        "event": 1332.0,
+        "retail": 282.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19354.52,
+      "forecast": 24500.0,
+      "cogs": {
+        "food": 2606.35,
+        "bev": 1924.36,
+        "retail": 125.45
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3790.59,
+        "foh": 3554.29,
+        "hours": 197.75,
+        "total": 8226.2656
+      },
+      "covers": 649.0,
+      "cashFlowCost": 3239.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 0.0,
+        "workouts": 2.0,
+        "hoursWorked": 20.0,
+        "wage": 2838.0,
+        "super": 3164.37
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-04-13",
+      "weekEnding": "2026-04-19",
+      "source": "import",
+      "revenue": {
+        "food": 15904.0,
+        "bev": 9871.0,
+        "uber": 1670.0,
+        "event": 822.0,
+        "retail": 378.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 27573.1,
+      "forecast": 28900.0,
+      "cogs": {
+        "food": 4654.0,
+        "bev": 1752.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4276.09,
+        "foh": 4144.4,
+        "hours": 257.3,
+        "total": 9430.9488
+      },
+      "covers": 1012.0,
+      "cashFlowCost": 4453.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 4.0,
+        "hoursWorked": 22.0,
+        "wage": 2777.0,
+        "super": 3096.355
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-04-20",
+      "weekEnding": "2026-04-26",
+      "source": "import",
+      "revenue": {
+        "food": 16074.0,
+        "bev": 9383.0,
+        "uber": 2270.0,
+        "event": 565.0,
+        "retail": 535.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23919.18,
+      "forecast": 24500.0,
+      "cogs": {
+        "food": 3275.0,
+        "bev": 2248.82,
+        "retail": 460.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4576.0,
+        "foh": 4540.0,
+        "hours": 256.0,
+        "total": 10209.92
+      },
+      "covers": 988.0,
+      "cashFlowCost": 5519.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 2.0,
+        "workouts": 0.0,
+        "hoursWorked": 25.0,
+        "wage": 2652.0,
+        "super": 2956.98
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-04-27",
+      "weekEnding": "2026-05-03",
+      "source": "import",
+      "revenue": {
+        "food": 12897.0,
+        "bev": 7647.0,
+        "uber": 1677.0,
+        "event": 320.0,
+        "retail": 450.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 26138.15,
+      "forecast": 19000.0,
+      "cogs": {
+        "food": 3544.0,
+        "bev": 1735.0,
+        "retail": 120.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3646.0,
+        "foh": 3860.0,
+        "hours": 225.0,
+        "total": 8406.72
+      },
+      "covers": 880.0,
+      "cashFlowCost": 2820.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 1.0,
+        "hoursWorked": 10.0,
+        "wage": 1913.0,
+        "super": 2132.995
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-05-04",
+      "weekEnding": "2026-05-10",
+      "source": "import",
+      "revenue": {
+        "food": 16232.0,
+        "bev": 7621.0,
+        "uber": 2963.0,
+        "event": 860.0,
+        "retail": 1358.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 20950.0,
+      "forecast": 25000.0,
+      "cogs": {
+        "food": 3579.06,
+        "bev": 1812.14,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3986.08,
+        "foh": 4133.89,
+        "hours": 241.0,
+        "total": 9094.3664
+      },
+      "covers": 803.0,
+      "cashFlowCost": 3560.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 7.0,
+        "workouts": 0.0,
+        "hoursWorked": 3.0,
+        "wage": 3384.0,
+        "super": 3773.16
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-05-11",
+      "weekEnding": "2026-05-17",
+      "source": "import",
+      "revenue": {
+        "food": 12707.0,
+        "bev": 7262.0,
+        "uber": 1479.0,
+        "event": 188.5,
+        "retail": 286.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 26741.18,
+      "forecast": 18000.0,
+      "cogs": {
+        "food": 3022.13,
+        "bev": 2624.79,
+        "retail": 981.17
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3869.0,
+        "foh": 3580.0,
+        "hours": 220.0,
+        "total": 8342.88
+      },
+      "covers": 774.0,
+      "cashFlowCost": 2776.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 0.0,
+        "hoursWorked": 45.0,
+        "wage": 3094.0,
+        "super": 3449.81
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-05-18",
+      "weekEnding": "2026-05-24",
+      "source": "import",
+      "revenue": {
+        "food": 13478.13,
+        "bev": 7521.0,
+        "uber": null,
+        "event": 20.0,
+        "retail": 456.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19126.96,
+      "forecast": 21000.0,
+      "cogs": {
+        "food": 3462.08,
+        "bev": 1309.84,
+        "retail": 69.67
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3603.0,
+        "foh": 3423.0,
+        "hours": 212.0,
+        "total": 7869.12
+      },
+      "covers": 642.0,
+      "cashFlowCost": 5891.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 0.0,
+        "hoursWorked": 55.0,
+        "wage": 2755.0,
+        "super": 3071.825
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-05-25",
+      "weekEnding": "2026-05-31",
+      "source": "import",
+      "revenue": {
+        "food": 17700.65,
+        "bev": 8364.25,
+        "uber": null,
+        "event": 212.8,
+        "retail": 172.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 19096.97,
+      "forecast": 18600.0,
+      "cogs": {
+        "food": 2507.0,
+        "bev": 1508.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3647.81,
+        "foh": 3922.86,
+        "hours": 225.0,
+        "total": 8479.1504
+      },
+      "covers": 683.0,
+      "cashFlowCost": 5846.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 1.0,
+        "workouts": 0.0,
+        "hoursWorked": 50.0,
+        "wage": 2987.0,
+        "super": 3330.505
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-06-01",
+      "weekEnding": "2026-06-07",
+      "source": "import",
+      "revenue": {
+        "food": 18310.66,
+        "bev": 8744.0,
+        "uber": 2763.0,
+        "event": null,
+        "retail": 784.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25012.76,
+      "forecast": 23000.0,
+      "cogs": {
+        "food": 4038.0,
+        "bev": 1587.45,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3922.0,
+        "foh": 4059.0,
+        "hours": 245.0,
+        "total": 8938.72
+      },
+      "covers": 705.0,
+      "cashFlowCost": 4877.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 25.0,
+        "wage": 2936.0,
+        "super": 3273.64
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-06-08",
+      "weekEnding": "2026-06-14",
+      "source": "import",
+      "revenue": {
+        "food": 23816.0,
+        "bev": 10584.0,
+        "uber": null,
+        "event": 251.0,
+        "retail": 663.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 26599.58,
+      "forecast": 25000.0,
+      "cogs": {
+        "food": 3207.0,
+        "bev": 1398.0,
+        "retail": -13.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4111.75,
+        "foh": 5282.07,
+        "hours": 265.0,
+        "total": 10521.0784
+      },
+      "covers": 806.0,
+      "cashFlowCost": 2324.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 25.0,
+        "wage": 2987.0,
+        "super": 3330.505
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-06-15",
+      "weekEnding": "2026-06-21",
+      "source": "import",
+      "revenue": {
+        "food": 17416.1,
+        "bev": 9280.51,
+        "uber": null,
+        "event": null,
+        "retail": 350.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23793.91,
+      "forecast": 21000.0,
+      "cogs": {
+        "food": 3847.0,
+        "bev": 2462.0,
+        "retail": 324.33
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3579.45,
+        "foh": 3684.32,
+        "hours": 225.75,
+        "total": 8135.4224
+      },
+      "covers": 726.0,
+      "cashFlowCost": 7888.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 0.0,
+        "hoursWorked": 25.0,
+        "wage": 3250.0,
+        "super": 3623.75
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-06-22",
+      "weekEnding": "2026-06-28",
+      "source": "import",
+      "revenue": {
+        "food": 17509.0,
+        "bev": 9381.0,
+        "uber": null,
+        "event": 665.0,
+        "retail": 266.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 22389.0,
+      "forecast": 21000.0,
+      "cogs": {
+        "food": 2668.0,
+        "bev": 831.0,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3494.0,
+        "foh": 3646.0,
+        "hours": 210.0,
+        "total": 7996.8
+      },
+      "covers": 697.0,
+      "cashFlowCost": 3074.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 3.0,
+        "workouts": 1.0,
+        "hoursWorked": 25.0,
+        "wage": 3184.0,
+        "super": 3550.16
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-06-29",
+      "weekEnding": "2026-07-05",
+      "source": "import",
+      "revenue": {
+        "food": 18607.5,
+        "bev": 9410.0,
+        "uber": 1243.0,
+        "event": 247.5,
+        "retail": 323.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 24225.78,
+      "forecast": 23500.0,
+      "cogs": {
+        "food": 3575.0,
+        "bev": 2815.0,
+        "retail": 295.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3892.75,
+        "foh": 4141.74,
+        "hours": 238.75,
+        "total": 8998.6288
+      },
+      "covers": 761.0,
+      "cashFlowCost": 3465.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 1.0,
+        "hoursWorked": 25.0,
+        "wage": 3370.0,
+        "super": 3757.55
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-07-06",
+      "weekEnding": "2026-07-12",
+      "source": "import",
+      "revenue": {
+        "food": 17723.0,
+        "bev": 9412.0,
+        "uber": 904.0,
+        "event": 895.0,
+        "retail": 293.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25047.0,
+      "forecast": 23400.0,
+      "cogs": {
+        "food": 3660.0,
+        "bev": 1590.55,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4084.06,
+        "foh": 4195.17,
+        "hours": 259.75,
+        "total": 9272.7376
+      },
+      "covers": 735.0,
+      "cashFlowCost": 4506.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 3.0,
+        "hoursWorked": 25.0,
+        "wage": 3370.0,
+        "super": 3757.55
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-07-13",
+      "weekEnding": "2026-07-19",
+      "source": "import",
+      "revenue": {
+        "food": 18826.0,
+        "bev": 9607.0,
+        "uber": null,
+        "event": 325.0,
+        "retail": 461.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 28521.84,
+      "forecast": 27000.0,
+      "cogs": {
+        "food": 4483.0,
+        "bev": 2330.25,
+        "retail": null
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4050.11,
+        "foh": 4347.88,
+        "hours": 269.25,
+        "total": 9405.7488
+      },
+      "covers": 779.0,
+      "cashFlowCost": 5871.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 2.0,
+        "hoursWorked": 25.0,
+        "wage": 3370.0,
+        "super": 3757.55
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-07-20",
+      "weekEnding": "2026-07-26",
+      "source": "import",
+      "revenue": {
+        "food": 17730.0,
+        "bev": 8495.0,
+        "uber": null,
+        "event": 520.0,
+        "retail": 482.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 27352.0,
+      "forecast": 24000.0,
+      "cogs": {
+        "food": 3101.0,
+        "bev": 1542.0,
+        "retail": 48.0
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3972.99,
+        "foh": 3854.54,
+        "hours": 236.25,
+        "total": 8766.8336
+      },
+      "covers": 698.0,
+      "cashFlowCost": 2029.0,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 4.0,
+        "hoursWorked": 25.0,
+        "wage": 3370.0,
+        "super": 3757.55
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-07-27",
+      "weekEnding": "2026-08-02",
+      "source": "import",
+      "revenue": {
+        "food": 16988.2,
+        "bev": 9617.74,
+        "uber": 1467.5,
+        "event": 209.0,
+        "retail": 372.5
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 24034.26,
+      "forecast": 28000.0,
+      "cogs": {
+        "food": 4026.1,
+        "bev": 2191.9,
+        "retail": 515.12
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 4132.1,
+        "foh": 4101.9,
+        "hours": 265.0,
+        "total": 9222.08
+      },
+      "covers": 728.0,
+      "cashFlowCost": 7850.6,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 3.0,
+        "hoursWorked": 25.0,
+        "wage": 3702.0,
+        "super": 4127.73
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-08-03",
+      "weekEnding": "2026-08-09",
+      "source": "import",
+      "revenue": {
+        "food": 16798.0,
+        "bev": 8789.0,
+        "uber": null,
+        "event": 365.0,
+        "retail": 352.0
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 25479.05,
+      "forecast": 25000.0,
+      "cogs": {
+        "food": 3303.51,
+        "bev": 1728.16,
+        "retail": 502.53
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 3943.23,
+        "foh": 3985.14,
+        "hours": 237.25,
+        "total": 8879.7744
+      },
+      "covers": 743.0,
+      "cashFlowCost": 6985.22,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 3.0,
+        "hoursWorked": 20.0,
+        "wage": 3579.0,
+        "super": 3990.585
+      },
+      "notes": "see note"
+    },
+    {
+      "week": "2026-08-10",
+      "weekEnding": "2026-08-16",
+      "source": "import",
+      "revenue": {
+        "food": 14526.02,
+        "bev": 7573.89,
+        "uber": 0.0,
+        "event": 475.0,
+        "retail": 316.81
+      },
+      "revenueUncategorised": null,
+      "bankFeeds": 23603.04,
+      "forecast": 22000.0,
+      "cogs": {
+        "food": 4902.15,
+        "bev": 1571.27,
+        "retail": 584.55
+      },
+      "cogsUncategorised": null,
+      "wages": {
+        "kitchen": 0.0,
+        "foh": 0.0,
+        "hours": 255.0,
+        "total": 0.0
+      },
+      "covers": 663.0,
+      "cashFlowCost": 11277.18,
+      "legacyOwnerPersonal": {
+        "daysOff": 4.0,
+        "workouts": 3.0,
+        "hoursWorked": 20.0,
+        "wage": 0.0,
+        "super": 0.0
+      },
+      "notes": "see note"
+    }
+  ]
+}
