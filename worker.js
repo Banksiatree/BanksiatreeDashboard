@@ -425,7 +425,7 @@ function walkXeroCogsSplit(section, periodIndex, acc) {
 }
 
 /* Splits Operating Expenses into: owner's own equity-style drawings
-   (excluded from every other bucket, same OWNER_WAGE_RE/
+   (excluded from every other bucket, same OWNER_WAGE_RE/OWNER_SUPER_RE/
    DISTRIBUTION_OF_PROFIT_RE as walkXeroOpex - becomes the waterfall's
    "Owner wages" line), staff wages (WAGE_KEYWORD_RE), and everything else
    (the Opex line-item list the P&L tab's "Opex total" dropdown shows -
@@ -437,7 +437,7 @@ function walkXeroOpexDetail(section, periodIndex, acc) {
       const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
       const value = xeroCellValue(row, periodIndex);
       const accountId = xeroCellAccountId(row);
-      if (DISTRIBUTION_OF_PROFIT_RE.test(label) || OWNER_WAGE_RE.test(label)) {
+      if (DISTRIBUTION_OF_PROFIT_RE.test(label) || OWNER_WAGE_RE.test(label) || OWNER_SUPER_RE.test(label)) {
         acc.ownerWages += value;
         acc.ownerWagesLines.push({ label, value, accountId });
       } else if (WAGE_KEYWORD_RE.test(label)) {
@@ -517,7 +517,7 @@ function walkXeroWageColumns(section, columnCount, sums) {
   for (const row of section.Rows || []) {
     if (row.RowType === 'Row') {
       const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
-      if (!WAGE_KEYWORD_RE.test(label) || OWNER_WAGE_RE.test(label) || DISTRIBUTION_OF_PROFIT_RE.test(label)) continue;
+      if (!WAGE_KEYWORD_RE.test(label) || OWNER_WAGE_RE.test(label) || OWNER_SUPER_RE.test(label) || DISTRIBUTION_OF_PROFIT_RE.test(label)) continue;
       for (let i = 0; i < columnCount; i++) sums[i] += xeroCellValue(row, i);
     } else if (row.RowType === 'Section') {
       walkXeroWageColumns(row, columnCount, sums);
