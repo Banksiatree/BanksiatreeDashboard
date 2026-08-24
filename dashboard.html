@@ -252,6 +252,7 @@ body {
 .budget-cell.total { background: var(--accent-dim); }
 .budget-cell.sub { color: var(--muted); font-style: italic; }
 .budget-cell.sub.val { font-size: 12px; font-weight: 500; }
+.budget-table.narrow { grid-template-columns: 190px repeat(4, 140px); min-width: 0; }
 
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
@@ -637,6 +638,13 @@ var state = {
     data: null,                /* last /api/budget payload */
     error: null,
     openOpexLines: false
+  },
+  whatIf: {
+    loading: false,
+    baseline: null,            /* last /api/whatif payload, for reference only */
+    error: null,
+    baselineSeeded: false,      /* has a live baseline overwritten the starting inputs yet? */
+    inputs: { avgSpend: 0, transactions: 0, cogsPct: 0, wagePct: 0, opexPct: 0 }
   }
 };
 
@@ -916,8 +924,8 @@ function render() {
   /* Nav */
   var nav = el('div', 'nav');
   var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -954,6 +962,7 @@ function render() {
   else if (state.view === 'enter') renderManualEntry(root);
   else if (state.view === 'owner') renderOwnerInput(root);
   else if (state.view === 'budget') renderBudget(root);
+  else if (state.view === 'whatif') renderWhatIf(root);
   else if (state.view === 'pl') renderPL(root);
   else if (state.view === 'cashsplit') renderCashSplit(root);
   else if (state.view === 'connections') renderConnections(root);
@@ -2538,6 +2547,152 @@ function renderBudget(root) {
   }
 
   root.appendChild(el('p', 'set-note', 'Transactions target, average spend target and weeks in month are set in Settings.'));
+}
+
+/* ============================================================
+   What-If calculator (banksia-dashboard-spec.md #3.5). Replicates the old
+   sheet's "Key KPI Relationships" block ("TBT 2026 KPI Tracker", rows
+   22-48 - the spec's own cited cell refs, C16:C18 etc, don't literally
+   match that tab; this was built directly off the real formulas found
+   there instead, see the build plan). 5 raw inputs (no formula behind
+   them in the sheet either - Customers and Avg Spend as weekly numbers,
+   COGS/Wage/Opex as % targets), the rest is pure derived arithmetic shown
+   at four scales: Weekly / Monthly (x4) / Quarterly (x13) / Yearly (x52),
+   exactly the sheet's own multipliers. Live only - nothing is ever saved.
+============================================================ */
+function whatIfBaselineRange() {
+  var lastCompletedMon = ownerInputWeekMonday('lastWeek');
+  return { from: addDays(lastCompletedMon, -21), to: addDays(lastCompletedMon, 6) };
+}
+
+/* Manual trigger, same "nothing pulls live except on demand" rule as every
+   other Xero-backed tab. Only ever overwrites the 5 inputs ONCE (the first
+   time a baseline successfully loads) - re-fetching later refreshes
+   state.whatIf.baseline for reference but never clobbers what the owner
+   has since typed. */
+function fetchWhatIfBaseline() {
+  var w = state.whatIf;
+  if (w.loading) return;
+  if (isManual()) { w.baseline = { available: false, reason: 'manual_mode' }; render(); return; }
+  w.loading = true; w.error = null;
+  render();
+  var r = whatIfBaselineRange();
+  fetch('/api/whatif?from=' + iso(r.from) + '&to=' + iso(r.to)).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    w.baseline = json; w.loading = false;
+    if (json.available && !w.baselineSeeded) {
+      var revenue = json.revenue || 0, transactions = json.transactions || 0;
+      w.inputs = {
+        avgSpend: transactions ? Math.round((revenue / transactions) * 100) / 100 : 0,
+        transactions: Math.round(transactions / 4),
+        cogsPct: revenue ? Math.round((json.cogs / revenue) * 1000) / 10 : 0,
+        wagePct: revenue ? Math.round((json.wages / revenue) * 1000) / 10 : 0,
+        opexPct: revenue ? Math.round((json.opex / revenue) * 1000) / 10 : 0
+      };
+      w.baselineSeeded = true;
+    }
+    render();
+  }).catch(function () {
+    w.loading = false; w.error = 'Could not reach the dashboard just now. Try again.'; render();
+  });
+}
+
+/* Pure - same relationships as the sheet: Total Sales = Customers x Avg
+   Spend; each cost bucket's $ = its % target x Total Sales; Net Profit =
+   Total Sales - the three costs summed. All weekly; renderWhatIf scales by
+   the period multiplier for display. */
+function whatIfCompute(inputs) {
+  var customers = inputs.transactions || 0;
+  var avgSpend = inputs.avgSpend || 0;
+  var totalSales = customers * avgSpend;
+  var cogs = totalSales * (inputs.cogsPct || 0) / 100;
+  var wages = totalSales * (inputs.wagePct || 0) / 100;
+  var opex = totalSales * (inputs.opexPct || 0) / 100;
+  var totalExpenses = cogs + wages + opex;
+  var netProfit = totalSales - totalExpenses;
+  return { customers: customers, avgSpend: avgSpend, totalSales: totalSales, cogs: cogs, wages: wages, opex: opex, totalExpenses: totalExpenses, netProfit: netProfit };
+}
+
+function renderWhatIf(root) {
+  root.appendChild(el('div', 'screen-title', 'What-If'));
+  root.appendChild(el('p', 'screen-sub', 'Change any of the 5 numbers below and see the flow-through at every scale, instantly. Nothing here is saved.'));
+
+  var w = state.whatIf;
+
+  if (isManual()) {
+    root.appendChild(el('div', 'banner banner-amber', 'You’re in ‘I type them in’ mode, so there’s no Xero connection to seed a starting baseline from. Type each number in below instead.'));
+  }
+
+  var loadBtn = el('button', 'btn-primary-dash', w.loading ? 'Fetching…' : (w.baselineSeeded ? 'Refresh baseline' : 'Load baseline (last 4 weeks)'));
+  loadBtn.style.margin = '0.6rem 0 1.1rem';
+  loadBtn.disabled = w.loading;
+  loadBtn.onclick = function () { fetchWhatIfBaseline(); };
+  root.appendChild(loadBtn);
+
+  if (w.error) root.appendChild(el('div', 'banner banner-coral', esc(w.error)));
+  if (w.baseline && w.baseline.available === false && w.baseline.reason === 'not_connected') {
+    root.appendChild(el('div', 'banner banner-amber', 'Connect ' + esc(P.accounting) + ' on the Connections screen first, or type each number in below yourself.'));
+  }
+
+  /* oninput (not onchange) for a truly live feel, but this app always
+     rebuilds the whole screen on render() - a naive oninput handler would
+     lose focus/cursor position every keystroke. Preserves both across the
+     rebuild instead of special-casing this tab's render path. */
+  var grid = el('div', 'set-grid');
+  function inputCell(label, key, step) {
+    var cell = el('div', 'set-cell');
+    cell.appendChild(el('div', 'set-label', label));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.step = step || 'any';
+    inp.value = w.inputs[key];
+    inp.setAttribute('data-wikey', key);
+    inp.oninput = function () {
+      w.inputs[key] = parseFloat(inp.value) || 0;
+      var pos = inp.selectionStart;
+      render();
+      var again = document.querySelector('[data-wikey="' + key + '"]');
+      if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+    };
+    cell.appendChild(inp);
+    grid.appendChild(cell);
+  }
+  inputCell('Avg spend / transaction ($)', 'avgSpend');
+  inputCell('Transactions (weekly)', 'transactions', '1');
+  inputCell('COGS %', 'cogsPct');
+  inputCell('Wage %', 'wagePct');
+  inputCell('Opex %', 'opexPct');
+  root.appendChild(grid);
+
+  var weekly = whatIfCompute(w.inputs);
+  var periods = [ { label: 'Weekly', mult: 1 }, { label: 'Monthly', mult: 4 }, { label: 'Quarterly', mult: 13 }, { label: 'Yearly', mult: 52 } ];
+
+  var wrap = el('div', 'budget-table-wrap');
+  var table = el('div', 'budget-table narrow');
+  table.appendChild(el('div', 'budget-cell head rowlabel', ''));
+  periods.forEach(function (p) { table.appendChild(el('div', 'budget-cell head', p.label)); });
+
+  function metricRow(label, fmtFn, cls) {
+    table.appendChild(el('div', 'budget-cell rowlabel' + (cls ? ' ' + cls : ''), esc(label)));
+    periods.forEach(function (p) { table.appendChild(el('div', 'budget-cell val' + (cls ? ' ' + cls : ''), esc(fmtFn(p.mult)))); });
+  }
+  function pct(part) { return weekly.totalSales ? (part / weekly.totalSales) * 100 : null; }
+
+  metricRow('Customers', function (mult) { return fmtInt(weekly.customers * mult); });
+  metricRow('Avg spend', function () { return fmtMoney(weekly.avgSpend); });
+  metricRow('Total sales', function (mult) { return fmtMoney(weekly.totalSales * mult); }, 'total');
+  metricRow('Wages (Labour)', function (mult) { return fmtMoney(weekly.wages * mult); });
+  metricRow('Wage %', function () { return fmtPctVal(pct(weekly.wages)); }, 'sub');
+  metricRow('COGS (F&B)', function (mult) { return fmtMoney(weekly.cogs * mult); });
+  metricRow('COGS %', function () { return fmtPctVal(pct(weekly.cogs)); }, 'sub');
+  metricRow('Opex (Overheads)', function (mult) { return fmtMoney(weekly.opex * mult); });
+  metricRow('Opex %', function () { return fmtPctVal(pct(weekly.opex)); }, 'sub');
+  metricRow('Total expenses', function (mult) { return fmtMoney(weekly.totalExpenses * mult); });
+  metricRow('Net profit', function (mult) { return fmtMoney(weekly.netProfit * mult); }, 'total');
+  metricRow('Net profit %', function () { return fmtPctVal(pct(weekly.netProfit)); }, 'sub');
+
+  wrap.appendChild(table);
+  root.appendChild(wrap);
 }
 
 function renderSettings(root) {

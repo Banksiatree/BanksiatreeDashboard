@@ -1440,6 +1440,59 @@ async function apiOwnerWages(env, url) {
   }
 }
 
+/* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the
+   What-If calculator (banksia-dashboard-spec.md #3.5). from/to is the true
+   Mon-Sun window the client computes (4 full weeks); revenue is pulled on
+   the same Tue-Mon-shifted window every other Xero pull in this file uses,
+   for the same bank-feed-lag reason. Raw 4-week totals only - dashboard.html
+   divides by 4 and derives every ratio (avg spend, COGS/wage/opex %), same
+   "Worker supplies raw data" rule as P&L/Budget. */
+async function apiWhatIf(env, url) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+  const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+  if (!from || !to || !WEEK_RE.test(from) || !WEEK_RE.test(to)) return json({ error: 'bad range' }, 400);
+
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+
+  const errors = {};
+  let split = null;
+  try {
+    split = await fetchXeroPLSplit(h, tenantId, from, to);
+  } catch (err) { errors.pl = plainError(err.status || 500); }
+
+  let revenue = null;
+  try {
+    const revFrom = shiftIsoDate(from, 1), revTo = shiftIsoDate(to, 1);
+    revenue = (await fetchXeroPLSplit(h, tenantId, revFrom, revTo)).revenue;
+  } catch (err) { errors.revenue = plainError(err.status || 500); }
+
+  let transactions = null;
+  try {
+    const posAdapter = ADAPTERS.pos;
+    if (posAdapter && posAdapter.configured) {
+      transactions = (await posAdapter.fetchRange(env, h, { from, to })).count;
+    }
+  } catch (err) { errors.transactions = plainError(err.status || 500); }
+
+  await noteSync(env, 'accounting');
+  return json({
+    available: true,
+    revenue,
+    transactions,
+    cogs: split ? (split.cogs.buckets.foh + split.cogs.buckets.boh + split.cogs.buckets.retail + split.cogs.buckets.uncategorised) : null,
+    wages: split ? split.opex.wagesSuperExclOwner : null,
+    opex: split ? split.opex.opexTotal : null,
+    errors
+  });
+}
+
 /* ============================================================================
    Everything below is the shell. You should rarely need to edit it.
 ============================================================================ */
@@ -2268,6 +2321,10 @@ export default {
     if (path === '/api/budget' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiBudget(env, url);
+    }
+    if (path === '/api/whatif' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiWhatIf(env, url);
     }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {
