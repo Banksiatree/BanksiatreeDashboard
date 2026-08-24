@@ -228,6 +228,20 @@ body {
 .pl-catchup-title { font-family: 'Khand', sans-serif; font-size: 16px; font-weight: 600; color: var(--c-blue-text); margin-bottom: 0.4rem; }
 .pl-catchup-row { font-size: 13.5px; color: var(--c-blue-text); line-height: 1.8; }
 
+/* Owner Input tab */
+.oi-owners { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 0.4rem; }
+.oi-owner-chip { padding: 8px 16px; border-radius: 20px; border: 1px solid var(--border-med); background: #fffdf9; font-size: 13.5px; font-weight: 500; color: var(--text); cursor: pointer; }
+.oi-owner-chip:hover { border-color: var(--accent); background: var(--accent-dim); }
+.oi-owner-chip.on { background: var(--black); color: #fff; border-color: var(--black); }
+.oi-add-owner { display: flex; gap: 8px; align-items: center; margin-bottom: 1.1rem; }
+.oi-add-owner input { font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border-med); border-radius: 20px; background: #fff; width: 160px; }
+.oi-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.3rem; margin-bottom: 1rem; }
+.oi-card-title { font-family: 'Khand', sans-serif; font-size: 16px; font-weight: 600; color: var(--black); margin-bottom: 0.5rem; }
+.oi-wage-card { background: var(--c-teal-bg); border: 1px solid var(--c-teal-border); border-radius: 14px; padding: 1.1rem 1.3rem; margin-bottom: 1rem; }
+.oi-wage-rate { font-family: 'Khand', sans-serif; font-size: 30px; font-weight: 700; color: var(--c-teal-text); }
+.oi-wage-sub { font-size: 12.5px; color: var(--c-teal-text); margin: 0.2rem 0 0.7rem; }
+.oi-share-row { display: flex; justify-content: space-between; font-size: 13.5px; color: var(--c-teal-text); padding: 3px 0; }
+
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
 .recon-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
@@ -588,6 +602,15 @@ var state = {
     data: null,                /* last /api/pl payload */
     error: null,
     openCogs: false, openWages: false, openOpex: false  /* which dropdown breakdowns are expanded */
+  },
+  ownerInput: {
+    week: 'thisWeek',          /* thisWeek | lastWeek */
+    myOwner: loadJson('vd_myowner', null),  /* remembered pick, this device only - convenience, not auth */
+    data: null,                /* last /api/ownerinput payload */
+    loading: false,
+    error: null,
+    wages: null,                /* last /api/ownerwages payload, for the derived rate */
+    wagesLoading: false
   }
 };
 
@@ -867,8 +890,8 @@ function render() {
   /* Nav */
   var nav = el('div', 'nav');
   var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -903,6 +926,7 @@ function render() {
   if (isManual() && (state.view === 'connections' || state.view === 'recon')) state.view = 'dashboard';
   if (state.view === 'dashboard') renderDashboard(root);
   else if (state.view === 'enter') renderManualEntry(root);
+  else if (state.view === 'owner') renderOwnerInput(root);
   else if (state.view === 'pl') renderPL(root);
   else if (state.view === 'cashsplit') renderCashSplit(root);
   else if (state.view === 'connections') renderConnections(root);
@@ -2108,6 +2132,210 @@ function renderPL(root) {
     if (lines.length) lines.forEach(function (t) { cu.appendChild(el('div', 'pl-catchup-row', esc(t))); });
     else cu.appendChild(el('div', 'pl-catchup-row', 'On pace or ahead across the board — nothing to catch up on.'));
     root.appendChild(cu);
+  }
+}
+
+/* ============================================================
+   Owner Input tab (banksia-dashboard-spec.md #3.1). Unlike Settings/Manual
+   Entry (both localStorage, per-device), entries here have to be visible
+   across every owner's own device - the wage split needs everyone's hours
+   for the week together - so this reads/writes worker.js's new KV-backed
+   /api/ownerinput* endpoints instead of localStorage. Only the "which name
+   did I last pick on THIS device" bit is local, as a convenience.
+============================================================ */
+function ownerInputWeekMonday(key) {
+  var ws = startOfWeek(tradingToday());
+  if (key === 'lastWeek') ws = addDays(ws, -7);
+  return ws;
+}
+function saveMyOwner(name) {
+  state.ownerInput.myOwner = name;
+  try { localStorage.setItem('vd_myowner', JSON.stringify(name)); } catch (e) {}
+}
+
+function fetchOwnerInput() {
+  var oi = state.ownerInput;
+  if (oi.loading) return;
+  oi.loading = true; oi.error = null;
+  render();
+  var mon = iso(ownerInputWeekMonday(oi.week));
+  fetch('/api/ownerinput?week=' + mon).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    oi.data = json; oi.loading = false; render();
+  }).catch(function () {
+    oi.loading = false; oi.error = 'Could not reach the dashboard just now. Try refresh.'; render();
+  });
+}
+
+function fetchOwnerWages() {
+  var oi = state.ownerInput;
+  if (oi.wagesLoading) return;
+  if (isManual()) { oi.wages = { available: false, reason: 'manual_mode' }; render(); return; }
+  oi.wagesLoading = true;
+  render();
+  var mon = ownerInputWeekMonday(oi.week);
+  fetch('/api/ownerwages?from=' + iso(mon) + '&to=' + iso(addDays(mon, 6))).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    oi.wages = json; oi.wagesLoading = false; render();
+  }).catch(function () {
+    oi.wagesLoading = false; oi.wages = { available: false, error: 'Could not reach the dashboard just now.' }; render();
+  });
+}
+
+function renderOwnerInput(root) {
+  root.appendChild(el('div', 'screen-title', 'Owner input'));
+  root.appendChild(el('p', 'screen-sub', 'Days off, workouts, and hours worked - yours and the team’s. Personal stats here are just for owners, never shown to staff.'));
+
+  var oi = state.ownerInput;
+  if (!oi.data && !oi.loading) fetchOwnerInput();
+
+  var pbar = el('div', 'period-bar');
+  pbar.appendChild(el('span', 'period-label', 'Week'));
+  [ { key: 'thisWeek', label: 'This week' }, { key: 'lastWeek', label: 'Last week' } ].forEach(function (p) {
+    var chip = el('button', 'pchip' + (oi.week === p.key ? ' on' : ''), p.label);
+    chip.onclick = function () { oi.week = p.key; oi.data = null; oi.wages = null; render(); };
+    pbar.appendChild(chip);
+  });
+  root.appendChild(pbar);
+  var mon = ownerInputWeekMonday(oi.week);
+  root.appendChild(el('div', 'set-note', fmtRange({ from: mon, to: addDays(mon, 6) })));
+
+  if (oi.error) root.appendChild(el('div', 'banner banner-coral', esc(oi.error)));
+  if (oi.loading || !oi.data) {
+    root.appendChild(el('div', 'pl-empty', 'Loading…'));
+    return;
+  }
+
+  var data = oi.data;
+  var entries = data.entries || [];
+  var entryFor = function (name) { return entries.filter(function (e) { return e.ownerName === name; })[0] || null; };
+
+  /* Name picker */
+  var ownerWrap = el('div', 'oi-owners');
+  (data.owners || []).forEach(function (name) {
+    var chip = el('button', 'oi-owner-chip' + (oi.myOwner === name ? ' on' : ''), esc(name));
+    chip.onclick = function () { saveMyOwner(name); render(); };
+    ownerWrap.appendChild(chip);
+  });
+  root.appendChild(ownerWrap);
+
+  var addWrap = el('div', 'oi-add-owner');
+  var addInp = document.createElement('input'); addInp.type = 'text'; addInp.placeholder = 'Add an owner…'; addInp.maxLength = 60;
+  var addBtn = el('button', 'btn-plain', '+ Add owner');
+  addBtn.onclick = function () {
+    var name = addInp.value.trim();
+    if (!name) return;
+    addBtn.disabled = true;
+    fetch('/api/ownerinput/owner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+      .then(function () { saveMyOwner(name); oi.data = null; fetchOwnerInput(); })
+      .catch(function () { addBtn.disabled = false; });
+  };
+  addWrap.appendChild(addInp); addWrap.appendChild(addBtn);
+  root.appendChild(addWrap);
+
+  /* Selected owner's entry form */
+  if (oi.myOwner) {
+    var existing = entryFor(oi.myOwner);
+    var card = el('div', 'oi-card');
+    card.appendChild(el('div', 'oi-card-title', esc(oi.myOwner) + '’s week'));
+    var grid = el('div', 'set-grid');
+    var fields = [
+      { key: 'daysOff', label: 'Days off' },
+      { key: 'workouts', label: 'Workouts' },
+      { key: 'ownerHours', label: 'Hours worked' }
+    ];
+    var inputs = {};
+    fields.forEach(function (f) {
+      var cell = el('div', 'set-cell');
+      cell.appendChild(el('div', 'set-label', f.label));
+      var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.min = '0';
+      if (existing && typeof existing[f.key] === 'number') inp.value = existing[f.key];
+      inputs[f.key] = inp;
+      cell.appendChild(inp);
+      grid.appendChild(cell);
+    });
+    card.appendChild(grid);
+    var saveNote = el('div', 'set-note', existing ? ('Last saved ' + new Date(existing.updatedAt).toLocaleString() + '. Editable any time.') : 'Not saved yet for this week.');
+    card.appendChild(saveNote);
+    var saveBtn = el('button', 'btn-primary-dash', 'Save my week');
+    saveBtn.style.marginTop = '10px';
+    saveBtn.onclick = function () {
+      saveBtn.disabled = true;
+      fetch('/api/ownerinput/entry', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          week: iso(mon), ownerName: oi.myOwner,
+          daysOff: parseFloat(inputs.daysOff.value) || 0,
+          workouts: parseFloat(inputs.workouts.value) || 0,
+          ownerHours: parseFloat(inputs.ownerHours.value) || 0
+        })
+      }).then(function () { oi.data = null; fetchOwnerInput(); }).catch(function () { saveBtn.disabled = false; });
+    };
+    card.appendChild(saveBtn);
+    root.appendChild(card);
+  } else {
+    root.appendChild(el('div', 'set-note', 'Pick your name above (or add it) to log your week.'));
+  }
+
+  /* Shared staff hours - not tied to whichever owner is picked */
+  var staffCard = el('div', 'oi-card');
+  staffCard.appendChild(el('div', 'oi-card-title', 'Staff hours worked'));
+  staffCard.appendChild(el('div', 'set-note', 'Totals only, not per staff member. Shared for the week - whoever enters it last is what shows.'));
+  var staffInp = document.createElement('input'); staffInp.type = 'number'; staffInp.step = 'any'; staffInp.min = '0'; staffInp.style.marginTop = '10px';
+  if (data.staffHours && typeof data.staffHours.staffHours === 'number') staffInp.value = data.staffHours.staffHours;
+  staffCard.appendChild(staffInp);
+  var staffBtn = el('button', 'btn-plain', 'Save staff hours');
+  staffBtn.style.marginLeft = '8px';
+  staffBtn.onclick = function () {
+    staffBtn.disabled = true;
+    fetch('/api/ownerinput/staffhours', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: iso(mon), staffHours: parseFloat(staffInp.value) || 0 })
+    }).then(function () { oi.data = null; fetchOwnerInput(); }).catch(function () { staffBtn.disabled = false; });
+  };
+  staffCard.appendChild(staffBtn);
+  root.appendChild(staffCard);
+
+  /* Run the Numbers - derives an hourly wage rate from this week's total
+     owner hours (logged above) and what Xero shows was actually drawn
+     (same figure the P&L tab's "Owner wages" line uses), then splits that
+     dollar figure across owners by their share of the total hours. */
+  var runBtn = el('button', 'btn-primary-dash', oi.wagesLoading ? 'Fetching…' : 'Run the Numbers');
+  runBtn.style.margin = '0.2rem 0 1.1rem';
+  runBtn.disabled = oi.wagesLoading;
+  runBtn.onclick = function () { fetchOwnerWages(); };
+  root.appendChild(runBtn);
+
+  if (oi.wages) {
+    if (oi.wages.available === false) {
+      var msg = oi.wages.reason === 'manual_mode' ? 'You’re in ‘I type them in’ mode, so there’s no Xero connection to pull pay drawn from.'
+        : (oi.wages.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : (oi.wages.error || 'Not available right now.'));
+      root.appendChild(el('div', 'banner banner-amber', msg));
+    } else {
+      var totalHours = entries.reduce(function (sum, e) { return sum + (e.ownerHours || 0); }, 0);
+      var wageCard = el('div', 'oi-wage-card');
+      wageCard.appendChild(el('div', 'oi-card-title', 'Owner hourly wage'));
+      if (totalHours > 0) {
+        var rate = oi.wages.actual / totalHours;
+        wageCard.appendChild(el('div', 'oi-wage-rate', esc(fmtMoney(rate)) + '/hr'));
+        wageCard.appendChild(el('div', 'oi-wage-sub', esc(fmtMoney(oi.wages.actual)) + ' drawn ÷ ' + totalHours + ' owner hours this week' + (entries.length > 1 ? ', split by each owner’s share of hours:' : '.')));
+        if (entries.length > 1) {
+          entries.forEach(function (e) {
+            var row = el('div', 'oi-share-row');
+            row.appendChild(el('span', null, esc(e.ownerName) + ' · ' + e.ownerHours + ' hrs'));
+            row.appendChild(el('span', null, esc(fmtMoney(rate * (e.ownerHours || 0)))));
+            wageCard.appendChild(row);
+          });
+        }
+      } else {
+        wageCard.appendChild(el('div', 'set-note', 'No owner hours logged for this week yet, so a rate can’t be worked out. ' + esc(fmtMoney(oi.wages.actual)) + ' was drawn from Xero this week.'));
+      }
+      root.appendChild(wageCard);
+    }
   }
 }
 

@@ -1091,6 +1091,150 @@ async function apiWebhookOolio(env, request) {
   return json({ ok: true });
 }
 
+/* ----------------------------------------------------------------------------
+   Owner Input tab (banksia-dashboard-spec.md #3.1). Unlike Settings/Manual
+   Entry (both localStorage, per-device), this data has to be visible across
+   every owner's own device - the wage split needs everyone's hours for the
+   week together, not just whichever device is open - so it lives in KV,
+   behind these endpoints, same TOKENS namespace everything else uses.
+
+   Keys:
+     sys:owners                              -> JSON array of owner names
+     ownerinput:entry:<weekMonday>:<slug>     -> { ownerName, daysOff,
+                                                    workouts, ownerHours,
+                                                    updatedAt }
+                                                  one key per owner per week
+                                                  so two owners saving in the
+                                                  same week never clobber
+                                                  each other
+     ownerinput:staffhours:<weekMonday>       -> { staffHours, updatedAt }
+                                                  one shared figure per week,
+                                                  last write wins (same
+                                                  low-friction rule as
+                                                  everything else here)
+
+   "Pay drawn" (the other half of the wage-rate formula, alongside the hours
+   entered here) is deliberately NOT a field on this tab - the spec's field
+   list is days off/workouts/owner hours/staff hours only, no typed-in
+   dollar figure, which means it's the same Xero figure already pulled for
+   the P&L tab's "Owner wages" line. apiOwnerWages below reuses
+   fetchXeroPLSplit (built for P&L) rather than re-deriving it.
+---------------------------------------------------------------------------- */
+function slugify(name) {
+  return String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+async function getOwnersList(env) {
+  const raw = await env.TOKENS.get('sys:owners');
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch (e) { return []; }
+}
+async function getOwnerWeekEntries(env, week) {
+  const prefix = 'ownerinput:entry:' + week + ':';
+  const out = [];
+  let cursor;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix, cursor } : { prefix });
+    const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+    raws.forEach((raw) => { if (raw) { try { out.push(JSON.parse(raw)); } catch (e) {} } });
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  return out;
+}
+
+const WEEK_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/* GET /api/ownerinput?week=<mondayISO> - cheap KV-only read (owners list +
+   that week's entries + staff hours), no external API call, safe to
+   auto-load on tab open. */
+async function apiOwnerInputGet(env, url) {
+  const week = url.searchParams.get('week');
+  if (!week || !WEEK_RE.test(week)) return json({ error: 'bad week' }, 400);
+  const [owners, entries, staffHoursRaw] = await Promise.all([
+    getOwnersList(env),
+    getOwnerWeekEntries(env, week),
+    env.TOKENS.get('ownerinput:staffhours:' + week)
+  ]);
+  let staffHours = null;
+  if (staffHoursRaw) { try { staffHours = JSON.parse(staffHoursRaw); } catch (e) {} }
+  return json({ owners, entries, staffHours });
+}
+
+/* POST /api/ownerinput/entry - body {week, ownerName, daysOff, workouts,
+   ownerHours}. Upserts one owner's entry for that week; editable any time,
+   re-saving just overwrites the same key. */
+async function apiOwnerInputEntry(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const week = body && body.week, ownerName = body && String(body.ownerName || '').trim();
+  if (!week || !WEEK_RE.test(week) || !ownerName) return json({ ok: false, error: 'bad request' }, 400);
+  const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const entry = {
+    ownerName,
+    daysOff: num(body.daysOff),
+    workouts: num(body.workouts),
+    ownerHours: num(body.ownerHours),
+    updatedAt: new Date().toISOString()
+  };
+  await env.TOKENS.put('ownerinput:entry:' + week + ':' + slugify(ownerName), JSON.stringify(entry));
+  return json({ ok: true });
+}
+
+/* POST /api/ownerinput/staffhours - body {week, staffHours}. Shared weekly
+   figure, not tied to a specific owner. */
+async function apiOwnerInputStaffHours(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const week = body && body.week;
+  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad request' }, 400);
+  const n = parseFloat(body.staffHours);
+  const record = { staffHours: isFinite(n) ? n : 0, updatedAt: new Date().toISOString() };
+  await env.TOKENS.put('ownerinput:staffhours:' + week, JSON.stringify(record));
+  return json({ ok: true });
+}
+
+/* POST /api/ownerinput/owner - body {name}. Grows the simple name picker;
+   not a real login/auth system, so anyone with the dashboard link can add
+   one - matches the whole dashboard's already-open, unlisted-URL model. */
+async function apiOwnerInputAddOwner(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const name = String((body && body.name) || '').trim();
+  if (!name || name.length > 60) return json({ ok: false, error: 'bad name' }, 400);
+  const owners = await getOwnersList(env);
+  if (!owners.some((o) => o.toLowerCase() === name.toLowerCase())) {
+    owners.push(name);
+    await env.TOKENS.put('sys:owners', JSON.stringify(owners));
+  }
+  return json({ ok: true, owners });
+}
+
+/* GET /api/ownerwages?from=&to= - the "Run the Numbers" pull for this tab.
+   Deliberately narrow: reuses fetchXeroPLSplit (already built for P&L) and
+   returns just the one figure this tab displays, rather than re-fetching
+   everything P&L/Cash Split already pull independently on their own
+   buttons - the spec leaves "exact scope of what Run the Numbers fetches"
+   open (see banksia-dashboard-spec.md #5), and every tab so far has its own
+   independent on-demand trigger rather than one shared orchestrator. */
+async function apiOwnerWages(env, url) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+  const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+  if (!from || !to || !WEEK_RE.test(from) || !WEEK_RE.test(to)) return json({ error: 'bad range' }, 400);
+
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+  try {
+    const split = await fetchXeroPLSplit(h, tenantId, from, to);
+    await noteSync(env, 'accounting');
+    return json({ available: true, actual: split.opex.ownerWages });
+  } catch (err) {
+    return json({ available: false, error: plainError(err.status || 500) });
+  }
+}
+
 /* ============================================================================
    Everything below is the shell. You should rarely need to edit it.
 ============================================================================ */
@@ -1895,6 +2039,26 @@ export default {
     if (path === '/api/pl' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiPL(env, url);
+    }
+    if (path === '/api/ownerinput' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerInputGet(env, url);
+    }
+    if (path === '/api/ownerinput/entry' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerInputEntry(env, request);
+    }
+    if (path === '/api/ownerinput/staffhours' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerInputStaffHours(env, request);
+    }
+    if (path === '/api/ownerinput/owner' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerInputAddOwner(env, request);
+    }
+    if (path === '/api/ownerwages' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerWages(env, url);
     }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {
