@@ -204,6 +204,30 @@ body {
 .cs-row.cs-total .cs-amt { font-size: 26px; }
 .cs-empty { padding: 1.3rem; font-size: 13px; color: var(--muted); line-height: 1.6; }
 
+/* P&L tab */
+.pl-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 1rem; }
+.pl-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1.3rem; }
+.pl-card.pl-total { background: var(--accent-dim); border-color: var(--accent); }
+.pl-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 0.3rem; }
+.pl-card-label { font-family: 'Khand', sans-serif; font-size: 17px; font-weight: 600; color: var(--black); }
+.pl-badge { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 3px 10px; border-radius: 20px; }
+.pl-badge-good { background: var(--c-green-bg); color: var(--c-green); border: 1px solid var(--c-green-border); }
+.pl-badge-amber { background: var(--c-amber-bg); color: var(--c-amber); border: 1px solid var(--c-amber-border); }
+.pl-badge-bad { background: var(--c-coral-bg); color: var(--c-coral); border: 1px solid var(--c-coral-border); }
+.pl-figs { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.pl-actual { font-family: 'Khand', sans-serif; font-size: 30px; font-weight: 700; color: var(--black); }
+.pl-budget { font-size: 12.5px; color: var(--muted); }
+.pl-toggle { background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; padding: 0; margin-top: 6px; text-decoration: underline; }
+.pl-breakdown { margin-top: 0.6rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
+.pl-breakdown-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0; }
+.pl-breakdown-row .pl-b-label { color: var(--text); }
+.pl-breakdown-row .pl-b-value { font-weight: 500; color: var(--black); white-space: nowrap; }
+.pl-breakdown-row.pl-uncategorised .pl-b-label { color: var(--c-amber); font-style: italic; }
+.pl-empty { padding: 1.3rem; font-size: 13px; color: var(--muted); line-height: 1.6; }
+.pl-catchup-card { background: var(--c-blue-bg); border: 1px solid var(--c-blue-border); border-radius: 14px; padding: 1.1rem 1.3rem; margin-bottom: 1rem; }
+.pl-catchup-title { font-family: 'Khand', sans-serif; font-size: 16px; font-weight: 600; color: var(--c-blue-text); margin-bottom: 0.4rem; }
+.pl-catchup-row { font-size: 13.5px; color: var(--c-blue-text); line-height: 1.8; }
+
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
 .recon-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
@@ -362,7 +386,20 @@ function defaultSettings() {
        spreadsheet worked out closer to a flat rate in practice). Both are
        policy numbers the owner sets, not something Xero reports. */
     surchargePct: 1.2,
-    taxPct: 3.18
+    taxPct: 3.18,
+    /* P&L tab: exact per-line KPI/budget tolerance rules are deferred per
+       the spec (different rule per line, TBD) - one tolerance % stands in
+       for all of them for now, editable here any time. A line within
+       plTolerancePct of its budget is on track; further off (in the wrong
+       direction for that line) is amber, then red past 2x the tolerance. */
+    plTolerancePct: 5,
+    /* Weekly transactions and average-spend targets - the "operational
+       assumptions" the old KPI Tracker sheet fed its $ figures with (see
+       spec 3.3). Not in Xero (Budget Manager holds $ only), and the History
+       tab that would otherwise import them from the old sheet isn't built
+       yet, so they live here until then. */
+    transactionsTargetWeekly: 0,
+    avgSpendTarget: 0
   };
 }
 function loadSettings() {
@@ -544,6 +581,13 @@ var state = {
     sales: '',                 /* this week's bank deposit - typed fresh each visit, never persisted */
     loanRepayments: 0,
     gstOverride: null, cogsOverride: null, cashOverride: null  /* null = use the live figure */
+  },
+  pl: {
+    period: 'thisMonth',       /* thisMonth | lastMonth | ytd */
+    loading: false,
+    data: null,                /* last /api/pl payload */
+    error: null,
+    openCogs: false, openWages: false, openOpex: false  /* which dropdown breakdowns are expanded */
   }
 };
 
@@ -823,8 +867,8 @@ function render() {
   /* Nav */
   var nav = el('div', 'nav');
   var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -859,6 +903,7 @@ function render() {
   if (isManual() && (state.view === 'connections' || state.view === 'recon')) state.view = 'dashboard';
   if (state.view === 'dashboard') renderDashboard(root);
   else if (state.view === 'enter') renderManualEntry(root);
+  else if (state.view === 'pl') renderPL(root);
   else if (state.view === 'cashsplit') renderCashSplit(root);
   else if (state.view === 'connections') renderConnections(root);
   else if (state.view === 'recon') renderRecon(root);
@@ -1806,6 +1851,266 @@ function renderCashSplit(root) {
   root.appendChild(el('p', 'set-note', 'Surcharge and tax rates are set in Settings. Everything left in Trading still splits by hand into Owner’s Pay, Annual Leave, Annual Bills or the Drip account, same as before.'));
 }
 
+/* ============================================================
+   P&L tab (banksia-dashboard-spec.md #3.2). /api/pl supplies raw actual and
+   budget figures only - every derived figure (status colour, catch-up gaps,
+   transaction/spend targets) is computed here, same rule the rest of this
+   file follows (see the header comment at the top of dashboard.html).
+============================================================ */
+function fmtInt(v) {
+  if (v == null) return '—';
+  return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/* Resolves the P&L tab's three period choices to a concrete date range,
+   using the same tz-aware tradingToday()/date-stamp helpers resolvePeriod
+   already relies on. elapsedFraction only differs from 1 for 'thisMonth'
+   (the only period that's ever still in progress) - it drives the catch-up
+   panel's "prorated to today" maths. */
+function resolvePLPeriod(key) {
+  var today = tradingToday();
+  var from, to, label;
+  if (key === 'lastMonth') {
+    var base = addMonths(stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), -1);
+    from = stamp(base.getUTCFullYear(), base.getUTCMonth() + 1, 1);
+    to = addDays(addMonths(from, 1), -1);
+    label = 'Last month';
+  } else if (key === 'ytd') {
+    from = stamp(today.getUTCFullYear(), 1, 1);
+    to = addDays(stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), -1); /* end of the month before this one */
+    label = 'All completed months this year';
+  } else {
+    from = stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1);
+    to = today;
+    label = 'This month';
+  }
+  var empty = to.getTime() < from.getTime(); /* e.g. "ytd" in January - no completed month yet */
+  var elapsedFraction = 1;
+  if (key === 'thisMonth' && !empty) {
+    var daysInMonth = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0)).getUTCDate();
+    var elapsedDays = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
+    elapsedFraction = Math.min(1, elapsedDays / daysInMonth);
+  }
+  return { from: from, to: to, label: label, key: key, elapsedFraction: elapsedFraction, empty: empty };
+}
+
+/* Manual trigger only - the spec's "nothing pulls live except on demand"
+   rule applies here same as everywhere else, so unlike the generic
+   Dashboard/Cash Split tabs this one does NOT auto-fetch on open. */
+function fetchPL() {
+  var pl = state.pl;
+  if (pl.loading) return;
+  if (isManual()) { pl.data = { available: false, reason: 'manual_mode' }; render(); return; }
+  var r = resolvePLPeriod(pl.period);
+  if (r.empty) { pl.data = { available: false, reason: 'no_completed_period' }; render(); return; }
+  pl.loading = true; pl.error = null;
+  render();
+  fetch('/api/pl?from=' + iso(r.from) + '&to=' + iso(r.to)).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    pl.data = json; pl.loading = false; render();
+  }).catch(function () {
+    pl.loading = false; pl.error = 'Could not reach the dashboard just now. Try again.'; render();
+  });
+}
+
+/* Exact per-line KPI/budget tolerance rules are deferred per the spec
+   (different rule per line, TBD) - one owner-editable tolerance % stands in
+   for all of them (SETTINGS.plTolerancePct). goodDir 'up' = higher than
+   budget is better (Revenue, Transactions, true net profit); 'down' = lower
+   is better (COGS, Wages, Opex). Double the tolerance lands on red. */
+function plTolerance() { return (typeof SETTINGS.plTolerancePct === 'number' && SETTINGS.plTolerancePct >= 0) ? SETTINGS.plTolerancePct : 5; }
+function plStatus(actual, budget, goodDir) {
+  if (actual == null || budget == null || !budget) return null;
+  var diffPct = ((actual - budget) / Math.abs(budget)) * 100;
+  var favourable = (goodDir === 'down') ? -diffPct : diffPct;
+  var tol = plTolerance();
+  if (favourable >= -tol) return 'good';
+  if (favourable >= -tol * 2) return 'amber';
+  return 'bad';
+}
+function plStatusLabel(status) {
+  return status === 'good' ? 'On track' : (status === 'amber' ? 'Slipping' : 'Over budget');
+}
+/* "Prorated to today": how far actual is from PACE right now (budget times
+   how much of the period has elapsed), not full-period target vs partial
+   actual - see spec 3.2's catch-up panel bullet. Only ever shown mid-period
+   (This month); zero/negative gaps (on pace or ahead) aren't surfaced. */
+function plCatchUpGap(actual, budget, elapsedFraction, goodDir) {
+  if (actual == null || budget == null || elapsedFraction == null || elapsedFraction >= 1) return null;
+  var expectedToDate = budget * elapsedFraction;
+  var gap = (goodDir === 'down') ? (actual - expectedToDate) : (expectedToDate - actual);
+  return gap > 0 ? gap : 0;
+}
+
+/* One waterfall card: actual (+ budget/status if a budget figure is
+   available), with an optional collapsible "dropdown" breakdown - COGS/
+   Wages split into their sub-buckets, Opex into its line items, per the
+   spec's waterfall layout. */
+function plCard(container, opts) {
+  var card = el('div', 'pl-card' + (opts.total ? ' pl-total' : ''));
+  var head = el('div', 'pl-card-head');
+  head.appendChild(el('div', 'pl-card-label', esc(opts.label)));
+  var status = (opts.budget != null) ? plStatus(opts.actual, opts.budget, opts.goodDir || 'up') : null;
+  if (status) head.appendChild(el('span', 'pl-badge pl-badge-' + status, plStatusLabel(status)));
+  card.appendChild(head);
+
+  var figs = el('div', 'pl-figs');
+  var fmtFn = opts.fmt === 'int' ? fmtInt : function (v) { return v == null ? '—' : fmtMoney(v); };
+  figs.appendChild(el('div', 'pl-actual', esc(fmtFn(opts.actual))));
+  if (opts.budget != null) figs.appendChild(el('div', 'pl-budget', 'Budget ' + esc(fmtFn(opts.budget))));
+  card.appendChild(figs);
+
+  if (opts.breakdown && opts.breakdown.length) {
+    var show = opts.openField ? state.pl[opts.openField] : true;
+    if (opts.openField) {
+      var toggle = el('button', 'pl-toggle', show ? 'Hide line items' : ('Show ' + opts.breakdown.length + ' line items'));
+      toggle.onclick = function () { state.pl[opts.openField] = !show; render(); };
+      card.appendChild(toggle);
+    }
+    if (show) {
+      var bd = el('div', 'pl-breakdown');
+      opts.breakdown.forEach(function (b) {
+        var row = el('div', 'pl-breakdown-row' + (b.uncategorised ? ' pl-uncategorised' : ''));
+        row.appendChild(el('span', 'pl-b-label', esc(b.label)));
+        row.appendChild(el('span', 'pl-b-value', esc(fmtMoney(b.value))));
+        bd.appendChild(row);
+      });
+      card.appendChild(bd);
+    }
+  }
+  container.appendChild(card);
+}
+
+function renderPL(root) {
+  root.appendChild(el('div', 'screen-title', 'P&L'));
+  root.appendChild(el('p', 'screen-sub', 'Revenue through to true net profit, the same order as your P&amp;L, checked against budget line by line.'));
+
+  var pl = state.pl;
+  var r = resolvePLPeriod(pl.period);
+
+  var pbar = el('div', 'period-bar');
+  pbar.appendChild(el('span', 'period-label', 'Period'));
+  [ { key: 'thisMonth', label: 'This month' }, { key: 'lastMonth', label: 'Last month' }, { key: 'ytd', label: 'All completed months this year' } ].forEach(function (p) {
+    var chip = el('button', 'pchip' + (pl.period === p.key ? ' on' : ''), p.label);
+    chip.onclick = function () { pl.period = p.key; pl.data = null; pl.error = null; render(); };
+    pbar.appendChild(chip);
+  });
+  root.appendChild(pbar);
+  if (!r.empty) root.appendChild(el('div', 'set-note', fmtRange(r)));
+
+  if (r.empty) {
+    root.appendChild(el('div', 'pl-empty', 'No completed month yet this year — check back once January has finished.'));
+    return;
+  }
+
+  if (isManual()) {
+    root.appendChild(el('div', 'banner banner-amber', 'You’re in ‘I type them in’ mode, so there’s no Xero connection to pull the P&amp;L from.'));
+    return;
+  }
+
+  var runBtn = el('button', 'btn-primary-dash', pl.loading ? 'Fetching…' : 'Run the Numbers');
+  runBtn.style.margin = '0.2rem 0 1.1rem';
+  runBtn.disabled = pl.loading;
+  runBtn.onclick = function () { fetchPL(); };
+  root.appendChild(runBtn);
+
+  if (pl.error) root.appendChild(el('div', 'banner banner-coral', esc(pl.error)));
+
+  var d = pl.data;
+  if (!d) {
+    root.appendChild(el('div', 'pl-empty', 'Click Run the Numbers to pull ' + esc(P.accounting) + ' and ' + esc(P.pos) + ' for this period.'));
+    return;
+  }
+  if (d.available === false) {
+    var msg = d.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : 'Not available right now.';
+    root.appendChild(el('div', 'banner banner-amber', msg));
+    return;
+  }
+
+  Object.keys(d.errors || {}).forEach(function (k) {
+    if (d.errors[k]) root.appendChild(el('div', 'banner banner-coral', esc(d.errors[k])));
+  });
+  if (d.budget && !d.budget.available) {
+    root.appendChild(el('div', 'banner banner-amber', 'Budget figures didn’t line up against your chart of accounts this time — showing actuals only. Tell your AI so it can check the account matching.'));
+  }
+
+  var cards = el('div', 'pl-cards');
+  var hasBudget = d.budget && d.budget.available;
+
+  plCard(cards, { label: 'Revenue', actual: d.revenue.actual, fmt: 'money', goodDir: 'up', budget: hasBudget ? d.budget.revenue : null });
+
+  var periodDays = Math.round((r.to.getTime() - r.from.getTime()) / 86400000) + 1;
+  var txTarget = SETTINGS.transactionsTargetWeekly ? (SETTINGS.transactionsTargetWeekly / 7) * periodDays : null;
+  plCard(cards, { label: 'Transactions', actual: d.transactions.actual, fmt: 'int', goodDir: 'up', budget: txTarget });
+
+  if (d.cogs) {
+    var cogsBreakdown = [
+      { label: 'BOH (food)', value: d.cogs.boh },
+      { label: 'FOH (beverage)', value: d.cogs.foh },
+      { label: 'Retail', value: d.cogs.retail }
+    ];
+    if (d.cogs.uncategorised) cogsBreakdown.push({ label: 'Uncategorised — needs checking', value: d.cogs.uncategorised, uncategorised: true });
+    plCard(cards, { label: 'COGS', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.cogs : null, breakdown: cogsBreakdown, openField: 'openCogs' });
+  }
+
+  if (d.wages) {
+    var wageBreakdown = [];
+    if (d.wages.splitAvailable) {
+      wageBreakdown.push({ label: 'Kitchen/BOH', value: d.wages.kitchenBoh });
+      wageBreakdown.push({ label: 'FOH', value: d.wages.foh });
+      wageBreakdown.push({ label: 'Owner', value: d.wages.owner });
+      Object.keys(d.wages.other || {}).forEach(function (name) {
+        wageBreakdown.push({ label: name, value: d.wages.other[name], uncategorised: true });
+      });
+    } else {
+      wageBreakdown.push({ label: 'Unassigned — “4 Labour” split unavailable this time', value: d.wages.unassigned, uncategorised: true });
+    }
+    plCard(cards, { label: 'Wages', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.wages : null, breakdown: wageBreakdown, openField: 'openWages' });
+  }
+
+  if (d.opex) {
+    var opexBreakdown = d.opex.lines.slice().sort(function (a, b) { return b.value - a.value; }).map(function (l) { return { label: l.label, value: l.value }; });
+    plCard(cards, { label: 'Opex total', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.opex : null, breakdown: opexBreakdown, openField: 'openOpex' });
+  }
+
+  /* Owner wages: interim source is Xero's own "Owner Wages and Salaries" +
+     "Distribution of Profit" accounts, until the Owner Input tab (built
+     later) supplies the owner-entered hours/pay figure instead - see
+     spec 3.1. No budget comparison for this line. */
+  if (d.ownerWages) plCard(cards, { label: 'Owner wages', actual: d.ownerWages.actual, fmt: 'money' });
+
+  if (d.netProfit) {
+    plCard(cards, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: hasBudget ? d.budget.netProfit : null });
+  }
+
+  root.appendChild(cards);
+
+  /* Catch-up panel - only meaningful mid-period. */
+  if (r.elapsedFraction < 1 && hasBudget) {
+    var lines = [];
+    var revGap = plCatchUpGap(d.revenue.actual, d.budget.revenue, r.elapsedFraction, 'up');
+    if (revGap) {
+      lines.push('$' + fmtInt(revGap) + ' more revenue needed to get back on pace this month.');
+      if (SETTINGS.avgSpendTarget) lines.push(fmtInt(Math.ceil(revGap / SETTINGS.avgSpendTarget)) + ' extra transactions needed this month to get back on pace, at your average spend target.');
+    }
+    if (d.cogs) {
+      var cogsGap = plCatchUpGap(d.cogs.total, d.budget.cogs, r.elapsedFraction, 'down');
+      if (cogsGap && d.revenue.actual) lines.push('Drop COGS by about ' + ((cogsGap / d.revenue.actual) * 100).toFixed(1) + '% of revenue to get back on pace.');
+    }
+    if (d.wages) {
+      var wageGap = plCatchUpGap(d.wages.total, d.budget.wages, r.elapsedFraction, 'down');
+      if (wageGap && d.revenue.actual) lines.push('Drop wages by about ' + ((wageGap / d.revenue.actual) * 100).toFixed(1) + '% of revenue to get back on pace.');
+    }
+    var cu = el('div', 'pl-catchup-card');
+    cu.appendChild(el('div', 'pl-catchup-title', 'Catch-up — prorated to today (' + Math.round(r.elapsedFraction * 100) + '% of the month elapsed)'));
+    if (lines.length) lines.forEach(function (t) { cu.appendChild(el('div', 'pl-catchup-row', esc(t))); });
+    else cu.appendChild(el('div', 'pl-catchup-row', 'On pace or ahead across the board — nothing to catch up on.'));
+    root.appendChild(cu);
+  }
+}
+
 function renderSettings(root) {
   root.appendChild(el('div', 'screen-title', 'Settings'));
   root.appendChild(el('p', 'screen-sub', 'The bits you might want to change, with no code anywhere. Your AI set the rest up during the build.'));
@@ -1991,6 +2296,58 @@ function renderSettings(root) {
   csgrid.appendChild(csc2);
 
   root.appendChild(csgrid);
+
+  /* P&L tab settings - tolerance rule is deferred per the spec (exact
+     per-line rules TBD), and the transactions/spend targets aren't in Xero
+     (Budget Manager holds $ only) and the History tab that would otherwise
+     import them from the old sheet isn't built yet - all three live here
+     until there's a better home for them. */
+  root.appendChild(el('div', 'screen-title', 'P&L'));
+  root.appendChild(el('p', 'screen-sub', 'How close to budget counts as on track, and the two targets Xero can’t supply.'));
+  var plgrid = el('div', 'set-grid');
+
+  var plc1 = el('div', 'set-cell');
+  plc1.appendChild(el('div', 'set-label', 'On-track tolerance %'));
+  var pli1 = document.createElement('input'); pli1.type = 'number'; pli1.step = 'any'; pli1.min = '0';
+  pli1.value = (typeof SETTINGS.plTolerancePct === 'number') ? SETTINGS.plTolerancePct : '';
+  pli1.onchange = function () {
+    var val = parseFloat(pli1.value);
+    SETTINGS.plTolerancePct = isFinite(val) ? val : 0;
+    saveSettings(); render();
+  };
+  plc1.appendChild(pli1);
+  plc1.appendChild(el('div', 'set-note', 'Within this % of budget shows green; further off (the wrong way) shows amber, then red past double.'));
+  plgrid.appendChild(plc1);
+
+  var plc2 = el('div', 'set-cell');
+  plc2.appendChild(el('div', 'set-label', 'Transactions target · per week'));
+  var pli2 = document.createElement('input'); pli2.type = 'number'; pli2.step = 'any'; pli2.min = '0';
+  pli2.value = (typeof SETTINGS.transactionsTargetWeekly === 'number' && SETTINGS.transactionsTargetWeekly) ? SETTINGS.transactionsTargetWeekly : '';
+  pli2.placeholder = 'e.g. 900';
+  pli2.onchange = function () {
+    var val = parseFloat(pli2.value);
+    SETTINGS.transactionsTargetWeekly = isFinite(val) ? val : 0;
+    saveSettings(); render();
+  };
+  plc2.appendChild(pli2);
+  plc2.appendChild(el('div', 'set-note', 'Scaled to the P&L tab’s selected period for the catch-up panel.'));
+  plgrid.appendChild(plc2);
+
+  var plc3 = el('div', 'set-cell');
+  plc3.appendChild(el('div', 'set-label', 'Average spend target'));
+  var pli3 = document.createElement('input'); pli3.type = 'number'; pli3.step = 'any'; pli3.min = '0';
+  pli3.value = (typeof SETTINGS.avgSpendTarget === 'number' && SETTINGS.avgSpendTarget) ? SETTINGS.avgSpendTarget : '';
+  pli3.placeholder = 'e.g. 31.50';
+  pli3.onchange = function () {
+    var val = parseFloat(pli3.value);
+    SETTINGS.avgSpendTarget = isFinite(val) ? val : 0;
+    saveSettings(); render();
+  };
+  plc3.appendChild(pli3);
+  plc3.appendChild(el('div', 'set-note', 'Used to turn a revenue shortfall into a transaction-count catch-up figure.'));
+  plgrid.appendChild(plc3);
+
+  root.appendChild(plgrid);
 
   if (!isManual()) {
     root.appendChild(el('div', 'section-sub', 'Session'));

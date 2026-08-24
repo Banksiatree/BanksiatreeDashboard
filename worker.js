@@ -97,7 +97,10 @@ const ADAPTERS = {
          ones instead. Any already-connected org needs to Reconnect on the
          Connections screen once before a new scope takes effect - the old
          token was issued without it. */
-      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read',
+      /* accounting.budgets.read added for the P&L tab's budget comparison
+         (GET Budgets - the Budget Manager totals). Any already-connected org
+         needs to Reconnect once more before this new scope takes effect. */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read accounting.budgets.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -357,6 +360,314 @@ async function fetchXeroPL(h, tenantId, from, to) {
   const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
   const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
   return walkXeroPL(rows, 0);
+}
+
+/* ----------------------------------------------------------------------------
+   P&L tab (banksia-dashboard-spec.md #3.2). Xero has no public API for saved/
+   custom report layouts ("Profit and Loss - Weekly KPI (COGS/WAGES)" only
+   exist as report-designer layouts in the Xero UI, not fetchable by name or
+   ID - confirmed against Xero's own developer forum, an open unimplemented
+   feature request). Same underlying ledger though, so this replicates the
+   same figures via the plain Reports/ProfitAndLoss endpoint:
+     - Wages split (Kitchen/BOH, FOH, Owner): the "4 Labour" tracking
+       category IS fetchable - trackingCategoryID returns one column per
+       tracking option, covering the whole P&L.
+     - COGS split (FOH/BOH/Retail): no tracking category confirmed for this
+       one, so it's a keyword/account-code match on the Cost of Sales rows,
+       with anything unmatched landing in a visible "uncategorised" bucket
+       rather than being silently guessed into FOH or BOH.
+   dashboard.html computes every derived figure (status colour, catch-up
+   gaps, transaction targets) from the raw numbers this returns - same rule
+   as the rest of the file (see dashboard.html's own header comment).
+---------------------------------------------------------------------------- */
+
+/* account.Attributes on a Xero report detail row cell carries the account's
+   GUID (used below to line budget lines up with the same buckets actuals
+   used - Budgets only key by AccountID/AccountCode, not by section). */
+function xeroCellAccountId(row) {
+  const c = row.Cells && row.Cells[0];
+  const attrs = (c && c.Attributes) || [];
+  const a = attrs.find((x) => x.Id === 'account');
+  return a ? a.Value : null;
+}
+
+const COGS_RETAIL_RE = /5-3600|retail/i;
+const COGS_BOH_RE = /food|kitchen/i;
+const COGS_FOH_RE = /beverage|\bbar\b|wine|beer|liquor|drinks?/i;
+
+function walkXeroCogsSplit(section, periodIndex, acc) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      const value = xeroCellValue(row, periodIndex);
+      const accountId = xeroCellAccountId(row);
+      let bucket;
+      if (COGS_RETAIL_RE.test(label)) bucket = 'retail';
+      else if (COGS_BOH_RE.test(label)) bucket = 'boh';
+      else if (COGS_FOH_RE.test(label)) bucket = 'foh';
+      else bucket = 'uncategorised';
+      acc.buckets[bucket] += value;
+      acc.lines.push({ label, value, accountId, bucket });
+    } else if (row.RowType === 'Section') {
+      walkXeroCogsSplit(row, periodIndex, acc);
+    }
+  }
+}
+
+/* Splits Operating Expenses into: owner's own equity-style drawings
+   (excluded from every other bucket, same OWNER_WAGE_RE/
+   DISTRIBUTION_OF_PROFIT_RE as walkXeroOpex - becomes the waterfall's
+   "Owner wages" line), staff wages (WAGE_KEYWORD_RE), and everything else
+   (the Opex line-item list the P&L tab's "Opex total" dropdown shows -
+   whatever new accounts the bookkeeper adds later show up here
+   automatically, nothing to hardcode). */
+function walkXeroOpexDetail(section, periodIndex, acc) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      const value = xeroCellValue(row, periodIndex);
+      const accountId = xeroCellAccountId(row);
+      if (DISTRIBUTION_OF_PROFIT_RE.test(label) || OWNER_WAGE_RE.test(label)) {
+        acc.ownerWages += value;
+        acc.ownerWagesLines.push({ label, value, accountId });
+      } else if (WAGE_KEYWORD_RE.test(label)) {
+        acc.wagesSuperExclOwner += value;
+        acc.wageLines.push({ label, value, accountId });
+      } else {
+        acc.opexTotal += value;
+        acc.opexLines.push({ label, value, accountId });
+      }
+    } else if (row.RowType === 'Section') {
+      walkXeroOpexDetail(row, periodIndex, acc);
+    }
+  }
+}
+
+function walkXeroRevenueDetail(section, periodIndex, acc) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      acc.lines.push({ accountId: xeroCellAccountId(row) });
+    } else if (row.RowType === 'Section') {
+      walkXeroRevenueDetail(row, periodIndex, acc);
+    }
+  }
+}
+
+function walkXeroPLSplit(reportRows, periodIndex) {
+  let revenue = 0;
+  const revenueAcc = { lines: [] };
+  const cogsAcc = { buckets: { foh: 0, boh: 0, retail: 0, uncategorised: 0 }, lines: [] };
+  const opexAcc = { opexLines: [], opexTotal: 0, wageLines: [], wagesSuperExclOwner: 0, ownerWages: 0, ownerWagesLines: [] };
+  for (const row of reportRows) {
+    if (row.RowType !== 'Section') continue;
+    const title = (row.Title || '').toLowerCase();
+    if (title.includes('cost of sales')) {
+      walkXeroCogsSplit(row, periodIndex, cogsAcc);
+    } else if (!title.includes('other') && (title.includes('income') || title.includes('revenue') || title.includes('trading income'))) {
+      const s = findXeroSummary(row);
+      revenue += s ? xeroCellValue(s, periodIndex) : 0;
+      walkXeroRevenueDetail(row, periodIndex, revenueAcc);
+    } else if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
+      walkXeroOpexDetail(row, periodIndex, opexAcc);
+    }
+  }
+  return { revenue, revenueLines: revenueAcc.lines, cogs: cogsAcc, opex: opexAcc };
+}
+
+/* Same plain report call fetchXeroPL uses, just returning the fuller split
+   structure walkXeroPLSplit builds instead of walkXeroPL's flat totals. */
+async function fetchXeroPLSplit(h, tenantId, from, to) {
+  const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+  const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+  return walkXeroPLSplit(rows, 0);
+}
+
+/* Tracking category lookup, cached in KV like xeroTenantId - avoids a
+   TrackingCategories call on every P&L fetch. Case-insensitive substring
+   match on Name (e.g. "4 Labour"), only considers ACTIVE categories. */
+async function xeroTrackingCategoryId(env, h, tenantId, nameSubstring) {
+  const cacheKey = 'xero:trackingcat:' + nameSubstring.toLowerCase();
+  const cached = env.TOKENS ? await env.TOKENS.get(cacheKey) : null;
+  if (cached) return cached;
+  const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/TrackingCategories', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const cats = (data && data.TrackingCategories) || [];
+  const needle = nameSubstring.toLowerCase();
+  const match = cats.find((c) => c.Status === 'ACTIVE' && (c.Name || '').toLowerCase().includes(needle));
+  if (!match) return null;
+  if (env.TOKENS) await env.TOKENS.put(cacheKey, match.TrackingCategoryID, { expirationTtl: 3600 });
+  return match.TrackingCategoryID;
+}
+
+const WAGE_OWNER_OPTION_RE = /admin/i;
+const WAGE_BOH_OPTION_RE = /boh|kitchen|back/i;
+const WAGE_FOH_OPTION_RE = /foh|front/i;
+
+function walkXeroWageColumns(section, columnCount, sums) {
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      if (!WAGE_KEYWORD_RE.test(label) || OWNER_WAGE_RE.test(label) || DISTRIBUTION_OF_PROFIT_RE.test(label)) continue;
+      for (let i = 0; i < columnCount; i++) sums[i] += xeroCellValue(row, i);
+    } else if (row.RowType === 'Section') {
+      walkXeroWageColumns(row, columnCount, sums);
+    }
+  }
+}
+
+/* Reports/ProfitAndLoss with trackingCategoryID (no trackingOptionID)
+   returns ONE period but a column PER tracking option instead of a single
+   total column - the Header row's cells (after the label column) name each
+   option. Wage-keyword rows are summed per column, then each column is
+   matched to a display bucket by keyword; anything that doesn't match
+   Admin/BOH/FOH keeps its own literal Xero option name rather than being
+   dropped, same "nothing silently goes missing" rule as the Opex lines. */
+async function fetchXeroWagesSplit(h, tenantId, from, to, trackingCategoryId) {
+  const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to + '&trackingCategoryID=' + trackingCategoryId;
+  const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const report = data && data.Reports && data.Reports[0];
+  const rows = (report && report.Rows) || [];
+  const headerRow = rows.find((r) => r.RowType === 'Header');
+  const headerCells = (headerRow && headerRow.Cells) || [];
+  const optionNames = headerCells.slice(1).map((c) => c.Value || 'Unassigned');
+  if (!optionNames.length) return null;
+  const sums = optionNames.map(() => 0);
+  for (const row of rows) {
+    if (row.RowType !== 'Section') continue;
+    const title = (row.Title || '').toLowerCase();
+    if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
+      walkXeroWageColumns(row, optionNames.length, sums);
+    }
+  }
+  const buckets = { kitchenBoh: 0, foh: 0, owner: 0, other: {} };
+  optionNames.forEach((name, i) => {
+    const val = sums[i];
+    if (WAGE_OWNER_OPTION_RE.test(name)) buckets.owner += val;
+    else if (WAGE_BOH_OPTION_RE.test(name)) buckets.kitchenBoh += val;
+    else if (WAGE_FOH_OPTION_RE.test(name)) buckets.foh += val;
+    else buckets.other[name] = (buckets.other[name] || 0) + val;
+  });
+  return buckets;
+}
+
+/* Budget Manager totals (whole-of-business only - Xero's Budget Manager has
+   no tracking-category split, per the spec). GET Budgets with no BudgetID
+   returns the default Overall Budget: BudgetLines keyed by AccountID, each
+   with a monthly BudgetBalances array. bucketMap (built from the SAME
+   account IDs the actuals walk above collected) lines budget accounts up
+   with the same Revenue/COGS/Wages/Opex groups actuals use - matchedLines
+   counts how many budget lines actually resolved to a bucket, so the caller
+   can tell a genuinely-zero budget apart from the bucketing not working. */
+async function fetchXeroBudget(h, tenantId, from, to, bucketMap) {
+  const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const budget = data && data.Budgets && data.Budgets[0];
+  const lines = (budget && budget.BudgetLines) || [];
+  const fromMonth = from.slice(0, 7), toMonth = to.slice(0, 7);
+  const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0 };
+  let matchedLines = 0;
+  for (const line of lines) {
+    const bucket = bucketMap[line.AccountID];
+    if (!bucket) continue;
+    for (const bal of line.BudgetBalances || []) {
+      const balMonth = String(bal.Period || '').slice(0, 7);
+      if (balMonth < fromMonth || balMonth > toMonth) continue;
+      totals[bucket] = (totals[bucket] || 0) + (bal.Amount || 0);
+      matchedLines++;
+    }
+  }
+  totals.netProfit = totals.revenue - totals.cogs - totals.wages - totals.opex;
+  return { totals, matchedLines, totalLines: lines.length };
+}
+
+/* GET /api/pl - powers the P&L tab. Every section is fetched independently
+   and wrapped in its own try/catch (same "one source failing never breaks
+   the rest of the payload" rule as apiCashSplit) - a Budget Manager hiccup
+   should never blank out the actual figures, and vice versa. Every derived
+   figure (status colour, catch-up gaps, transaction targets) is left to
+   dashboard.html, same rule as the rest of the app: the Worker supplies raw
+   data, the dashboard computes metrics. */
+async function apiPL(env, url) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+
+  const from = url.searchParams.get('from');
+  const to = url.searchParams.get('to');
+  if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return json({ error: 'bad range' }, 400);
+  }
+
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+
+  const revFrom = shiftIsoDate(from, 1);
+  const revTo = shiftIsoDate(to, 1);
+
+  const errors = {};
+  let split = null;
+  try {
+    split = await fetchXeroPLSplit(h, tenantId, from, to);
+  } catch (err) { errors.pl = plainError(err.status || 500); }
+
+  let revenueOnly = null;
+  try {
+    revenueOnly = (await fetchXeroPLSplit(h, tenantId, revFrom, revTo)).revenue;
+  } catch (err) { errors.revenue = plainError(err.status || 500); }
+
+  let wagesSplit = null;
+  try {
+    const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, '4 labour');
+    if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, from, to, trackingCategoryId);
+  } catch (err) { errors.wages = plainError(err.status || 500); }
+
+  let transactions = null;
+  try {
+    const posAdapter = ADAPTERS.pos;
+    if (posAdapter && posAdapter.configured) {
+      const r = await posAdapter.fetchRange(env, h, { from, to });
+      transactions = r.count;
+    }
+  } catch (err) { errors.transactions = plainError(err.status || 500); }
+
+  let budget = null;
+  if (split) {
+    try {
+      const bucketMap = {};
+      split.revenueLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'revenue'; });
+      split.cogs.lines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'cogs'; });
+      split.opex.wageLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'wages'; });
+      split.opex.opexLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'opex'; });
+      const b = await fetchXeroBudget(h, tenantId, from, to, bucketMap);
+      budget = { available: b.matchedLines > 0, ...b.totals, matchedLines: b.matchedLines, totalLines: b.totalLines };
+    } catch (err) { errors.budget = plainError(err.status || 500); }
+  }
+
+  await noteSync(env, 'accounting');
+  return json({
+    available: true,
+    period: { from, to },
+    revenue: { actual: revenueOnly },
+    transactions: { actual: transactions },
+    cogs: split ? { ...split.cogs.buckets, total: split.cogs.buckets.foh + split.cogs.buckets.boh + split.cogs.buckets.retail + split.cogs.buckets.uncategorised, lines: split.cogs.lines } : null,
+    wages: split ? {
+      splitAvailable: !!wagesSplit,
+      kitchenBoh: wagesSplit ? wagesSplit.kitchenBoh : null,
+      foh: wagesSplit ? wagesSplit.foh : null,
+      owner: wagesSplit ? wagesSplit.owner : null,
+      other: wagesSplit ? wagesSplit.other : null,
+      unassigned: wagesSplit ? null : split.opex.wagesSuperExclOwner,
+      total: split.opex.wagesSuperExclOwner
+    } : null,
+    opex: split ? { lines: split.opex.opexLines, total: split.opex.opexTotal } : null,
+    ownerWages: split ? { actual: split.opex.ownerWages, lines: split.opex.ownerWagesLines } : null,
+    netProfit: split ? { actual: (revenueOnly || 0) - split.cogs.buckets.foh - split.cogs.buckets.boh - split.cogs.buckets.retail - split.cogs.buckets.uncategorised - split.opex.wagesSuperExclOwner - split.opex.opexTotal - split.opex.ownerWages } : null,
+    budget,
+    errors
+  });
 }
 
 /* ----------------------------------------------------------------------------
@@ -1560,6 +1871,10 @@ export default {
     if (path === '/api/cashsplit' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiCashSplit(env);
+    }
+    if (path === '/api/pl' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiPL(env, url);
     }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {

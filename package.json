@@ -11,11 +11,15 @@
   "cloudflare": {
     "bindings": {
       "DASHBOARD_PASSCODE": {
-        "description": "Choose a password for your dashboard \u2014 you type it each time you open the dashboard. Pick something only you and your team know; you can change it later."
+        "description": "Choose a password for your dashboard — you type it each time you open the dashboard. Pick something only you and your team know; you can change it later."
       },
       "TOKENS": {
-        "description": "Secure storage the dashboard sets up for itself. Nothing for you to enter \u2014 it is created automatically."
+        "description": "Secure storage the dashboard sets up for itself. Nothing for you to enter — it is created automatically."
       }
     }
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260820.1": true
   }
 }
