@@ -295,12 +295,21 @@ async function xeroTenantId(env, h) {
   return tenant.tenantId;
 }
 
-/* Wage/super keyword match, per capability-matrix.md. "Owner Wages and
-   Salaries" and "Distribution of Profit" are the owner's own equity-style
-   drawings, not operating wages or overheads, so both are excluded entirely
-   rather than counted as wagesSuper or overheads. */
+/* Wage/super keyword match, per capability-matrix.md. "Our Wages", "Owner
+   Super Expense" and "Distribution of Profit" are the owner's own
+   equity-style drawings, not operating wages or overheads, so all three are
+   excluded entirely rather than counted as wagesSuper or overheads.
+   CORRECTED to match the owner's real chart of accounts (confirmed against
+   an actual P&L export) - the owner's wage account is literally named "Our
+   Wages", not "Owner Wages and Salaries" as first assumed, which is why
+   Wage % was running ~40pts too high every week: owner's wages were being
+   counted as staff wage cost instead of excluded. The bookkeeper has since
+   also split super into separate "Owner Super Expense" (excluded, same as
+   wages) and "Staff Super Expense" (a real wage cost - matches the general
+   WAGE_KEYWORD_RE below, no separate rule needed). */
 const WAGE_KEYWORD_RE = /wages|salaries|superannuation|super|payroll|annual leave|long service|workcover/i;
-const OWNER_WAGE_RE = /owner\s+wages\s+and\s+salaries/i;
+const OWNER_WAGE_RE = /^our\s+wages$/i;
+const OWNER_SUPER_RE = /owner['’]?s?\s+super(annuation)?(\s+expense)?/i;
 const DISTRIBUTION_OF_PROFIT_RE = /distribution\s+of\s+profit/i;
 
 function xeroCellValue(row, periodIndex) {
@@ -323,6 +332,7 @@ function walkXeroOpex(section, periodIndex, acc) {
       const val = xeroCellValue(row, periodIndex);
       if (DISTRIBUTION_OF_PROFIT_RE.test(label)) continue; /* excluded entirely */
       if (OWNER_WAGE_RE.test(label)) continue; /* excluded entirely */
+      if (OWNER_SUPER_RE.test(label)) continue; /* excluded entirely */
       if (WAGE_KEYWORD_RE.test(label)) acc.wagesSuper += val;
       else acc.overheads += val;
     } else if (row.RowType === 'Section') {
@@ -1036,8 +1046,18 @@ async function processOolioWebhookEvent(env, evt, eventId) {
    carries svix headers, the signature is checked and bad ones are rejected;
    otherwise the payload is trusted and processed as-is (this endpoint's
    only real protection, absent signing, is that its URL isn't published
-   anywhere public). Idempotency falls back to data.id + data.status (per
-   OOLIO's own suggestion) when there's no svix-id to key off.
+   anywhere public). Idempotency falls back to data.id alone (an order
+   should only ever be counted once) when there's no svix-id to key off.
+   CHANGED from data.id + data.status: that combination let the same order
+   be counted more than once if OOLIO fires order.complete again with a
+   different status for it later (e.g. completed, then some other terminal
+   status) - each status value produced a different dedupe key, so the
+   second delivery wasn't recognised as the same order and got counted
+   again. Confirmed as a real, observed problem (a real week's count ran 7
+   over OOLIO's own number), not theoretical - not yet re-confirmed against
+   a live week under this fix, so treat the same way as everything else
+   this session: check a real day's count against OOLIO again once this is
+   live for a few days.
    Must ack quickly (a slow non-2xx risks OOLIO treating it as failed) and
    be safe against being called more than once for the same event. */
 async function apiWebhookOolio(env, request) {
@@ -1055,7 +1075,7 @@ async function apiWebhookOolio(env, request) {
   let evt;
   try { evt = JSON.parse(rawBody); } catch (e) { return json({ error: 'bad json' }, 400); }
 
-  const dedupeId = svixId || ((evt && evt.data && evt.data.id) ? (evt.data.id + ':' + evt.data.status) : null);
+  const dedupeId = svixId || ((evt && evt.data && evt.data.id) ? evt.data.id : null);
   if (dedupeId && (await webhookAlreadySeen(env, dedupeId))) return json({ ok: true, duplicate: true });
 
   try {
