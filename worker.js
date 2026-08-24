@@ -97,10 +97,15 @@ const ADAPTERS = {
          ones instead. Any already-connected org needs to Reconnect on the
          Connections screen once before a new scope takes effect - the old
          token was issued without it. */
-      /* accounting.budgets.read added for the P&L tab's budget comparison
-         (GET Budgets - the Budget Manager totals). Any already-connected org
-         needs to Reconnect once more before this new scope takes effect. */
-      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read accounting.budgets.read',
+      /* accounting.budgets.read added for the P&L/Budget tabs' Budget
+         Manager pull (GET Budgets). accounting.settings.read added so
+         classifyAccount (see below) can read the Chart of Accounts (GET
+         Accounts) - the reliable way to tell Revenue/COGS/Wages/Opex
+         accounts apart, replacing an earlier attempt that read an
+         undocumented report-cell field and didn't work. Any already-
+         connected org needs to Reconnect once more before either new scope
+         takes effect. */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read accounting.budgets.read accounting.settings.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -391,16 +396,6 @@ async function fetchXeroPL(h, tenantId, from, to) {
    as the rest of the file (see dashboard.html's own header comment).
 ---------------------------------------------------------------------------- */
 
-/* account.Attributes on a Xero report detail row cell carries the account's
-   GUID (used below to line budget lines up with the same buckets actuals
-   used - Budgets only key by AccountID/AccountCode, not by section). */
-function xeroCellAccountId(row) {
-  const c = row.Cells && row.Cells[0];
-  const attrs = (c && c.Attributes) || [];
-  const a = attrs.find((x) => x.Id === 'account');
-  return a ? a.Value : null;
-}
-
 const COGS_RETAIL_RE = /5-3600|retail/i;
 const COGS_BOH_RE = /food|kitchen/i;
 const COGS_FOH_RE = /beverage|\bbar\b|wine|beer|liquor|drinks?/i;
@@ -410,14 +405,13 @@ function walkXeroCogsSplit(section, periodIndex, acc) {
     if (row.RowType === 'Row') {
       const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
       const value = xeroCellValue(row, periodIndex);
-      const accountId = xeroCellAccountId(row);
       let bucket;
       if (COGS_RETAIL_RE.test(label)) bucket = 'retail';
       else if (COGS_BOH_RE.test(label)) bucket = 'boh';
       else if (COGS_FOH_RE.test(label)) bucket = 'foh';
       else bucket = 'uncategorised';
       acc.buckets[bucket] += value;
-      acc.lines.push({ label, value, accountId, bucket });
+      acc.lines.push({ label, value, bucket });
     } else if (row.RowType === 'Section') {
       walkXeroCogsSplit(row, periodIndex, acc);
     }
@@ -436,16 +430,15 @@ function walkXeroOpexDetail(section, periodIndex, acc) {
     if (row.RowType === 'Row') {
       const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
       const value = xeroCellValue(row, periodIndex);
-      const accountId = xeroCellAccountId(row);
       if (DISTRIBUTION_OF_PROFIT_RE.test(label) || OWNER_WAGE_RE.test(label) || OWNER_SUPER_RE.test(label)) {
         acc.ownerWages += value;
-        acc.ownerWagesLines.push({ label, value, accountId });
+        acc.ownerWagesLines.push({ label, value });
       } else if (WAGE_KEYWORD_RE.test(label)) {
         acc.wagesSuperExclOwner += value;
-        acc.wageLines.push({ label, value, accountId });
+        acc.wageLines.push({ label, value });
       } else {
         acc.opexTotal += value;
-        acc.opexLines.push({ label, value, accountId });
+        acc.opexLines.push({ label, value });
       }
     } else if (row.RowType === 'Section') {
       walkXeroOpexDetail(row, periodIndex, acc);
@@ -453,19 +446,8 @@ function walkXeroOpexDetail(section, periodIndex, acc) {
   }
 }
 
-function walkXeroRevenueDetail(section, periodIndex, acc) {
-  for (const row of section.Rows || []) {
-    if (row.RowType === 'Row') {
-      acc.lines.push({ accountId: xeroCellAccountId(row) });
-    } else if (row.RowType === 'Section') {
-      walkXeroRevenueDetail(row, periodIndex, acc);
-    }
-  }
-}
-
 function walkXeroPLSplit(reportRows, periodIndex) {
   let revenue = 0;
-  const revenueAcc = { lines: [] };
   const cogsAcc = { buckets: { foh: 0, boh: 0, retail: 0, uncategorised: 0 }, lines: [] };
   const opexAcc = { opexLines: [], opexTotal: 0, wageLines: [], wagesSuperExclOwner: 0, ownerWages: 0, ownerWagesLines: [] };
   for (const row of reportRows) {
@@ -476,12 +458,11 @@ function walkXeroPLSplit(reportRows, periodIndex) {
     } else if (!title.includes('other') && (title.includes('income') || title.includes('revenue') || title.includes('trading income'))) {
       const s = findXeroSummary(row);
       revenue += s ? xeroCellValue(s, periodIndex) : 0;
-      walkXeroRevenueDetail(row, periodIndex, revenueAcc);
     } else if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
       walkXeroOpexDetail(row, periodIndex, opexAcc);
     }
   }
-  return { revenue, revenueLines: revenueAcc.lines, cogs: cogsAcc, opex: opexAcc };
+  return { revenue, cogs: cogsAcc, opex: opexAcc };
 }
 
 /* Same plain report call fetchXeroPL uses, just returning the fuller split
@@ -560,6 +541,58 @@ async function fetchXeroWagesSplit(h, tenantId, from, to, trackingCategoryId) {
   return buckets;
 }
 
+/* Chart of Accounts, cached in KV (~1hr - it rarely changes and both the
+   P&L and Budget tabs need it on every fetch) same TTL-caching pattern as
+   xeroTenantId. This is the RELIABLE way to classify an account
+   (Revenue/COGS/Wages/Opex) - Xero tags every account with a Type
+   (confirmed against Xero's own OpenAPI spec: SALES/REVENUE, DIRECTCOSTS,
+   OVERHEADS/EXPENSE, plus balance-sheet types this app doesn't care about).
+   Replaces an earlier attempt that read an account-id field off
+   Reports/ProfitAndLoss cells, which doesn't reliably carry one. */
+async function fetchXeroAccounts(env, h, tenantId) {
+  const cacheKey = 'xero:accounts';
+  if (env.TOKENS) {
+    const cached = await env.TOKENS.get(cacheKey);
+    if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+  }
+  const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/Accounts', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const accounts = (data && data.Accounts) || [];
+  if (env.TOKENS) await env.TOKENS.put(cacheKey, JSON.stringify(accounts), { expirationTtl: 3600 });
+  return accounts;
+}
+
+/* 'revenue'|'cogs'|'wages'|'owner'|'opex', or null (excluded - balance
+   sheet accounts, Other Income). Same OWNER_WAGE_RE/OWNER_SUPER_RE/
+   DISTRIBUTION_OF_PROFIT_RE/WAGE_KEYWORD_RE that already govern this
+   classification everywhere else in the file - one rule, not a second one
+   that could drift out of sync. */
+function classifyAccount(account) {
+  const type = account.Type || '';
+  const name = account.Name || '';
+  if (type === 'SALES' || type === 'REVENUE') return 'revenue';
+  if (type === 'DIRECTCOSTS') return 'cogs';
+  if (type === 'OVERHEADS' || type === 'EXPENSE') {
+    if (DISTRIBUTION_OF_PROFIT_RE.test(name) || OWNER_WAGE_RE.test(name) || OWNER_SUPER_RE.test(name)) return 'owner';
+    if (WAGE_KEYWORD_RE.test(name)) return 'wages';
+    return 'opex';
+  }
+  return null;
+}
+
+/* AccountID -> bucket, and AccountID -> Name (the latter for the Budget
+   tab's Opex line-item labels). Shared by apiPL's budget section and
+   apiBudget. */
+function buildAccountBucketMap(accounts) {
+  const bucketMap = {}, nameMap = {};
+  accounts.forEach((a) => {
+    const bucket = classifyAccount(a);
+    if (!bucket) return;
+    bucketMap[a.AccountID] = bucket;
+    nameMap[a.AccountID] = a.Name;
+  });
+  return { bucketMap, nameMap };
+}
+
 /* Budget Manager (whole-of-business only - Xero's Budget Manager has no
    tracking-category split, per the spec). GET Budgets with no BudgetID
    returns the default Overall Budget: BudgetLines keyed by AccountID, each
@@ -573,23 +606,27 @@ async function fetchXeroBudgetLines(h, tenantId) {
   return (budget && budget.BudgetLines) || [];
 }
 
-/* bucketMap (AccountID -> 'revenue'|'cogs'|'wages'|'opex', built from the
-   SAME account IDs an actuals walk collected) lines budget accounts up with
-   the same groups actuals use. Returns { 'YYYY-MM': {revenue,cogs,wages,
-   opex}, ... } for every month any matched line has a balance for -
-   matchedLines counts how many balances actually resolved to a bucket, so
-   the caller can tell a genuinely-zero budget apart from the bucketing not
-   working. */
-function bucketBudgetLinesByMonth(lines, bucketMap) {
+/* bucketMap/nameMap from buildAccountBucketMap. Returns { 'YYYY-MM':
+   {revenue,cogs,wages,opex,ownerPay,opexLines:[{label,value}],matched},
+   ... } for every month any matched line has a balance for - matched
+   counts how many balances actually resolved to a bucket, so the caller
+   can tell a genuinely-zero budget apart from the bucketing not working.
+   opexLines is the Budget tab's line-item detail, one entry per budgeted
+   opex account for that month - mirrors the P&L tab's own Opex dropdown. */
+function bucketBudgetLinesByMonth(lines, bucketMap, nameMap) {
   const byMonth = {};
   for (const line of lines) {
     const bucket = bucketMap[line.AccountID];
     if (!bucket) continue;
+    const label = (nameMap && nameMap[line.AccountID]) || 'Unknown account';
     for (const bal of line.BudgetBalances || []) {
       const month = String(bal.Period || '').slice(0, 7);
       if (!/^\d{4}-\d{2}$/.test(month)) continue;
-      if (!byMonth[month]) byMonth[month] = { revenue: 0, cogs: 0, wages: 0, opex: 0, matched: 0 };
-      byMonth[month][bucket] = (byMonth[month][bucket] || 0) + (bal.Amount || 0);
+      if (!byMonth[month]) byMonth[month] = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0, opexLines: [], matched: 0 };
+      const amt = bal.Amount || 0;
+      const key = bucket === 'owner' ? 'ownerPay' : bucket;
+      byMonth[month][key] = (byMonth[month][key] || 0) + amt;
+      if (bucket === 'opex') byMonth[month].opexLines.push({ label, value: amt });
       byMonth[month].matched++;
     }
   }
@@ -598,15 +635,15 @@ function bucketBudgetLinesByMonth(lines, bucketMap) {
 
 /* Thin wrapper kept for apiPL: sums whichever months in byMonth fall in
    [from,to] into one range total, same shape apiPL has always depended on. */
-async function fetchXeroBudget(h, tenantId, from, to, bucketMap) {
+async function fetchXeroBudget(h, tenantId, from, to, bucketMap, nameMap) {
   const lines = await fetchXeroBudgetLines(h, tenantId);
-  const byMonth = bucketBudgetLinesByMonth(lines, bucketMap);
+  const byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
   const fromMonth = from.slice(0, 7), toMonth = to.slice(0, 7);
-  const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0 };
+  const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0 };
   let matchedLines = 0;
   for (const [month, vals] of Object.entries(byMonth)) {
     if (month < fromMonth || month > toMonth) continue;
-    for (const b of ['revenue', 'cogs', 'wages', 'opex']) { totals[b] += vals[b] || 0; }
+    for (const b of ['revenue', 'cogs', 'wages', 'opex', 'ownerPay']) { totals[b] += vals[b] || 0; }
     matchedLines += vals.matched;
   }
   totals.netProfit = totals.revenue - totals.cogs - totals.wages - totals.opex;
@@ -685,8 +722,9 @@ async function apiPL(env, url) {
   let budget = null;
   if (split) {
     try {
-      const bucketMap = buildAccountBucketMap(split);
-      const b = await fetchXeroBudget(h, tenantId, from, to, bucketMap);
+      const accounts = await fetchXeroAccounts(env, h, tenantId);
+      const { bucketMap, nameMap } = buildAccountBucketMap(accounts);
+      const b = await fetchXeroBudget(h, tenantId, from, to, bucketMap, nameMap);
       budget = { available: b.matchedLines > 0, ...b.totals, matchedLines: b.matchedLines, totalLines: b.totalLines };
     } catch (err) { errors.budget = plainError(err.status || 500); }
   }
@@ -715,39 +753,21 @@ async function apiPL(env, url) {
   });
 }
 
-/* AccountID -> Revenue/COGS/Wages/Opex, from the account IDs a
-   fetchXeroPLSplit result collected - shared by apiPL's budget section and
-   apiBudget below, so a Budget account lines up with the same group its
-   actual figure would. */
-function buildAccountBucketMap(split) {
-  const bucketMap = {};
-  split.revenueLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'revenue'; });
-  split.cogs.lines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'cogs'; });
-  split.opex.wageLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'wages'; });
-  split.opex.opexLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'opex'; });
-  return bucketMap;
-}
-
-/* GET /api/budget?year=YYYY&classifyFrom=&classifyTo= - powers the Budget
-   tab (banksia-dashboard-spec.md #3.3): a read-only, whole-of-business,
-   month-by-month view of Xero's Budget Manager for the given calendar year
-   (Jan-Dec, not the business's July-June financial year - the spec is
-   explicit that this tab mirrors the old spreadsheet's Jan-Dec Budget tab).
-   Targets only, no actuals/variance here - that's the P&L tab. classifyFrom/
-   classifyTo is a short recent period (the client sends the same "this
-   month" range the P&L tab already computes) used only to build the
-   AccountID bucket map via one fetchXeroPLSplit call, exactly like apiPL
-   does - Budget Manager lines have no section/group of their own, only an
-   AccountID, so this is the only way to know which are Revenue vs COGS vs
-   Wages vs Opex. */
+/* GET /api/budget?year=YYYY - powers the Budget tab (banksia-dashboard-
+   spec.md #3.3): a read-only, whole-of-business, month-by-month view of
+   Xero's Budget Manager for the given calendar year (Jan-Dec, not the
+   business's July-June financial year - the spec is explicit that this tab
+   mirrors the old spreadsheet's Jan-Dec Budget tab). Targets only, no
+   actuals/variance here - that's the P&L tab. Account classification comes
+   straight from the Chart of Accounts (fetchXeroAccounts/classifyAccount),
+   independent of any date range, so unlike the P&L tab's budget section
+   this needs no separate actuals call just to build the bucket map. */
 async function apiBudget(env, url) {
   const adapter = ADAPTERS.accounting;
   if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
 
   const year = url.searchParams.get('year');
-  const classifyFrom = url.searchParams.get('classifyFrom'), classifyTo = url.searchParams.get('classifyTo');
   if (!year || !/^\d{4}$/.test(year)) return json({ error: 'bad year' }, 400);
-  if (!classifyFrom || !classifyTo || !WEEK_RE.test(classifyFrom) || !WEEK_RE.test(classifyTo)) return json({ error: 'bad classify range' }, 400);
 
   const h = makeHelpers(env, 'accounting');
   let tenantId;
@@ -760,10 +780,10 @@ async function apiBudget(env, url) {
   const errors = {};
   let byMonth = {}, totalLines = 0;
   try {
-    const split = await fetchXeroPLSplit(h, tenantId, classifyFrom, classifyTo);
-    const bucketMap = buildAccountBucketMap(split);
+    const accounts = await fetchXeroAccounts(env, h, tenantId);
+    const { bucketMap, nameMap } = buildAccountBucketMap(accounts);
     const lines = await fetchXeroBudgetLines(h, tenantId);
-    byMonth = bucketBudgetLinesByMonth(lines, bucketMap);
+    byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
     totalLines = lines.length;
   } catch (err) {
     errors.budget = plainError(err.status || 500);
@@ -775,13 +795,17 @@ async function apiBudget(env, url) {
     const key = year + '-' + String(m).padStart(2, '0');
     const v = byMonth[key];
     if (v) matchedLines += v.matched;
+    const netProfit = v ? (v.revenue - v.cogs - v.wages - v.opex) : null;
     months.push({
       month: key,
       revenue: v ? v.revenue : null,
       cogs: v ? v.cogs : null,
       wages: v ? v.wages : null,
       opex: v ? v.opex : null,
-      netProfit: v ? (v.revenue - v.cogs - v.wages - v.opex) : null
+      opexLines: v ? v.opexLines : [],
+      ownerPay: v ? v.ownerPay : null,
+      netProfit,
+      actualProfit: (v && netProfit != null) ? netProfit - v.ownerPay : null
     });
   }
 

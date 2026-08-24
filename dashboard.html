@@ -250,6 +250,8 @@ body {
 .budget-cell.rowlabel { font-weight: 500; color: var(--text); background: var(--cream2); position: sticky; left: 0; }
 .budget-cell.val { justify-content: flex-end; font-family: 'Khand', sans-serif; font-weight: 600; font-size: 13.5px; }
 .budget-cell.total { background: var(--accent-dim); }
+.budget-cell.sub { color: var(--muted); font-style: italic; }
+.budget-cell.sub.val { font-size: 12px; font-weight: 500; }
 
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
@@ -422,7 +424,15 @@ function defaultSettings() {
        tab that would otherwise import them from the old sheet isn't built
        yet, so they live here until then. */
     transactionsTargetWeekly: 0,
-    avgSpendTarget: 0
+    avgSpendTarget: 0,
+    /* "Weeks in month" for the Budget tab, Jan-Dec - the real spreadsheet's
+       version of this is a fixed trading-calendar pattern the owner
+       maintains by hand (confirmed by comparing it against a plain
+       calendar Monday-count, which gives different numbers), not something
+       reliably computable from actual dates. Defaults to a standard 4-4-5
+       retail calendar (each quarter 4+4+5=13 weeks, 52 weeks/year) - type
+       in the real numbers from the sheet to match exactly. */
+    weeksInMonth: [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5]
   };
 }
 function loadSettings() {
@@ -625,7 +635,8 @@ var state = {
     year: tradingToday().getUTCFullYear(),
     loading: false,
     data: null,                /* last /api/budget payload */
-    error: null
+    error: null,
+    openOpexLines: false
   }
 };
 
@@ -2368,33 +2379,30 @@ function renderOwnerInput(root) {
 ============================================================ */
 function fmtMoneyOrDash(v) { return v == null ? '—' : fmtMoney(v); }
 
-/* How many trading weeks (week-starts, per SETTINGS.weekStart) fall inside
-   a calendar month - the old sheet's "weeks in month" operational
-   assumption, now computed rather than typed in. monthIndex1 is 1-12. */
-function weeksInMonth(year, monthIndex1) {
-  var end = addDays(stamp(year, monthIndex1 + 1, 1), -1);
-  var d = stamp(year, monthIndex1, 1);
-  var count = 0;
-  while (d.getTime() <= end.getTime()) {
-    if (d.getUTCDay() === SETTINGS.weekStart) count++;
-    d = addDays(d, 1);
-  }
-  return count;
+/* "Weeks in month" comes from SETTINGS.weeksInMonth (owner-typed, see its
+   default comment) - a real fixed trading-calendar pattern, not something
+   computable from actual dates. Falls back to a plain 4-4-5 pattern if
+   somehow unset. */
+function weeksInMonthSetting(i) {
+  var arr = Array.isArray(SETTINGS.weeksInMonth) ? SETTINGS.weeksInMonth : [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5];
+  return (typeof arr[i] === 'number' && arr[i] > 0) ? arr[i] : 0;
+}
+function pctOfRevenue(v, revenue) {
+  return (v == null || !revenue) ? null : (v / revenue) * 100;
 }
 
 /* Manual trigger only, same "nothing pulls live except on demand" rule as
-   every other Xero-backed tab. classifyFrom/classifyTo reuses the exact
-   "this month" range the P&L tab already computes - only needed so the
-   Worker can build its AccountID bucket map, not shown here. */
+   every other Xero-backed tab. Account classification is independent of
+   any date range now (Chart-of-Accounts based, see worker.js), so unlike
+   the first version this needs no "this month" period just to classify
+   accounts. */
 function fetchBudget() {
   var b = state.budget;
   if (b.loading) return;
   if (isManual()) { b.data = { available: false, reason: 'manual_mode' }; render(); return; }
   b.loading = true; b.error = null;
   render();
-  var r = resolvePLPeriod('thisMonth');
-  var url = '/api/budget?year=' + b.year + '&classifyFrom=' + iso(r.from) + '&classifyTo=' + iso(r.to);
-  fetch(url).then(function (res) {
+  fetch('/api/budget?year=' + b.year).then(function (res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   }).then(function (json) {
@@ -2450,7 +2458,6 @@ function renderBudget(root) {
 
   var months = d.months || [];
   var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  var year = +b.year;
 
   var wrap = el('div', 'budget-table-wrap');
   var table = el('div', 'budget-table');
@@ -2462,21 +2469,65 @@ function renderBudget(root) {
     table.appendChild(el('div', 'budget-cell rowlabel' + (cls ? ' ' + cls : ''), esc(label)));
     months.forEach(function (m, i) { table.appendChild(el('div', 'budget-cell val' + (cls ? ' ' + cls : ''), esc(fmtFn(m, i)))); });
   }
+  function pctRow(label, valueFn) {
+    metricRow(label, function (m, i) { return fmtPctVal(pctOfRevenue(valueFn(m), m.revenue)); }, 'sub');
+  }
 
-  metricRow('Weeks in month', function (m, i) { return String(weeksInMonth(year, i + 1)); });
+  metricRow('Weeks in month', function (m, i) { return String(weeksInMonthSetting(i)); });
   metricRow('Transactions target', function (m, i) {
-    return SETTINGS.transactionsTargetWeekly ? fmtInt(SETTINGS.transactionsTargetWeekly * weeksInMonth(year, i + 1)) : '—';
+    return SETTINGS.transactionsTargetWeekly ? fmtInt(SETTINGS.transactionsTargetWeekly * weeksInMonthSetting(i)) : '—';
   });
   metricRow('Avg spend target', function () { return SETTINGS.avgSpendTarget ? fmtMoney(SETTINGS.avgSpendTarget) : '—'; });
   metricRow('Revenue', function (m) { return fmtMoneyOrDash(m.revenue); });
   metricRow('COGS', function (m) { return fmtMoneyOrDash(m.cogs); });
+  pctRow('COGS %', function (m) { return m.cogs; });
   metricRow('Wages', function (m) { return fmtMoneyOrDash(m.wages); });
+  pctRow('Wages %', function (m) { return m.wages; });
+  metricRow('Gross profit', function (m) {
+    return (m.revenue == null) ? '—' : fmtMoney(m.revenue - (m.cogs || 0) - (m.wages || 0));
+  }, 'sub');
+
   metricRow('Opex', function (m) { return fmtMoneyOrDash(m.opex); });
+  pctRow('Opex %', function (m) { return m.opex; });
+
   metricRow('Net profit', function (m) { return fmtMoneyOrDash(m.netProfit); }, 'total');
+  metricRow('Owners pay', function (m) { return fmtMoneyOrDash(m.ownerPay); });
+  pctRow('Owner %', function (m) { return m.ownerPay; });
+  metricRow('Actual profit', function (m) { return fmtMoneyOrDash(m.actualProfit); }, 'total');
+  pctRow('Profit %', function (m) { return m.actualProfit; });
 
   wrap.appendChild(table);
   root.appendChild(wrap);
-  root.appendChild(el('p', 'set-note', 'Transactions and average spend targets are set in Settings, scaled here by the number of trading weeks in each month.'));
+
+  /* Opex line items - every budgeted account by name, one column set per
+     month, same "show the detail" idea as the P&L tab's Opex dropdown but
+     laid out as its own table since there's a month column per line item. */
+  var opexNames = {};
+  months.forEach(function (m) { (m.opexLines || []).forEach(function (l) { opexNames[l.label] = true; }); });
+  opexNames = Object.keys(opexNames).sort();
+  if (opexNames.length) {
+    var toggle = el('button', 'pl-toggle', state.budget.openOpexLines ? 'Hide opex line items' : ('Show ' + opexNames.length + ' opex line items'));
+    toggle.style.margin = '0.6rem 0';
+    toggle.onclick = function () { state.budget.openOpexLines = !state.budget.openOpexLines; render(); };
+    root.appendChild(toggle);
+    if (state.budget.openOpexLines) {
+      var lwrap = el('div', 'budget-table-wrap');
+      var ltable = el('div', 'budget-table');
+      ltable.appendChild(el('div', 'budget-cell head rowlabel', ''));
+      monthNames.forEach(function (n) { ltable.appendChild(el('div', 'budget-cell head', n)); });
+      opexNames.forEach(function (name) {
+        ltable.appendChild(el('div', 'budget-cell rowlabel', esc(name)));
+        months.forEach(function (m) {
+          var line = (m.opexLines || []).filter(function (l) { return l.label === name; })[0];
+          ltable.appendChild(el('div', 'budget-cell val', esc(line ? fmtMoney(line.value) : '—')));
+        });
+      });
+      lwrap.appendChild(ltable);
+      root.appendChild(lwrap);
+    }
+  }
+
+  root.appendChild(el('p', 'set-note', 'Transactions target, average spend target and weeks in month are set in Settings.'));
 }
 
 function renderSettings(root) {
@@ -2716,6 +2767,30 @@ function renderSettings(root) {
   plgrid.appendChild(plc3);
 
   root.appendChild(plgrid);
+
+  /* Budget tab: the "weeks in month" trading calendar - a fixed pattern
+     the owner maintains by hand, not derivable from actual dates (see
+     defaultSettings' comment). Transactions/avg-spend targets above are
+     shared with the Budget tab too, not repeated here. */
+  root.appendChild(el('div', 'screen-title', 'Budget'));
+  root.appendChild(el('p', 'screen-sub', 'Weeks in each month, for the Budget tab’s targets - your own trading calendar, not a plain calendar count.'));
+  var wimGrid = el('div', 'set-grid');
+  ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].forEach(function (name, i) {
+    var cell = el('div', 'set-cell');
+    cell.appendChild(el('div', 'set-label', name));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.step = '1'; inp.min = '0';
+    var arr = Array.isArray(SETTINGS.weeksInMonth) ? SETTINGS.weeksInMonth : [];
+    inp.value = (typeof arr[i] === 'number') ? arr[i] : '';
+    inp.onchange = function () {
+      if (!Array.isArray(SETTINGS.weeksInMonth)) SETTINGS.weeksInMonth = [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5];
+      var val = parseFloat(inp.value);
+      SETTINGS.weeksInMonth[i] = isFinite(val) ? val : 0;
+      saveSettings(); render();
+    };
+    cell.appendChild(inp);
+    wimGrid.appendChild(cell);
+  });
+  root.appendChild(wimGrid);
 
   if (!isManual()) {
     root.appendChild(el('div', 'section-sub', 'Session'));
