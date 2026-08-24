@@ -638,8 +638,23 @@ async function apiPL(env, url) {
   try {
     const posAdapter = ADAPTERS.pos;
     if (posAdapter && posAdapter.configured) {
-      const r = await posAdapter.fetchRange(env, h, { from, to });
-      transactions = r.count;
+      const spanDays = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+      if (spanDays > 35) {
+        /* fetchRange reads day-by-day (a KV get AND a KV list-scan per
+           date - see its own comment) - fine for a week/month, but blows
+           past Cloudflare's per-invocation subrequest limit over a
+           multi-month span like "All completed months this year".
+           fetchMonthly instead reads one pre-aggregated total per month
+           (monthagg:pos:<YYYY-MM>) - exactly the fast path it was built
+           for (see the "Trend queries" comment above it). from/to are
+           always month-aligned for any period long enough to hit this
+           branch, so summing whole months is exact, not approximate. */
+        const r = await posAdapter.fetchMonthly(env, h, { fromMonth: from.slice(0, 7), toMonth: to.slice(0, 7) });
+        transactions = r.count.reduce((sum, c) => sum + (c || 0), 0);
+      } else {
+        const r = await posAdapter.fetchRange(env, h, { from, to });
+        transactions = r.count;
+      }
     }
   } catch (err) { errors.transactions = plainError(err.status || 500); }
 
