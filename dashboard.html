@@ -2453,7 +2453,15 @@ function renderBudget(root) {
   }
   Object.keys(d.errors || {}).forEach(function (k) { if (d.errors[k]) root.appendChild(el('div', 'banner banner-coral', esc(d.errors[k]))); });
   if (!d.budgetAvailable) {
-    root.appendChild(el('div', 'banner banner-amber', 'Budget figures didn’t line up against your chart of accounts this time — the table below is empty. Tell your AI so it can check the account matching.'));
+    var abanner = el('div', 'banner banner-amber');
+    abanner.innerHTML = 'Budget figures didn’t line up against your chart of accounts this time — the table below is empty. Tell your AI so it can check the account matching.';
+    if (d.debug) {
+      var dbg = document.createElement('pre');
+      dbg.style.cssText = 'white-space:pre-wrap;font-size:11px;margin-top:8px;font-family:monospace;';
+      dbg.textContent = JSON.stringify(d.debug, null, 2);
+      abanner.appendChild(dbg);
+    }
+    root.appendChild(abanner);
   }
 
   var months = d.months || [];

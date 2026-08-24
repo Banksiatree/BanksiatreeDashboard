@@ -613,6 +613,22 @@ async function fetchXeroBudgetLines(h, tenantId) {
    can tell a genuinely-zero budget apart from the bucketing not working.
    opexLines is the Budget tab's line-item detail, one entry per budgeted
    opex account for that month - mirrors the P&L tab's own Opex dropdown. */
+/* BudgetBalance.Period is documented as looking like "2019-08", but Xero's
+   own OpenAPI spec flags it x-is-msdate - the same ".NET-wrapped"
+   /Date(1234567890000+0000)/ format parseXeroApiDate already handles for
+   other endpoints in this file, not a plain "YYYY-MM" string. Handles all
+   three shapes actually seen in the wild (wrapped date, YYYY-MM-DD, bare
+   YYYY-MM) rather than betting on the docs being right about just one. */
+function xeroPeriodMonth(period) {
+  if (!period) return null;
+  const s = String(period);
+  const m = /\/Date\((\d+)/.exec(s);
+  if (m) return new Date(Number(m[1])).toISOString().slice(0, 7);
+  if (/^\d{4}-\d{2}$/.test(s)) return s;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 7);
+  return null;
+}
+
 function bucketBudgetLinesByMonth(lines, bucketMap, nameMap) {
   const byMonth = {};
   for (const line of lines) {
@@ -620,8 +636,8 @@ function bucketBudgetLinesByMonth(lines, bucketMap, nameMap) {
     if (!bucket) continue;
     const label = (nameMap && nameMap[line.AccountID]) || 'Unknown account';
     for (const bal of line.BudgetBalances || []) {
-      const month = String(bal.Period || '').slice(0, 7);
-      if (!/^\d{4}-\d{2}$/.test(month)) continue;
+      const month = xeroPeriodMonth(bal.Period);
+      if (!month) continue;
       if (!byMonth[month]) byMonth[month] = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0, opexLines: [], matched: 0 };
       const amt = bal.Amount || 0;
       const key = bucket === 'owner' ? 'ownerPay' : bucket;
@@ -778,15 +794,32 @@ async function apiBudget(env, url) {
   }
 
   const errors = {};
-  let byMonth = {}, totalLines = 0;
+  let byMonth = {}, totalLines = 0, accountsFetched = 0, debug = null;
   try {
     const accounts = await fetchXeroAccounts(env, h, tenantId);
+    accountsFetched = accounts.length;
     const { bucketMap, nameMap } = buildAccountBucketMap(accounts);
     const lines = await fetchXeroBudgetLines(h, tenantId);
     byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
     totalLines = lines.length;
+    /* TEMP diagnostic - this exact pipeline (account classification, then
+       matching budget lines to it) has been wrong twice already on
+       assumptions that looked right in the docs but weren't in practice.
+       If it's STILL not matching, surface the raw shape directly instead
+       of guessing a third time. Remove once a real org has confirmed
+       budgetAvailable:true. */
+    if (accountsFetched === 0 || totalLines === 0 || Object.keys(byMonth).length === 0) {
+      debug = {
+        accountsFetched,
+        totalBudgetLines: totalLines,
+        sampleAccount: accounts[0] || null,
+        sampleBudgetLine: (lines && lines[0]) || null,
+        sampleBudgetBalance: (lines && lines[0] && lines[0].BudgetBalances && lines[0].BudgetBalances[0]) || null
+      };
+    }
   } catch (err) {
     errors.budget = plainError(err.status || 500);
+    errors.budgetDebug = String((err && err.message) || err) + (err && err.body ? (' | body=' + String(err.body).slice(0, 300)) : '');
   }
 
   const months = [];
@@ -816,6 +849,7 @@ async function apiBudget(env, url) {
     months,
     budgetAvailable: matchedLines > 0,
     totalLines,
+    debug,
     errors
   });
 }
