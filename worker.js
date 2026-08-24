@@ -560,30 +560,54 @@ async function fetchXeroWagesSplit(h, tenantId, from, to, trackingCategoryId) {
   return buckets;
 }
 
-/* Budget Manager totals (whole-of-business only - Xero's Budget Manager has
-   no tracking-category split, per the spec). GET Budgets with no BudgetID
+/* Budget Manager (whole-of-business only - Xero's Budget Manager has no
+   tracking-category split, per the spec). GET Budgets with no BudgetID
    returns the default Overall Budget: BudgetLines keyed by AccountID, each
-   with a monthly BudgetBalances array. bucketMap (built from the SAME
-   account IDs the actuals walk above collected) lines budget accounts up
-   with the same Revenue/COGS/Wages/Opex groups actuals use - matchedLines
-   counts how many budget lines actually resolved to a bucket, so the caller
-   can tell a genuinely-zero budget apart from the bucketing not working. */
-async function fetchXeroBudget(h, tenantId, from, to, bucketMap) {
+   with a monthly BudgetBalances array. Split into a raw fetch and a pure
+   per-month bucketing function so both the P&L tab (sums whichever months
+   fall in its requested range) and the Budget tab (exposes all 12 months
+   of a year) share the same underlying code. */
+async function fetchXeroBudgetLines(h, tenantId) {
   const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
   const budget = data && data.Budgets && data.Budgets[0];
-  const lines = (budget && budget.BudgetLines) || [];
-  const fromMonth = from.slice(0, 7), toMonth = to.slice(0, 7);
-  const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0 };
-  let matchedLines = 0;
+  return (budget && budget.BudgetLines) || [];
+}
+
+/* bucketMap (AccountID -> 'revenue'|'cogs'|'wages'|'opex', built from the
+   SAME account IDs an actuals walk collected) lines budget accounts up with
+   the same groups actuals use. Returns { 'YYYY-MM': {revenue,cogs,wages,
+   opex}, ... } for every month any matched line has a balance for -
+   matchedLines counts how many balances actually resolved to a bucket, so
+   the caller can tell a genuinely-zero budget apart from the bucketing not
+   working. */
+function bucketBudgetLinesByMonth(lines, bucketMap) {
+  const byMonth = {};
   for (const line of lines) {
     const bucket = bucketMap[line.AccountID];
     if (!bucket) continue;
     for (const bal of line.BudgetBalances || []) {
-      const balMonth = String(bal.Period || '').slice(0, 7);
-      if (balMonth < fromMonth || balMonth > toMonth) continue;
-      totals[bucket] = (totals[bucket] || 0) + (bal.Amount || 0);
-      matchedLines++;
+      const month = String(bal.Period || '').slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(month)) continue;
+      if (!byMonth[month]) byMonth[month] = { revenue: 0, cogs: 0, wages: 0, opex: 0, matched: 0 };
+      byMonth[month][bucket] = (byMonth[month][bucket] || 0) + (bal.Amount || 0);
+      byMonth[month].matched++;
     }
+  }
+  return byMonth;
+}
+
+/* Thin wrapper kept for apiPL: sums whichever months in byMonth fall in
+   [from,to] into one range total, same shape apiPL has always depended on. */
+async function fetchXeroBudget(h, tenantId, from, to, bucketMap) {
+  const lines = await fetchXeroBudgetLines(h, tenantId);
+  const byMonth = bucketBudgetLinesByMonth(lines, bucketMap);
+  const fromMonth = from.slice(0, 7), toMonth = to.slice(0, 7);
+  const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0 };
+  let matchedLines = 0;
+  for (const [month, vals] of Object.entries(byMonth)) {
+    if (month < fromMonth || month > toMonth) continue;
+    for (const b of ['revenue', 'cogs', 'wages', 'opex']) { totals[b] += vals[b] || 0; }
+    matchedLines += vals.matched;
   }
   totals.netProfit = totals.revenue - totals.cogs - totals.wages - totals.opex;
   return { totals, matchedLines, totalLines: lines.length };
@@ -661,11 +685,7 @@ async function apiPL(env, url) {
   let budget = null;
   if (split) {
     try {
-      const bucketMap = {};
-      split.revenueLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'revenue'; });
-      split.cogs.lines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'cogs'; });
-      split.opex.wageLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'wages'; });
-      split.opex.opexLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'opex'; });
+      const bucketMap = buildAccountBucketMap(split);
       const b = await fetchXeroBudget(h, tenantId, from, to, bucketMap);
       budget = { available: b.matchedLines > 0, ...b.totals, matchedLines: b.matchedLines, totalLines: b.totalLines };
     } catch (err) { errors.budget = plainError(err.status || 500); }
@@ -691,6 +711,87 @@ async function apiPL(env, url) {
     ownerWages: split ? { actual: split.opex.ownerWages, lines: split.opex.ownerWagesLines } : null,
     netProfit: split ? { actual: (revenueOnly || 0) - split.cogs.buckets.foh - split.cogs.buckets.boh - split.cogs.buckets.retail - split.cogs.buckets.uncategorised - split.opex.wagesSuperExclOwner - split.opex.opexTotal - split.opex.ownerWages } : null,
     budget,
+    errors
+  });
+}
+
+/* AccountID -> Revenue/COGS/Wages/Opex, from the account IDs a
+   fetchXeroPLSplit result collected - shared by apiPL's budget section and
+   apiBudget below, so a Budget account lines up with the same group its
+   actual figure would. */
+function buildAccountBucketMap(split) {
+  const bucketMap = {};
+  split.revenueLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'revenue'; });
+  split.cogs.lines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'cogs'; });
+  split.opex.wageLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'wages'; });
+  split.opex.opexLines.forEach((l) => { if (l.accountId) bucketMap[l.accountId] = 'opex'; });
+  return bucketMap;
+}
+
+/* GET /api/budget?year=YYYY&classifyFrom=&classifyTo= - powers the Budget
+   tab (banksia-dashboard-spec.md #3.3): a read-only, whole-of-business,
+   month-by-month view of Xero's Budget Manager for the given calendar year
+   (Jan-Dec, not the business's July-June financial year - the spec is
+   explicit that this tab mirrors the old spreadsheet's Jan-Dec Budget tab).
+   Targets only, no actuals/variance here - that's the P&L tab. classifyFrom/
+   classifyTo is a short recent period (the client sends the same "this
+   month" range the P&L tab already computes) used only to build the
+   AccountID bucket map via one fetchXeroPLSplit call, exactly like apiPL
+   does - Budget Manager lines have no section/group of their own, only an
+   AccountID, so this is the only way to know which are Revenue vs COGS vs
+   Wages vs Opex. */
+async function apiBudget(env, url) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+
+  const year = url.searchParams.get('year');
+  const classifyFrom = url.searchParams.get('classifyFrom'), classifyTo = url.searchParams.get('classifyTo');
+  if (!year || !/^\d{4}$/.test(year)) return json({ error: 'bad year' }, 400);
+  if (!classifyFrom || !classifyTo || !WEEK_RE.test(classifyFrom) || !WEEK_RE.test(classifyTo)) return json({ error: 'bad classify range' }, 400);
+
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+
+  const errors = {};
+  let byMonth = {}, totalLines = 0;
+  try {
+    const split = await fetchXeroPLSplit(h, tenantId, classifyFrom, classifyTo);
+    const bucketMap = buildAccountBucketMap(split);
+    const lines = await fetchXeroBudgetLines(h, tenantId);
+    byMonth = bucketBudgetLinesByMonth(lines, bucketMap);
+    totalLines = lines.length;
+  } catch (err) {
+    errors.budget = plainError(err.status || 500);
+  }
+
+  const months = [];
+  let matchedLines = 0;
+  for (let m = 1; m <= 12; m++) {
+    const key = year + '-' + String(m).padStart(2, '0');
+    const v = byMonth[key];
+    if (v) matchedLines += v.matched;
+    months.push({
+      month: key,
+      revenue: v ? v.revenue : null,
+      cogs: v ? v.cogs : null,
+      wages: v ? v.wages : null,
+      opex: v ? v.opex : null,
+      netProfit: v ? (v.revenue - v.cogs - v.wages - v.opex) : null
+    });
+  }
+
+  await noteSync(env, 'accounting');
+  return json({
+    available: true,
+    year,
+    months,
+    budgetAvailable: matchedLines > 0,
+    totalLines,
     errors
   });
 }
@@ -2074,6 +2175,10 @@ export default {
     if (path === '/api/ownerwages' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiOwnerWages(env, url);
+    }
+    if (path === '/api/budget' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiBudget(env, url);
     }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {

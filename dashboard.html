@@ -242,6 +242,15 @@ body {
 .oi-wage-sub { font-size: 12.5px; color: var(--c-teal-text); margin: 0.2rem 0 0.7rem; }
 .oi-share-row { display: flex; justify-content: space-between; font-size: 13.5px; color: var(--c-teal-text); padding: 3px 0; }
 
+/* Budget tab */
+.budget-table-wrap { overflow-x: auto; border-radius: 14px; border: 1px solid var(--border); background: #fffdf9; }
+.budget-table { display: grid; grid-template-columns: 150px repeat(12, 92px); min-width: 1254px; }
+.budget-cell { padding: 9px 10px; font-size: 12.5px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); display: flex; align-items: center; }
+.budget-cell.head { font-family: 'Khand', sans-serif; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--cream2); }
+.budget-cell.rowlabel { font-weight: 500; color: var(--text); background: var(--cream2); position: sticky; left: 0; }
+.budget-cell.val { justify-content: flex-end; font-family: 'Khand', sans-serif; font-weight: 600; font-size: 13.5px; }
+.budget-cell.total { background: var(--accent-dim); }
+
 /* Reconciliation */
 .recon-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 14px; padding: 1.15rem 1.3rem; margin-bottom: 10px; }
 .recon-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
@@ -611,6 +620,12 @@ var state = {
     error: null,
     wages: null,                /* last /api/ownerwages payload, for the derived rate */
     wagesLoading: false
+  },
+  budget: {
+    year: tradingToday().getUTCFullYear(),
+    loading: false,
+    data: null,                /* last /api/budget payload */
+    error: null
   }
 };
 
@@ -890,8 +905,8 @@ function render() {
   /* Nav */
   var nav = el('div', 'nav');
   var tabs = isManual()
-    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
-    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+    ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
+    : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -927,6 +942,7 @@ function render() {
   if (state.view === 'dashboard') renderDashboard(root);
   else if (state.view === 'enter') renderManualEntry(root);
   else if (state.view === 'owner') renderOwnerInput(root);
+  else if (state.view === 'budget') renderBudget(root);
   else if (state.view === 'pl') renderPL(root);
   else if (state.view === 'cashsplit') renderCashSplit(root);
   else if (state.view === 'connections') renderConnections(root);
@@ -2337,6 +2353,130 @@ function renderOwnerInput(root) {
       root.appendChild(wageCard);
     }
   }
+}
+
+/* ============================================================
+   Budget tab (banksia-dashboard-spec.md #3.3). Read-only, whole-of-business,
+   month-by-month view of Xero's Budget Manager for a calendar year (Jan-Dec
+   - the business's own July-June financial year doesn't apply here, the
+   spec is explicit this mirrors the old spreadsheet's Jan-Dec layout).
+   Targets only - no actual-vs-budget here, that's the P&L tab. /api/budget
+   supplies raw monthly $ figures only; "weeks in month" and the
+   transactions/avg-spend target rows (not something Xero has) are computed
+   here from the same SETTINGS.transactionsTargetWeekly/avgSpendTarget the
+   P&L tab already uses.
+============================================================ */
+function fmtMoneyOrDash(v) { return v == null ? '—' : fmtMoney(v); }
+
+/* How many trading weeks (week-starts, per SETTINGS.weekStart) fall inside
+   a calendar month - the old sheet's "weeks in month" operational
+   assumption, now computed rather than typed in. monthIndex1 is 1-12. */
+function weeksInMonth(year, monthIndex1) {
+  var end = addDays(stamp(year, monthIndex1 + 1, 1), -1);
+  var d = stamp(year, monthIndex1, 1);
+  var count = 0;
+  while (d.getTime() <= end.getTime()) {
+    if (d.getUTCDay() === SETTINGS.weekStart) count++;
+    d = addDays(d, 1);
+  }
+  return count;
+}
+
+/* Manual trigger only, same "nothing pulls live except on demand" rule as
+   every other Xero-backed tab. classifyFrom/classifyTo reuses the exact
+   "this month" range the P&L tab already computes - only needed so the
+   Worker can build its AccountID bucket map, not shown here. */
+function fetchBudget() {
+  var b = state.budget;
+  if (b.loading) return;
+  if (isManual()) { b.data = { available: false, reason: 'manual_mode' }; render(); return; }
+  b.loading = true; b.error = null;
+  render();
+  var r = resolvePLPeriod('thisMonth');
+  var url = '/api/budget?year=' + b.year + '&classifyFrom=' + iso(r.from) + '&classifyTo=' + iso(r.to);
+  fetch(url).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    b.data = json; b.loading = false; render();
+  }).catch(function () {
+    b.loading = false; b.error = 'Could not reach the dashboard just now. Try again.'; render();
+  });
+}
+
+function renderBudget(root) {
+  root.appendChild(el('div', 'screen-title', 'Budget'));
+  root.appendChild(el('p', 'screen-sub', 'A read-only view of your Xero Budget Manager, month by month across the year. To change a target, change it in Xero — actual-vs-budget comparisons live on the P&amp;L tab.'));
+
+  var b = state.budget;
+  var yearBar = el('div', 'period-bar');
+  yearBar.appendChild(el('span', 'period-label', 'Year'));
+  var prevBtn = el('button', 'pchip', '← ' + (b.year - 1));
+  prevBtn.onclick = function () { b.year -= 1; b.data = null; render(); };
+  yearBar.appendChild(prevBtn);
+  yearBar.appendChild(el('span', 'pchip on', String(b.year)));
+  var nextBtn = el('button', 'pchip', (b.year + 1) + ' →');
+  nextBtn.onclick = function () { b.year += 1; b.data = null; render(); };
+  yearBar.appendChild(nextBtn);
+  root.appendChild(yearBar);
+
+  if (isManual()) {
+    root.appendChild(el('div', 'banner banner-amber', 'You’re in ‘I type them in’ mode, so there’s no Xero connection to pull the budget from.'));
+    return;
+  }
+
+  var loadBtn = el('button', 'btn-primary-dash', b.loading ? 'Fetching…' : 'Load budget');
+  loadBtn.style.margin = '0.6rem 0 1.1rem';
+  loadBtn.disabled = b.loading;
+  loadBtn.onclick = function () { fetchBudget(); };
+  root.appendChild(loadBtn);
+
+  if (b.error) root.appendChild(el('div', 'banner banner-coral', esc(b.error)));
+
+  var d = b.data;
+  if (!d) {
+    root.appendChild(el('div', 'pl-empty', 'Click Load budget to pull ' + esc(P.accounting) + '’s Budget Manager for ' + b.year + '.'));
+    return;
+  }
+  if (d.available === false) {
+    var msg = d.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : 'Not available right now.';
+    root.appendChild(el('div', 'banner banner-amber', msg));
+    return;
+  }
+  Object.keys(d.errors || {}).forEach(function (k) { if (d.errors[k]) root.appendChild(el('div', 'banner banner-coral', esc(d.errors[k]))); });
+  if (!d.budgetAvailable) {
+    root.appendChild(el('div', 'banner banner-amber', 'Budget figures didn’t line up against your chart of accounts this time — the table below is empty. Tell your AI so it can check the account matching.'));
+  }
+
+  var months = d.months || [];
+  var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var year = +b.year;
+
+  var wrap = el('div', 'budget-table-wrap');
+  var table = el('div', 'budget-table');
+
+  table.appendChild(el('div', 'budget-cell head rowlabel', ''));
+  monthNames.forEach(function (n) { table.appendChild(el('div', 'budget-cell head', n)); });
+
+  function metricRow(label, fmtFn, cls) {
+    table.appendChild(el('div', 'budget-cell rowlabel' + (cls ? ' ' + cls : ''), esc(label)));
+    months.forEach(function (m, i) { table.appendChild(el('div', 'budget-cell val' + (cls ? ' ' + cls : ''), esc(fmtFn(m, i)))); });
+  }
+
+  metricRow('Weeks in month', function (m, i) { return String(weeksInMonth(year, i + 1)); });
+  metricRow('Transactions target', function (m, i) {
+    return SETTINGS.transactionsTargetWeekly ? fmtInt(SETTINGS.transactionsTargetWeekly * weeksInMonth(year, i + 1)) : '—';
+  });
+  metricRow('Avg spend target', function () { return SETTINGS.avgSpendTarget ? fmtMoney(SETTINGS.avgSpendTarget) : '—'; });
+  metricRow('Revenue', function (m) { return fmtMoneyOrDash(m.revenue); });
+  metricRow('COGS', function (m) { return fmtMoneyOrDash(m.cogs); });
+  metricRow('Wages', function (m) { return fmtMoneyOrDash(m.wages); });
+  metricRow('Opex', function (m) { return fmtMoneyOrDash(m.opex); });
+  metricRow('Net profit', function (m) { return fmtMoneyOrDash(m.netProfit); }, 'total');
+
+  wrap.appendChild(table);
+  root.appendChild(wrap);
+  root.appendChild(el('p', 'set-note', 'Transactions and average spend targets are set in Settings, scaled here by the number of trading weeks in each month.'));
 }
 
 function renderSettings(root) {
