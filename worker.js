@@ -600,10 +600,26 @@ function buildAccountBucketMap(accounts) {
    per-month bucketing function so both the P&L tab (sums whichever months
    fall in its requested range) and the Budget tab (exposes all 12 months
    of a year) share the same underlying code. */
-async function fetchXeroBudgetLines(h, tenantId) {
-  const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-  const budget = data && data.Budgets && data.Budgets[0];
-  return (budget && budget.BudgetLines) || [];
+/* Two calls, not one - confirmed against Xero's own OpenAPI spec (its
+   official example response for the plain list call shows BudgetLines: []
+   on every budget, even real approved ones with real data): GET /Budgets
+   only ever returns budget METADATA (BudgetID, Type, Description, Status),
+   never populated BudgetLines - you have to follow up with GET
+   /Budgets/{BudgetID} for the one budget that matters to actually get its
+   line items. This was the real reason the table stayed empty even after
+   the Chart-of-Accounts fix (which was correct on its own, just fetching
+   from an endpoint that can never have data). Picks the Type:'OVERALL'
+   budget (matches the spec's whole-of-business-only requirement); falls
+   back to the first budget in the list if none is explicitly OVERALL. */
+async function fetchXeroBudgetLines(h, tenantId, debugOut) {
+  const listData = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const list = (listData && listData.Budgets) || [];
+  if (debugOut) debugOut.budgetList = list.map((b) => ({ BudgetID: b.BudgetID, Type: b.Type, Description: b.Description, Status: b.Status }));
+  if (!list.length) return [];
+  const chosen = list.find((b) => b.Type === 'OVERALL') || list[0];
+  const detailData = await h.fetchJson('https://api.xero.com/api.xro/2.0/Budgets/' + chosen.BudgetID, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+  const detail = (detailData && detailData.Budgets && detailData.Budgets[0]) || (detailData && detailData.Budgets);
+  return (detail && detail.BudgetLines) || [];
 }
 
 /* bucketMap/nameMap from buildAccountBucketMap. Returns { 'YYYY-MM':
@@ -639,7 +655,11 @@ function bucketBudgetLinesByMonth(lines, bucketMap, nameMap) {
       const month = xeroPeriodMonth(bal.Period);
       if (!month) continue;
       if (!byMonth[month]) byMonth[month] = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0, opexLines: [], matched: 0 };
-      const amt = bal.Amount || 0;
+      /* Number(...) not a bare || fallback - Xero's own example response
+         for this field shows it quoted ("1000") even though the schema
+         types it as a number, so coerce defensively rather than risk
+         string concatenation. */
+      const amt = Number(bal.Amount) || 0;
       const key = bucket === 'owner' ? 'ownerPay' : bucket;
       byMonth[month][key] = (byMonth[month][key] || 0) + amt;
       if (bucket === 'opex') byMonth[month].opexLines.push({ label, value: amt });
@@ -799,19 +819,21 @@ async function apiBudget(env, url) {
     const accounts = await fetchXeroAccounts(env, h, tenantId);
     accountsFetched = accounts.length;
     const { bucketMap, nameMap } = buildAccountBucketMap(accounts);
-    const lines = await fetchXeroBudgetLines(h, tenantId);
+    const debugOut = {};
+    const lines = await fetchXeroBudgetLines(h, tenantId, debugOut);
     byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
     totalLines = lines.length;
     /* TEMP diagnostic - this exact pipeline (account classification, then
-       matching budget lines to it) has been wrong twice already on
+       matching budget lines to it) has been wrong three times already on
        assumptions that looked right in the docs but weren't in practice.
        If it's STILL not matching, surface the raw shape directly instead
-       of guessing a third time. Remove once a real org has confirmed
+       of guessing again. Remove once a real org has confirmed
        budgetAvailable:true. */
     if (accountsFetched === 0 || totalLines === 0 || Object.keys(byMonth).length === 0) {
       debug = {
         accountsFetched,
         totalBudgetLines: totalLines,
+        budgetList: debugOut.budgetList || null,
         sampleAccount: accounts[0] || null,
         sampleBudgetLine: (lines && lines[0]) || null,
         sampleBudgetBalance: (lines && lines[0] && lines[0].BudgetBalances && lines[0].BudgetBalances[0]) || null
