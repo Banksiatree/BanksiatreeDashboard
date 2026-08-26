@@ -1875,7 +1875,15 @@ function oolioRevenueFromReportingGroups(rows) {
   return revenue;
 }
 
-async function fetchGmailOolioReport(env, h) {
+/* force:true (the dashboard's own "Check for OOLIO report now" button)
+   always re-examines the newest labelled email, even if a previous
+   attempt already marked it processed - the daily background poll
+   (scheduled() below, force left false) is what actually needs the
+   gmail:lastProcessedId guard, to avoid redoing the same work every day.
+   Without this split, a genuine code fix (e.g. teaching this to read a
+   PDF it couldn't read before) could never be retried against an email
+   already marked processed from a failed earlier attempt. */
+async function fetchGmailOolioReport(env, h, force) {
   const searchUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' +
     encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=5';
   const search = await h.fetchJson(searchUrl);
@@ -1884,7 +1892,7 @@ async function fetchGmailOolioReport(env, h) {
 
   const newestId = messages[0].id;
   const lastProcessedId = await env.TOKENS.get('gmail:lastProcessedId');
-  if (lastProcessedId === newestId) return { checked: true, found: false, reason: 'already processed' };
+  if (!force && lastProcessedId === newestId) return { checked: true, found: false, reason: 'already processed' };
 
   const full = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '?format=full');
   const headers = (full.payload && full.payload.headers) || [];
@@ -2861,7 +2869,7 @@ export default {
     if (path === '/api/gmail/check' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       try {
-        const result = await fetchGmailOolioReport(env, makeHelpers(env, 'gmail'));
+        const result = await fetchGmailOolioReport(env, makeHelpers(env, 'gmail'), true);
         return json(result);
       } catch (err) {
         return json({ checked: false, error: plainError(err.status || 500) }, 200);
