@@ -253,7 +253,7 @@ body {
 .budget-cell.sub { color: var(--muted); font-style: italic; }
 .budget-cell.sub.val { font-size: 12px; font-weight: 500; }
 .budget-table.narrow { grid-template-columns: 190px repeat(4, 140px); min-width: 0; }
-.budget-table.single { grid-template-columns: 260px 1fr; min-width: 0; }
+.budget-table.hist { grid-template-columns: 210px repeat(12, 90px); min-width: 1290px; }
 
 /* History tab */
 .hist-select { font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border-med); border-radius: 20px; background: #fff; }
@@ -661,7 +661,8 @@ var state = {
     loading: false,
     weeks: null,                /* last /api/history payload's weeks array; null = not fetched yet */
     error: null,
-    selectedWeek: null,         /* Monday ISO of the week the drill-down shows */
+    year: null,                  /* calendar year the year-table/trend show */
+    expandedMonth: null,         /* 'YYYY-MM' whose weeks are shown below the year table, or null */
     trendMetric: null,
     importing: false,
     importError: null
@@ -2752,13 +2753,93 @@ function historyCashFlowProfit(rec) {
   return p - rec.cashFlowCost - ownerSuper;
 }
 function historyOpexPct(rec) { return historyPctOfBank(rec.cashFlowCost, rec.bankFeeds); }
-function historyVariance(rec) {
+/* weekCount scales the fixed weekly target to however many weeks this
+   record actually aggregates (1 for a single week, the number of weeks in
+   a month that HAD a Cash Flow cost figure for a monthly rollup) - same
+   "weeks in month" scaling idea the Budget tab already uses for its own
+   weekly targets. */
+function historyVariance(rec, weekCount) {
   if (rec.cashFlowCost == null) return null;
   var target = (typeof SETTINGS.cashFlowCostTargetWeekly === 'number') ? SETTINGS.cashFlowCostTargetWeekly : 2601;
-  return rec.cashFlowCost - target;
+  return rec.cashFlowCost - target * (weekCount || 1);
 }
 function historyAvgPerHour(w) { return (w && w.total != null && w.hours) ? w.total / w.hours : null; }
 function historyAvgSale(rec) { return (rec.bankFeeds != null && rec.covers) ? rec.bankFeeds / rec.covers : null; }
+
+/* Sums an array of week records (1 or many) into one combined week-shaped
+   record - lets a single week and a whole month's rollup run through
+   every historyXxx() function above unchanged, rather than a separate
+   monthly-math path that could drift out of sync with the per-week one.
+   A field stays null (not a fabricated 0) when NONE of the weeks being
+   summed had it, so a month with a genuine gap still reads as a gap. */
+function historyAggregate(weeksArr) {
+  var out = {
+    revenue: { food: 0, bev: 0, uber: 0, event: 0, retail: 0 },
+    bankFeeds: null, cogs: null, wages: null, covers: null, cashFlowCost: null,
+    legacyOwnerPersonal: { super: 0 },
+    weekCount: weeksArr.length, cfcWeekCount: 0
+  };
+  var hasBank = false, hasCogs = false, hasWages = false, hasCovers = false, hasCfc = false;
+  var cogs = { food: 0, bev: 0, retail: 0 }, wages = { kitchen: 0, foh: 0, hours: 0, total: 0 };
+  weeksArr.forEach(function (w) {
+    ['food', 'bev', 'uber', 'event', 'retail'].forEach(function (k) { out.revenue[k] += (w.revenue && w.revenue[k]) || 0; });
+    if (w.bankFeeds != null) { out.bankFeeds = (out.bankFeeds || 0) + w.bankFeeds; hasBank = true; }
+    if (w.cogs) { hasCogs = true; cogs.food += w.cogs.food || 0; cogs.bev += w.cogs.bev || 0; cogs.retail += w.cogs.retail || 0; }
+    if (w.wages) { hasWages = true; wages.kitchen += w.wages.kitchen || 0; wages.foh += w.wages.foh || 0; wages.hours += w.wages.hours || 0; wages.total += w.wages.total || 0; }
+    if (w.covers != null) { out.covers = (out.covers || 0) + w.covers; hasCovers = true; }
+    if (w.cashFlowCost != null) { out.cashFlowCost = (out.cashFlowCost || 0) + w.cashFlowCost; hasCfc = true; out.cfcWeekCount++; }
+    out.legacyOwnerPersonal.super += (w.legacyOwnerPersonal && w.legacyOwnerPersonal.super) || 0;
+  });
+  if (hasCogs) out.cogs = cogs;
+  if (hasWages) out.wages = wages;
+  if (!hasBank) out.bankFeeds = null;
+  if (!hasCovers) out.covers = null;
+  if (!hasCfc) out.cashFlowCost = null;
+  return out;
+}
+
+/* Shared row spec for both the year table (one column per month, each an
+   historyAggregate() of that month's weeks) and a month's expanded weekly
+   view (one column per week, each historyAggregate([week]) - so a single
+   week is just the N=1 case of the same maths, not a separate path). */
+var HISTORY_ROWS = [
+  { label: 'Revenue (Uber netted)', get: function (a) { return historyRevenueTotal(a.revenue); }, fmt: fmtMoneyOrDash, cls: 'total' },
+  { label: '· Food', get: function (a) { return a.revenue.food; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Bev', get: function (a) { return a.revenue.bev; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Uber', get: function (a) { return a.revenue.uber; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Event/catering', get: function (a) { return a.revenue.event; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Retail', get: function (a) { return a.revenue.retail; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Bank feeds', get: function (a) { return a.bankFeeds; }, fmt: fmtMoneyOrDash, cls: 'total' },
+  { label: 'COGS total', get: function (a) { return historyCogsTotal(a.cogs); }, fmt: fmtMoneyOrDash },
+  { label: '· Food', get: function (a) { return a.cogs ? a.cogs.food : null; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Bev', get: function (a) { return a.cogs ? a.cogs.bev : null; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Retail', get: function (a) { return a.cogs ? a.cogs.retail : null; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'COGS % of Bank feeds', get: function (a) { return historyPctOfBank(historyCogsTotal(a.cogs), a.bankFeeds); }, fmt: fmtPctVal, cls: 'sub' },
+  { label: 'Wages total', get: function (a) { return a.wages ? a.wages.total : null; }, fmt: fmtMoneyOrDash },
+  { label: '· Kitchen', get: function (a) { return a.wages ? a.wages.kitchen : null; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· FOH', get: function (a) { return a.wages ? a.wages.foh : null; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Wage % of Bank feeds', get: function (a) { return historyPctOfBank(a.wages ? a.wages.total : null, a.bankFeeds); }, fmt: fmtPctVal, cls: 'sub' },
+  { label: 'Hours worked', get: function (a) { return a.wages ? a.wages.hours : null; }, fmt: function (v) { return v == null ? '—' : (Math.round(v * 10) / 10).toString(); }, cls: 'sub' },
+  { label: 'Avg $/hour', get: function (a) { return historyAvgPerHour(a.wages); }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Covers', get: function (a) { return a.covers; }, fmt: fmtInt },
+  { label: 'Avg $/sale', get: function (a) { return historyAvgSale(a); }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Profit', get: historyProfit, fmt: fmtMoneyOrDash, cls: 'total' },
+  { label: 'Cash Flow cost', get: function (a) { return a.cashFlowCost; }, fmt: fmtMoneyOrDash },
+  { label: 'Cash Flow Profit', get: historyCashFlowProfit, fmt: fmtMoneyOrDash, cls: 'total' },
+  { label: 'Opex % of Bank feeds', get: historyOpexPct, fmt: fmtPctVal, cls: 'sub' },
+  { label: 'Variance vs target', get: function (a) { return historyVariance(a, a.cfcWeekCount); }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Weeks with data', get: function (a) { return a.weekCount; }, fmt: fmtInt, cls: 'sub' }
+];
+
+/* Compact "13–19 Jan" / "29 Dec–4 Jan" column header for a week, instead
+   of fmtRange's full "13 Jan 2025 to 19 Jan 2025" - too long for a ~110px
+   column. */
+function historyWeekLabel(w) {
+  var from = fromIso(w.week), to = fromIso(w.weekEnding);
+  var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  if (from.getUTCMonth() === to.getUTCMonth()) return from.getUTCDate() + '–' + to.getUTCDate() + ' ' + months[to.getUTCMonth()];
+  return from.getUTCDate() + ' ' + months[from.getUTCMonth()] + '–' + to.getUTCDate() + ' ' + months[to.getUTCMonth()];
+}
 
 /* Auto-loads on tab open (cheap KV-only read, same as Owner Input) - a
    wide range so every imported + live week comes back in one call; ~90
@@ -2775,7 +2856,7 @@ function fetchHistory() {
     return res.json();
   }).then(function (json) {
     h.weeks = json.weeks || []; h.loading = false;
-    if (h.weeks.length && !h.selectedWeek) h.selectedWeek = h.weeks[h.weeks.length - 1].week;
+    if (h.weeks.length && !h.year) h.year = +h.weeks[h.weeks.length - 1].weekEnding.slice(0, 4);
     render();
   }).catch(function () {
     h.loading = false; h.error = 'Could not reach the dashboard just now. Try refresh.'; render();
@@ -2823,78 +2904,122 @@ function renderHistoryImport(root) {
   root.appendChild(card);
 }
 
-/* Single-week drill-down - every field the old sheet tracked for that
-   week, in the sheet's own row order, reusing the .budget-table card
-   layout (single value column instead of 12 months/4 scales). */
-function renderHistoryDrilldown(root, weeks) {
+/* Year-at-a-glance: one column per month, each a historyAggregate() of
+   whichever weeks fall in it (grouped by the week's own weekEnding date -
+   a week is credited to the month its Sunday lands in). A month with no
+   saved weeks shows as an all-dash column, same "don't guess" rule as the
+   Budget tab's own null months, rather than skipping the column
+   entirely (keeps every month in a fixed Jan-Dec position). */
+function renderHistoryYear(root, weeks) {
   var h = state.history;
-  var pbar = el('div', 'period-bar');
-  pbar.appendChild(el('span', 'period-label', 'Week'));
-  var sel = document.createElement('select');
-  sel.className = 'hist-select';
-  weeks.slice().reverse().forEach(function (w) {
-    var o = document.createElement('option'); o.value = w.week;
-    o.textContent = fmtRange({ from: fromIso(w.week), to: fromIso(w.weekEnding) }) + (w.source === 'import' ? ' · imported' : ' · live');
-    if (w.week === h.selectedWeek) o.selected = true;
-    sel.appendChild(o);
+  var yearBar = el('div', 'period-bar');
+  yearBar.appendChild(el('span', 'period-label', 'Year'));
+  var prevBtn = el('button', 'pchip', '← ' + (h.year - 1));
+  prevBtn.onclick = function () { h.year -= 1; h.expandedMonth = null; render(); };
+  yearBar.appendChild(prevBtn);
+  yearBar.appendChild(el('span', 'pchip on', String(h.year)));
+  var nextBtn = el('button', 'pchip', (h.year + 1) + ' →');
+  nextBtn.onclick = function () { h.year += 1; h.expandedMonth = null; render(); };
+  yearBar.appendChild(nextBtn);
+  root.appendChild(yearBar);
+
+  var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var byMonth = {};
+  weeks.forEach(function (w) {
+    var mk = w.weekEnding.slice(0, 7);
+    (byMonth[mk] = byMonth[mk] || []).push(w);
   });
-  sel.onchange = function () { h.selectedWeek = sel.value; render(); };
-  pbar.appendChild(sel);
-  root.appendChild(pbar);
 
-  var rec = weeks.filter(function (w) { return w.week === h.selectedWeek; })[0];
-  if (!rec) { root.appendChild(el('div', 'pl-empty', 'Pick a week above.')); return; }
+  var months = [];
+  for (var m = 1; m <= 12; m++) {
+    var mk = h.year + '-' + String(m).padStart(2, '0');
+    months.push({ key: mk, name: monthNames[m - 1], weeksList: byMonth[mk] || null });
+  }
 
-  var revTotal = historyRevenueTotal(rec.revenue);
-  var cogsTotal = historyCogsTotal(rec.cogs);
-  var wagesTotal = rec.wages ? rec.wages.total : null;
+  if (!months.some(function (mo) { return mo.weeksList; })) {
+    root.appendChild(el('div', 'pl-empty', 'No weeks saved for ' + h.year + ' yet.'));
+    return;
+  }
 
   var wrap = el('div', 'budget-table-wrap');
-  var table = el('div', 'budget-table single');
-  function row(label, val, cls) {
-    table.appendChild(el('div', 'budget-cell rowlabel' + (cls ? ' ' + cls : ''), esc(label)));
-    table.appendChild(el('div', 'budget-cell val' + (cls ? ' ' + cls : ''), esc(val)));
-  }
-  row('Revenue (channels, Uber netted)', fmtMoneyOrDash(revTotal), 'total');
-  row('· Food', fmtMoneyOrDash(rec.revenue && rec.revenue.food), 'sub');
-  row('· Bev', fmtMoneyOrDash(rec.revenue && rec.revenue.bev), 'sub');
-  row('· Uber', fmtMoneyOrDash(rec.revenue && rec.revenue.uber), 'sub');
-  row('· Event/catering', fmtMoneyOrDash(rec.revenue && rec.revenue.event), 'sub');
-  row('· Retail', fmtMoneyOrDash(rec.revenue && rec.revenue.retail), 'sub');
-  if (rec.revenueUncategorised) row('· Uncategorised', fmtMoneyOrDash(rec.revenueUncategorised), 'sub');
-  row('Bank feeds', fmtMoneyOrDash(rec.bankFeeds), 'total');
-  if (rec.forecast != null) row('Forecast (from sheet)', fmtMoneyOrDash(rec.forecast), 'sub');
-  row('COGS total', fmtMoneyOrDash(cogsTotal));
-  row('· Food', fmtMoneyOrDash(rec.cogs && rec.cogs.food), 'sub');
-  row('· Bev', fmtMoneyOrDash(rec.cogs && rec.cogs.bev), 'sub');
-  row('· Retail', fmtMoneyOrDash(rec.cogs && rec.cogs.retail), 'sub');
-  if (rec.cogsUncategorised) row('· Uncategorised', fmtMoneyOrDash(rec.cogsUncategorised), 'sub');
-  row('COGS % of Bank feeds', fmtPctVal(historyPctOfBank(cogsTotal, rec.bankFeeds)), 'sub');
-  row('Wages total', fmtMoneyOrDash(wagesTotal));
-  row('· Kitchen', fmtMoneyOrDash(rec.wages && rec.wages.kitchen), 'sub');
-  row('· FOH', fmtMoneyOrDash(rec.wages && rec.wages.foh), 'sub');
-  row('Wage % of Bank feeds', fmtPctVal(historyPctOfBank(wagesTotal, rec.bankFeeds)), 'sub');
-  row('Hours worked', (rec.wages && rec.wages.hours != null) ? String(rec.wages.hours) : '—', 'sub');
-  row('Avg $/hour', fmtMoneyOrDash(historyAvgPerHour(rec.wages)), 'sub');
-  row('Covers', (rec.covers != null) ? fmtInt(rec.covers) : '—');
-  row('Avg $/sale', fmtMoneyOrDash(historyAvgSale(rec)), 'sub');
-  row('Profit (Bank feeds − COGS − Wages)', fmtMoneyOrDash(historyProfit(rec)), 'total');
-  if (rec.cashFlowCost != null) {
-    row('Cash Flow cost', fmtMoneyOrDash(rec.cashFlowCost));
-    row('Cash Flow Profit', fmtMoneyOrDash(historyCashFlowProfit(rec)), 'total');
-    row('Opex % of Bank feeds', fmtPctVal(historyOpexPct(rec)), 'sub');
-    row('Variance vs weekly target', fmtMoneyOrDash(historyVariance(rec)), 'sub');
-  }
+  var table = el('div', 'budget-table hist');
+  table.appendChild(el('div', 'budget-cell head rowlabel', ''));
+  months.forEach(function (mo) { table.appendChild(el('div', 'budget-cell head', mo.name)); });
+
+  HISTORY_ROWS.forEach(function (spec) {
+    table.appendChild(el('div', 'budget-cell rowlabel' + (spec.cls ? ' ' + spec.cls : ''), esc(spec.label)));
+    months.forEach(function (mo) {
+      var agg = mo.weeksList ? historyAggregate(mo.weeksList) : null;
+      table.appendChild(el('div', 'budget-cell val' + (spec.cls ? ' ' + spec.cls : ''), agg ? esc(spec.fmt(spec.get(agg))) : '—'));
+    });
+  });
   wrap.appendChild(table);
   root.appendChild(wrap);
 
-  if (rec.notes) {
-    var noteCard = el('div', 'oi-card');
-    noteCard.appendChild(el('div', 'oi-card-title', 'Notes'));
-    noteCard.appendChild(el('div', 'set-note', esc(rec.notes)));
-    root.appendChild(noteCard);
+  var chipBar = el('div', 'period-bar');
+  chipBar.appendChild(el('span', 'period-label', 'See weeks'));
+  months.forEach(function (mo) {
+    var has = !!mo.weeksList;
+    var chip = el('button', 'pchip' + (h.expandedMonth === mo.key ? ' on' : ''), mo.name);
+    if (!has) { chip.disabled = true; chip.style.opacity = '0.35'; chip.style.cursor = 'default'; }
+    else chip.onclick = function () { h.expandedMonth = (h.expandedMonth === mo.key) ? null : mo.key; render(); };
+    chipBar.appendChild(chip);
+  });
+  root.appendChild(chipBar);
+
+  if (h.expandedMonth && byMonth[h.expandedMonth]) {
+    renderHistoryMonthExpand(root, h.expandedMonth, byMonth[h.expandedMonth]);
   }
-  root.appendChild(el('div', 'set-note', 'Source: ' + (rec.source === 'import' ? 'imported from the old spreadsheet' : 'pulled live via Run the Numbers') + (rec.savedAt ? (' · saved ' + new Date(rec.savedAt).toLocaleString()) : '') + '.'));
+
+  renderHistoryTrend(root, months);
+}
+
+/* Clicking a month chip above reveals that month's individual weeks here,
+   side by side - same row spec as the year table, just one column per
+   week instead of per month (historyAggregate([week]) is the N=1 case of
+   the same rollup maths). */
+function renderHistoryMonthExpand(root, monthKey, weeksList) {
+  var monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  var card = el('div', 'oi-card');
+  card.appendChild(el('div', 'oi-card-title', monthNames[+monthKey.slice(5, 7) - 1] + ' ' + monthKey.slice(0, 4) + ' · week by week'));
+
+  var sorted = weeksList.slice().sort(function (a, b) { return a.week < b.week ? -1 : a.week > b.week ? 1 : 0; });
+  var wrap = el('div', 'budget-table-wrap');
+  var table = el('div', 'budget-table hist');
+  table.style.gridTemplateColumns = '210px repeat(' + sorted.length + ', 110px)';
+  table.style.minWidth = (210 + sorted.length * 110) + 'px';
+  table.appendChild(el('div', 'budget-cell head rowlabel', ''));
+  sorted.forEach(function (w) { table.appendChild(el('div', 'budget-cell head', historyWeekLabel(w))); });
+
+  HISTORY_ROWS.forEach(function (spec) {
+    table.appendChild(el('div', 'budget-cell rowlabel' + (spec.cls ? ' ' + spec.cls : ''), esc(spec.label)));
+    sorted.forEach(function (w) {
+      var agg = historyAggregate([w]);
+      table.appendChild(el('div', 'budget-cell val' + (spec.cls ? ' ' + spec.cls : ''), esc(spec.fmt(spec.get(agg)))));
+    });
+  });
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+
+  var notesWeeks = sorted.filter(function (w) { return w.notes; });
+  if (notesWeeks.length) {
+    var notesWrap = el('div');
+    notesWrap.style.marginTop = '10px';
+    notesWeeks.forEach(function (w) {
+      var p = el('div', 'set-note');
+      p.innerHTML = '<b>' + esc(historyWeekLabel(w)) + ':</b> ' + esc(w.notes);
+      notesWrap.appendChild(p);
+    });
+    card.appendChild(notesWrap);
+  }
+  var srcCounts = { import: 0, live: 0 };
+  sorted.forEach(function (w) { srcCounts[w.source === 'import' ? 'import' : 'live']++; });
+  var srcParts = [];
+  if (srcCounts.import) srcParts.push(srcCounts.import + ' imported');
+  if (srcCounts.live) srcParts.push(srcCounts.live + ' pulled live via Run the Numbers');
+  card.appendChild(el('div', 'set-note', srcParts.join(', ') + '.'));
+
+  root.appendChild(card);
 }
 
 /* Decoupled from METRIC_DEFS/trendSeries (unlike the dashboard's own
@@ -2951,11 +3076,14 @@ var HISTORY_TREND_METRICS = [
   { key: 'covers', label: 'Covers', get: function (r) { return r.covers; }, fmt: fmtInt }
 ];
 
-function renderHistoryTrend(root, weeks) {
+/* One bar per month of the selected year (not per week) - matches the
+   year table above rather than a separate weekly granularity, using the
+   same historyAggregate() rollups. */
+function renderHistoryTrend(root, months) {
   var h = state.history;
   if (!h.trendMetric) h.trendMetric = 'bankFeeds';
   var card = el('div', 'oi-card');
-  card.appendChild(el('div', 'oi-card-title', 'Trend'));
+  card.appendChild(el('div', 'oi-card-title', 'Trend · ' + h.year));
   var pbar = el('div', 'period-bar');
   pbar.appendChild(el('span', 'period-label', 'Metric'));
   var sel = document.createElement('select');
@@ -2970,10 +3098,9 @@ function renderHistoryTrend(root, weeks) {
   card.appendChild(pbar);
 
   var metric = HISTORY_TREND_METRICS.filter(function (m) { return m.key === h.trendMetric; })[0];
-  var shown = weeks.slice(-26); /* last 26 weeks (~6 months) - keeps bars legible */
-  var labels = shown.map(function (w) { return w.week; });
-  var values = shown.map(function (w) { return metric.get(w); });
-  card.appendChild(el('div', 'set-note', 'Last ' + shown.length + ' weeks · hover a bar for detail'));
+  var labels = months.map(function (mo) { return mo.name; });
+  var values = months.map(function (mo) { return mo.weeksList ? metric.get(historyAggregate(mo.weeksList)) : null; });
+  card.appendChild(el('div', 'set-note', 'Hover a bar for detail'));
   card.appendChild(historyTrendBars(labels, values, metric.fmt));
   root.appendChild(card);
 }
@@ -2993,8 +3120,7 @@ function renderHistory(root) {
     renderHistoryImport(root);
     return;
   }
-  renderHistoryDrilldown(root, h.weeks);
-  renderHistoryTrend(root, h.weeks);
+  renderHistoryYear(root, h.weeks);
 }
 
 function renderSettings(root) {
