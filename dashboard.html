@@ -2867,9 +2867,9 @@ function renderWhatIf(root) {
    live weeks run through the exact same maths.
 ============================================================ */
 function historyRevenueTotal(rev) {
-  if (!rev || (rev.food == null && rev.bev == null && rev.uber == null && rev.event == null && rev.retail == null)) return null;
-  var food = rev.food || 0, bev = rev.bev || 0, uber = rev.uber || 0, event = rev.event || 0, retail = rev.retail || 0;
-  return (food + bev + uber + event + retail) - uber * 0.3; /* nets out Uber's ~30% platform fee, same as the sheet's own R formula */
+  if (!rev || (rev.food == null && rev.bev == null && rev.uber == null && rev.event == null && rev.retail == null && rev.uncategorised == null)) return null;
+  var food = rev.food || 0, bev = rev.bev || 0, uber = rev.uber || 0, event = rev.event || 0, retail = rev.retail || 0, uncategorised = rev.uncategorised || 0;
+  return (food + bev + uber + event + retail + uncategorised) - uber * 0.3; /* nets out Uber's ~30% platform fee, same as the sheet's own R formula */
 }
 function historyCogsTotal(cogs) {
   if (!cogs || (cogs.food == null && cogs.bev == null && cogs.retail == null)) return null;
@@ -2913,7 +2913,7 @@ function historyAvgSale(rec) { return (rec.bankFeeds != null && rec.covers) ? re
    summed had it, so a month with a genuine gap still reads as a gap. */
 function historyAggregate(weeksArr) {
   var out = {
-    revenue: { food: null, bev: null, uber: null, event: null, retail: null },
+    revenue: { food: null, bev: null, uber: null, event: null, retail: null, uncategorised: null },
     bankFeeds: null, cogs: null, wages: null, ownerWages: null, covers: null, opex: null,
     weekCount: weeksArr.length, opexWeekCount: 0
   };
@@ -2931,7 +2931,7 @@ function historyAggregate(weeksArr) {
   var cogs = { food: null, bev: null, retail: null };
   var wages = { kitchen: null, foh: null, hours: null, total: null };
   weeksArr.forEach(function (w) {
-    ['food', 'bev', 'uber', 'event', 'retail'].forEach(function (k) { addLeaf(out.revenue, k, w.revenue && w.revenue[k]); });
+    ['food', 'bev', 'uber', 'event', 'retail', 'uncategorised'].forEach(function (k) { addLeaf(out.revenue, k, w.revenue && w.revenue[k]); });
     if (w.bankFeeds != null) { out.bankFeeds = (out.bankFeeds || 0) + w.bankFeeds; hasBank = true; }
     if (w.cogs && (w.cogs.food != null || w.cogs.bev != null || w.cogs.retail != null)) {
       hasCogsAny = true;
@@ -2966,6 +2966,7 @@ var HISTORY_ROWS = [
   { label: '· Uber', get: function (a) { return a.revenue.uber; }, fmt: fmtMoneyOrDash, cls: 'sub' },
   { label: '· Event/catering', get: function (a) { return a.revenue.event; }, fmt: fmtMoneyOrDash, cls: 'sub' },
   { label: '· Retail', get: function (a) { return a.revenue.retail; }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: '· Uncategorised', get: function (a) { return a.revenue.uncategorised; }, fmt: fmtMoneyOrDash, cls: 'sub' },
   { label: 'Bank feeds', get: function (a) { return a.bankFeeds; }, fmt: fmtMoneyOrDash, cls: 'total' },
   { label: 'COGS total', get: function (a) { return historyCogsTotal(a.cogs); }, fmt: fmtMoneyOrDash },
   { label: '· Food', get: function (a) { return a.cogs ? a.cogs.food : null; }, fmt: fmtMoneyOrDash, cls: 'sub' },
@@ -3179,6 +3180,11 @@ function renderHistoryMonthExpand(root, monthKey, weeksList) {
   if (srcCounts.import) srcParts.push(srcCounts.import + ' imported');
   if (srcCounts.live) srcParts.push(srcCounts.live + ' pulled live via Run the Numbers');
   card.appendChild(el('div', 'set-note', srcParts.join(', ') + '.'));
+
+  var oolioWeeks = sorted.filter(function (w) { return w.revenueSource === 'oolio'; }).length;
+  if (oolioWeeks) {
+    card.appendChild(el('div', 'set-note', oolioWeeks + ' week' + (oolioWeeks === 1 ? '' : 's') + ' had Food/Bev/Event/Retail revenue from OOLIO directly (more accurate than the Xero-account guess) - Uber still comes from Xero either way.'));
+  }
 
   root.appendChild(card);
 }

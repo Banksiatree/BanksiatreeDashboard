@@ -6,7 +6,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "postal-mime": "^3.0.0"
+    "postal-mime": "^3.0.0",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "wrangler": "^4"

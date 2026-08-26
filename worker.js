@@ -299,7 +299,7 @@ const ADAPTERS = {
      'rostering' lists used by apiMetrics/apiCashSplit/the Connections
      loop, so it can never be mistaken for a business-data source there.
      Scope is read-only and narrow (gmail.readonly) - see
-     fetchGmailOolioLatestCsv below for exactly what it reads (only
+     fetchGmailOolioReport below for exactly what it reads (only
      messages under a Gmail label the owner sets up themselves, never the
      whole inbox). access_type=offline + prompt=consent (extraAuthParams)
      because Google only returns a refresh_token on the first consent
@@ -1608,12 +1608,13 @@ async function apiOwnerWages(env, url) {
    "Cash Flow cost" with the real pulled number now that one exists. */
 async function saveHistorySnapshot(env, h, tenantId, week) {
   const to = shiftIsoDate(week, 6);
-  const [split, revSplit, bankFeeds, staffHoursRaw, notesRaw] = await Promise.all([
+  const [split, revSplit, bankFeeds, staffHoursRaw, notesRaw, existingRaw] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
     fetchXeroRevenueSplit(h, tenantId, week, to),
     fetchXeroBankFeeds(h, tenantId, week, to),
     env.TOKENS.get('ownerinput:staffhours:' + week),
-    env.TOKENS.get('ownerinput:notes:' + week)
+    env.TOKENS.get('ownerinput:notes:' + week),
+    env.TOKENS.get('history:week:' + week)
   ]);
 
   let wagesSplit = null;
@@ -1631,12 +1632,23 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
   let notes = null;
   if (notesRaw) { try { notes = JSON.parse(notesRaw).notes || null; } catch (e) {} }
 
-  const record = {
-    week,
-    weekEnding: to,
+  /* Food/Bev/Event/Retail come from OOLIO's own till categories once a
+     Reporting Groups report has been read for this week (see
+     fetchGmailOolioReport) - genuinely more accurate than this keyword
+     guess on Xero account names, so once revenueSource is 'oolio' this
+     never overwrites them, only ever refreshes Uber (which OOLIO's
+     report doesn't carry at all). Falls back to Xero's own classification
+     for all five channels, same as before, until an OOLIO report has
+     actually been read for the week. */
+  let existing = null;
+  if (existingRaw) { try { existing = JSON.parse(existingRaw); } catch (e) {} }
+  const revenuePatch = (existing && existing.revenueSource === 'oolio')
+    ? { uber: revSplit.buckets.uber }
+    : { food: revSplit.buckets.food, bev: revSplit.buckets.bev, uber: revSplit.buckets.uber, event: revSplit.buckets.event, retail: revSplit.buckets.retail };
+
+  await mergeHistoryWeek(env, week, {
     source: 'live',
-    savedAt: new Date().toISOString(),
-    revenue: { food: revSplit.buckets.food, bev: revSplit.buckets.bev, uber: revSplit.buckets.uber, event: revSplit.buckets.event, retail: revSplit.buckets.retail },
+    revenue: revenuePatch,
     bankFeeds,
     cogs: { food: split.cogs.buckets.boh, bev: split.cogs.buckets.foh, retail: split.cogs.buckets.retail },
     wages: {
@@ -1649,8 +1661,7 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
     covers,
     opex: split.opex.opexTotal,
     notes
-  };
-  await env.TOKENS.put('history:week:' + week, JSON.stringify(record));
+  });
 }
 
 /* POST /api/history/import - the one-time bulk write from the pre-parsed
@@ -1727,21 +1738,144 @@ async function apiHistoryGet(env, url) {
    expected label name; change GMAIL_OOLIO_LABEL below if the owner's
    filter uses a different one.
 
-   Still capture-first, same as the email() handler: OOLIO's Revenue
-   Performance Report's real CSV columns haven't been seen yet, so this
-   stashes the attachment for inspection (GET /api/debug/oolio-email)
-   rather than guessing how to parse it. Tracks gmail:lastProcessedId so
-   the same email isn't re-downloaded and re-stashed every single poll. */
+   Confirmed against a REAL emailed report (not guessed): OOLIO's
+   scheduled report is three PDFs, not a CSV. The one that matters is
+   "Reporting Groups" - a plain table (Reporting Group, Quantity, Gross
+   Sales, Discount, Surcharges, Net Sales, Taxes, Net Sales ex Tax) for
+   the exact Mon-Sun week (its own "From:"/"To:" header, which the real
+   sample confirmed already lands on the app's own Monday convention).
+   Text extracts cleanly via unpdf (Cloudflare-Workers-compatible PDF.js
+   build) - verified line-by-line against the real file before writing
+   parseOolioReportingGroupsPdf below.
+
+   No Uber line in this report - OOLIO's till categories don't cover
+   Uber Eats, so that channel keeps coming from Xero's own keyword match
+   (fetchXeroRevenueSplit), same as before. mergeHistoryWeek + the
+   revenueSource flag on each record is what keeps the two sources from
+   fighting over the same fields: an OOLIO-sourced week's Food/Bev/Event/
+   Retail are never overwritten by a later, cruder Xero classification -
+   saveHistorySnapshot below only ever touches revenue.uber once
+   revenueSource is 'oolio'. gmail:lastProcessedId stops the same email
+   being re-downloaded and re-parsed on every poll. */
 const GMAIL_OOLIO_LABEL = 'oolio-reports';
 
-function base64UrlToText(b64url) {
+function base64UrlToBytes(b64url) {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
   const bin = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  return new TextDecoder('utf-8').decode(bytes);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-async function fetchGmailOolioLatestCsv(env, h) {
+/* Reads a KV history:week: record if present, shallow-merges nested
+   objects (revenue/cogs/wages) field by field rather than replacing them
+   wholesale, and writes the result back. Lets two independent triggers -
+   Owner Input's Run the Numbers (Xero) and the Gmail OOLIO poll - both
+   contribute to the same week's record without one wiping out fields the
+   other already set. */
+async function mergeHistoryWeek(env, week, patch) {
+  const raw = await env.TOKENS.get('history:week:' + week);
+  let existing = null;
+  if (raw) { try { existing = JSON.parse(raw); } catch (e) {} }
+  const merged = existing ? { ...existing } : { week, weekEnding: shiftIsoDate(week, 6), source: 'live' };
+  for (const [key, val] of Object.entries(patch)) {
+    if (val && typeof val === 'object' && !Array.isArray(val) && merged[key] && typeof merged[key] === 'object') {
+      merged[key] = { ...merged[key], ...val };
+    } else {
+      merged[key] = val;
+    }
+  }
+  merged.savedAt = new Date().toISOString();
+  await env.TOKENS.put('history:week:' + week, JSON.stringify(merged));
+  return merged;
+}
+
+/* Parses the Reporting Groups PDF's extracted text (see the block comment
+   above - verified against a real report, not guessed) into one row per
+   reporting group. Tokenises each data line and reads the trailing 6
+   tokens as the money columns (Gross Sales, Discount, Surcharges, Net
+   Sales, Taxes, Net Sales ex Tax) - always present - then, if the token
+   just before those looks like a plain integer, treats it as Quantity;
+   otherwise Quantity is left null (the real report's "Others" row has no
+   Quantity at all, confirmed in the sample). Whatever's left is the
+   group's name, joined back with spaces so multi-word group names work
+   too. */
+function parseOolioReportingGroupsPdf(text) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const headerIdx = lines.findIndex((l) => l.includes('Reporting Group') && l.includes('Quantity'));
+  if (headerIdx < 0) return [];
+  const moneyRe = /^-?\$[\d,]+\.\d{2}$/;
+  const rows = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^Reporting Groups\s*-/.test(line) || /^Created By:/.test(line)) break;
+    const tokens = line.split(/\s+/);
+    if (tokens.length < 7) continue;
+    const moneyTokens = tokens.slice(-6);
+    if (!moneyTokens.every((t) => moneyRe.test(t))) continue;
+    const rest = tokens.slice(0, -6);
+    let quantity = null, nameTokens = rest;
+    const last = rest[rest.length - 1];
+    if (last && /^-?[\d,]+$/.test(last)) {
+      quantity = parseInt(last.replace(/,/g, ''), 10);
+      nameTokens = rest.slice(0, -1);
+    }
+    const money = (s) => parseFloat(s.replace(/[$,]/g, ''));
+    rows.push({
+      name: nameTokens.join(' '),
+      quantity,
+      grossSales: money(moneyTokens[0]),
+      discount: money(moneyTokens[1]),
+      surcharges: money(moneyTokens[2]),
+      netSales: money(moneyTokens[3]),
+      taxes: money(moneyTokens[4]),
+      netSalesExTax: money(moneyTokens[5])
+    });
+  }
+  return rows;
+}
+
+/* The report's own "From: DD/MM/YYYY ..." line (Australian date order,
+   confirmed in the real sample) gives the exact Mon-Sun week - no
+   shifting or guessing needed, unlike the Xero pulls elsewhere in this
+   file. Returns null (rather than a wrong week) if the date can't be
+   read or doesn't actually land on a Monday - a one-off "send now" with
+   a non-standard range should never silently misfile itself under the
+   wrong week. */
+function oolioReportWeekFromText(text) {
+  const m = /From:\s*(\d{2})\/(\d{2})\/(\d{4})/.exec(String(text || ''));
+  if (!m) return null;
+  const iso = m[3] + '-' + m[2] + '-' + m[1];
+  const d = new Date(iso + 'T00:00:00Z');
+  if (isNaN(d.getTime()) || d.getUTCDay() !== 1) return null;
+  return iso;
+}
+
+/* Keyword match on the group's own name (same "classify by keyword, keep
+   a visible catch-all" pattern as the Xero-side revenue/COGS splits) -
+   the owner can rename or add Reporting Groups in OOLIO later without
+   this silently breaking. "Instructions" (always $0 in the real sample -
+   looks like a non-revenue admin group) and anything else unmatched
+   fold into uncategorised rather than being dropped. */
+function oolioRevenueFromReportingGroups(rows) {
+  const out = { food: 0, bev: 0, event: 0, retail: 0, uncategorised: 0 };
+  const has = { food: false, bev: false, event: false, retail: false, uncategorised: false };
+  for (const r of rows) {
+    const name = r.name || '';
+    let bucket;
+    if (/instruction/i.test(name)) continue; /* non-revenue admin group, not counted at all */
+    else if (/food/i.test(name)) bucket = 'food';
+    else if (/drink|bev/i.test(name)) bucket = 'bev';
+    else if (/cater|event/i.test(name)) bucket = 'event';
+    else if (/retail/i.test(name)) bucket = 'retail';
+    else bucket = 'uncategorised';
+    out[bucket] += r.netSalesExTax;
+    has[bucket] = true;
+  }
+  const revenue = {};
+  for (const k of Object.keys(out)) revenue[k] = has[k] ? Math.round(out[k] * 100) / 100 : null;
+  return revenue;
+}
+
+async function fetchGmailOolioReport(env, h) {
   const searchUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' +
     encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=5';
   const search = await h.fetchJson(searchUrl);
@@ -1756,38 +1890,57 @@ async function fetchGmailOolioLatestCsv(env, h) {
   const headers = (full.payload && full.payload.headers) || [];
   const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
 
-  function findCsvPart(part) {
+  /* "Reporting Groups" specifically - the real email carries two OTHER
+     PDFs alongside it ("Sales by Channel", "Sales Summary") that must
+     NOT be picked up by accident. */
+  function findReportingGroupsPart(part) {
     if (!part) return null;
-    if (part.filename && /\.csv$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
+    if (part.filename && /report.*group/i.test(part.filename) && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
     for (const child of part.parts || []) {
-      const found = findCsvPart(child);
+      const found = findReportingGroupsPart(child);
       if (found) return found;
     }
     return null;
   }
-  const csvPart = findCsvPart(full.payload);
-  if (!csvPart) {
+  const pdfPart = findReportingGroupsPart(full.payload);
+  if (!pdfPart) {
     await env.TOKENS.put('gmail:lastProcessedId', newestId);
-    return { checked: true, found: false, reason: 'newest labelled email had no .csv attachment' };
+    return { checked: true, found: false, reason: 'newest labelled email had no Reporting Groups PDF attachment' };
   }
 
   const attachment = await h.fetchJson(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '/attachments/' + csvPart.body.attachmentId
+    'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '/attachments/' + pdfPart.body.attachmentId
   );
-  const csvText = base64UrlToText(attachment.data);
+  const pdfBytes = base64UrlToBytes(attachment.data);
+  const { getDocumentProxy, extractText } = await import('unpdf');
+  const pdf = await getDocumentProxy(pdfBytes);
+  const { text } = await extractText(pdf, { mergePages: true });
 
-  const record = {
+  const week = oolioReportWeekFromText(text);
+  const rows = parseOolioReportingGroupsPdf(text);
+
+  const debugRecord = {
     from: headerVal('From'),
     to: 'gmail:' + GMAIL_OOLIO_LABEL,
     subject: headerVal('Subject'),
     receivedAt: new Date().toISOString(),
-    attachmentNames: [csvPart.filename],
-    csvFilename: csvPart.filename,
-    csvText
+    attachmentNames: [pdfPart.filename],
+    csvFilename: pdfPart.filename,
+    csvText: text,
+    parsedWeek: week,
+    parsedRows: rows
   };
-  await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(record));
+  await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(debugRecord));
   await env.TOKENS.put('gmail:lastProcessedId', newestId);
-  return { checked: true, found: true, subject: record.subject, filename: csvPart.filename };
+
+  if (!week || !rows.length) {
+    return { checked: true, found: true, merged: false, subject: debugRecord.subject, filename: pdfPart.filename, reason: !week ? 'could not read a Mon-Sun week from the report' : 'no data rows parsed' };
+  }
+
+  const revenue = oolioRevenueFromReportingGroups(rows);
+  await mergeHistoryWeek(env, week, { revenue, revenueSource: 'oolio' });
+
+  return { checked: true, found: true, merged: true, week, subject: debugRecord.subject, filename: pdfPart.filename, revenue };
 }
 
 /* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the
@@ -2708,7 +2861,7 @@ export default {
     if (path === '/api/gmail/check' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       try {
-        const result = await fetchGmailOolioLatestCsv(env, makeHelpers(env, 'gmail'));
+        const result = await fetchGmailOolioReport(env, makeHelpers(env, 'gmail'));
         return json(result);
       } catch (err) {
         return json({ checked: false, error: plainError(err.status || 500) }, 200);
@@ -2770,7 +2923,7 @@ export default {
     try {
       const tokens = await getTokens(env, 'gmail');
       if (tokens && tokens.access_token) {
-        const result = await fetchGmailOolioLatestCsv(env, makeHelpers(env, 'gmail'));
+        const result = await fetchGmailOolioReport(env, makeHelpers(env, 'gmail'));
         console.log('gmail OOLIO poll: ' + JSON.stringify(result));
       }
     } catch (e) {
