@@ -254,6 +254,7 @@ body {
 .budget-cell.sub.val { font-size: 12px; font-weight: 500; }
 .budget-table.narrow { grid-template-columns: 190px repeat(4, 140px); min-width: 0; }
 .budget-table.hist { grid-template-columns: 210px repeat(12, 90px); min-width: 1290px; }
+.budget-cell.yearcol { background: var(--accent-dim); font-weight: 600; }
 
 /* History tab */
 .hist-select { font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border-med); border-radius: 20px; background: #fff; }
@@ -666,7 +667,8 @@ var state = {
     trendMetric: null,
     importing: false,
     importError: null,
-    showImportPanel: false      /* the opt-in "replace the import" panel, once weeks already exist */
+    showImportPanel: false,     /* the opt-in "replace the import" panel, once weeks already exist */
+    budget: { loading: false, data: null, error: null, year: null }   /* last /api/budget payload, for the "vs Budget" comparison */
   },
   gmail: {
     status: null,                /* last /api/gmail/status payload; null = not fetched yet */
@@ -3077,11 +3079,11 @@ function renderHistoryYear(root, weeks) {
   var yearBar = el('div', 'period-bar');
   yearBar.appendChild(el('span', 'period-label', 'Year'));
   var prevBtn = el('button', 'pchip', '← ' + (h.year - 1));
-  prevBtn.onclick = function () { h.year -= 1; h.expandedMonth = null; render(); };
+  prevBtn.onclick = function () { h.year -= 1; h.expandedMonth = null; h.budget.data = null; render(); };
   yearBar.appendChild(prevBtn);
   yearBar.appendChild(el('span', 'pchip on', String(h.year)));
   var nextBtn = el('button', 'pchip', (h.year + 1) + ' →');
-  nextBtn.onclick = function () { h.year += 1; h.expandedMonth = null; render(); };
+  nextBtn.onclick = function () { h.year += 1; h.expandedMonth = null; h.budget.data = null; render(); };
   yearBar.appendChild(nextBtn);
   root.appendChild(yearBar);
 
@@ -3097,6 +3099,7 @@ function renderHistoryYear(root, weeks) {
     var mk = h.year + '-' + String(m).padStart(2, '0');
     months.push({ key: mk, name: monthNames[m - 1], weeksList: byMonth[mk] || null });
   }
+  var yearWeeks = weeks.filter(function (w) { return w.weekEnding.slice(0, 4) === String(h.year); });
 
   if (!months.some(function (mo) { return mo.weeksList; })) {
     root.appendChild(el('div', 'pl-empty', 'No weeks saved for ' + h.year + ' yet.'));
@@ -3105,15 +3108,20 @@ function renderHistoryYear(root, weeks) {
 
   var wrap = el('div', 'budget-table-wrap');
   var table = el('div', 'budget-table hist');
+  table.style.gridTemplateColumns = '210px repeat(12, 90px) 100px';
+  table.style.minWidth = (210 + 12 * 90 + 100) + 'px';
   table.appendChild(el('div', 'budget-cell head rowlabel', ''));
   months.forEach(function (mo) { table.appendChild(el('div', 'budget-cell head', mo.name)); });
+  table.appendChild(el('div', 'budget-cell head yearcol', String(h.year)));
 
+  var yearAgg = historyAggregate(yearWeeks);
   HISTORY_ROWS.forEach(function (spec) {
     table.appendChild(el('div', 'budget-cell rowlabel' + (spec.cls ? ' ' + spec.cls : ''), esc(spec.label)));
     months.forEach(function (mo) {
       var agg = mo.weeksList ? historyAggregate(mo.weeksList) : null;
       table.appendChild(el('div', 'budget-cell val' + (spec.cls ? ' ' + spec.cls : ''), agg ? esc(spec.fmt(spec.get(agg))) : '—'));
     });
+    table.appendChild(el('div', 'budget-cell val yearcol' + (spec.cls ? ' ' + spec.cls : ''), esc(spec.fmt(spec.get(yearAgg)))));
   });
   wrap.appendChild(table);
   root.appendChild(wrap);
@@ -3133,7 +3141,119 @@ function renderHistoryYear(root, weeks) {
     renderHistoryMonthExpand(root, h.expandedMonth, byMonth[h.expandedMonth]);
   }
 
+  renderHistoryBudgetComparison(root, months, yearAgg);
   renderHistoryTrend(root, months);
+}
+
+/* vs Budget (spec 3.4's whole point per the owner: this is where you see
+   whether the year is on track against the Budget tab's targets, not
+   just a record of what happened). Its own manual "Load budget targets"
+   trigger, same "nothing pulls live except on demand" rule as the Budget
+   tab itself - reuses GET /api/budget directly rather than depending on
+   the Budget tab having been opened first. */
+var HISTORY_BUDGET_ROWS = [
+  { label: 'Revenue', hist: function (a) { return historyRevenueTotal(a.revenue); }, bud: function (m) { return m.revenue; }, goodDir: 'up' },
+  { label: 'COGS', hist: function (a) { return historyCogsTotal(a.cogs); }, bud: function (m) { return m.cogs; }, goodDir: 'down' },
+  { label: 'Wages', hist: function (a) { return a.wages ? a.wages.total : null; }, bud: function (m) { return m.wages; }, goodDir: 'down' },
+  { label: 'Opex', hist: function (a) { return a.opex; }, bud: function (m) { return m.opex; }, goodDir: 'down' },
+  { label: 'Owner wages', hist: function (a) { return a.ownerWages; }, bud: function (m) { return m.ownerPay; }, goodDir: 'down' },
+  { label: 'Profit', hist: historyProfit, bud: function (m) { return m.actualProfit; }, goodDir: 'up' }
+];
+function historyVsBudgetCell(actual, target, goodDir) {
+  if (actual == null || target == null || !target) return { text: '—', cls: '' };
+  var pct = ((actual / target) - 1) * 100;
+  var good = goodDir === 'up' ? actual >= target : actual <= target;
+  return { text: (pct > 0 ? '+' : '') + pct.toFixed(0) + '%', cls: good ? 'good' : 'bad' };
+}
+function fetchHistoryBudget() {
+  var hb = state.history.budget;
+  if (hb.loading) return;
+  if (isManual()) { hb.data = { available: false, reason: 'manual_mode' }; render(); return; }
+  hb.loading = true; hb.error = null;
+  render();
+  fetch('/api/budget?year=' + state.history.year).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    hb.data = json; hb.loading = false; render();
+  }).catch(function () {
+    hb.loading = false; hb.error = 'Could not reach the dashboard just now.'; render();
+  });
+}
+function renderHistoryBudgetComparison(root, months, yearAgg) {
+  var h = state.history, hb = h.budget;
+  var card = el('div', 'oi-card');
+  card.appendChild(el('div', 'oi-card-title', 'vs Budget · ' + h.year));
+
+  if (isManual()) {
+    card.appendChild(el('div', 'set-note', 'You’re in ‘I type them in’ mode, so there’s no Xero connection to pull budget targets from.'));
+    root.appendChild(card);
+    return;
+  }
+
+  var loadBtn = el('button', 'btn-primary-dash', hb.loading ? 'Fetching…' : (hb.data ? 'Refresh budget targets' : 'Load budget targets'));
+  loadBtn.style.margin = '0.4rem 0 0.8rem';
+  loadBtn.disabled = hb.loading;
+  loadBtn.onclick = function () { fetchHistoryBudget(); };
+  card.appendChild(loadBtn);
+
+  if (hb.error) card.appendChild(el('div', 'banner banner-coral', esc(hb.error)));
+  if (!hb.data) {
+    card.appendChild(el('div', 'set-note', 'Load your Budget Manager targets to see whether ' + h.year + ' is on track.'));
+    root.appendChild(card);
+    return;
+  }
+  if (hb.data.available === false) {
+    var msg = hb.data.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.')
+      : hb.data.reason === 'manual_mode' ? 'No Xero connection in manual mode.' : 'Not available right now.';
+    card.appendChild(el('div', 'banner banner-amber', msg));
+    root.appendChild(card);
+    return;
+  }
+  if (!hb.data.budgetAvailable) {
+    card.appendChild(el('div', 'banner banner-amber', 'No budget figures matched for ' + h.year + ' - check the Budget tab.'));
+    root.appendChild(card);
+    return;
+  }
+
+  var budgetByMonth = {};
+  (hb.data.months || []).forEach(function (m) { budgetByMonth[m.month] = m; });
+  var yearBudget = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0, actualProfit: 0 };
+  var anyYearBudget = false;
+  (hb.data.months || []).forEach(function (m) {
+    if (m.revenue == null) return;
+    anyYearBudget = true;
+    yearBudget.revenue += m.revenue || 0; yearBudget.cogs += m.cogs || 0; yearBudget.wages += m.wages || 0;
+    yearBudget.opex += m.opex || 0; yearBudget.ownerPay += m.ownerPay || 0; yearBudget.actualProfit += m.actualProfit || 0;
+  });
+
+  var wrap = el('div', 'budget-table-wrap');
+  var table = el('div', 'budget-table hist');
+  table.style.gridTemplateColumns = '210px repeat(12, 90px) 100px';
+  table.style.minWidth = (210 + 12 * 90 + 100) + 'px';
+  table.appendChild(el('div', 'budget-cell head rowlabel', ''));
+  months.forEach(function (mo) { table.appendChild(el('div', 'budget-cell head', mo.name)); });
+  table.appendChild(el('div', 'budget-cell head yearcol', String(h.year)));
+
+  HISTORY_BUDGET_ROWS.forEach(function (spec) {
+    table.appendChild(el('div', 'budget-cell rowlabel', esc(spec.label)));
+    months.forEach(function (mo) {
+      var agg = mo.weeksList ? historyAggregate(mo.weeksList) : null;
+      var actual = agg ? spec.hist(agg) : null;
+      var bm = budgetByMonth[mo.key];
+      var target = bm ? spec.bud(bm) : null;
+      var cell = historyVsBudgetCell(actual, target, spec.goodDir);
+      table.appendChild(el('div', 'budget-cell val sub' + (cell.cls ? ' ' + cell.cls : ''), esc(cell.text)));
+    });
+    var yActual = spec.hist(yearAgg);
+    var yTarget = anyYearBudget ? spec.bud(yearBudget) : null;
+    var yCell = historyVsBudgetCell(yActual, yTarget, spec.goodDir);
+    table.appendChild(el('div', 'budget-cell val sub yearcol' + (yCell.cls ? ' ' + yCell.cls : ''), esc(yCell.text)));
+  });
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  card.appendChild(el('div', 'set-note', 'Green means the right side of budget (revenue/profit at or above target, costs at or below); red means the wrong side. % is actual vs Budget Manager’s target for that month.'));
+  root.appendChild(card);
 }
 
 /* Clicking a month chip above reveals that month's individual weeks here,
