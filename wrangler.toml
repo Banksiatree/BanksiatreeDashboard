@@ -48,6 +48,12 @@ binding = "TOKENS"
 #                                                      owner's upload code)
 #   SESSION_SECRET                                    (OPTIONAL - auto-generated in KV on
 #                                                      first run; only set to pin a value)
+#   GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET             (OAuth, Google Cloud Console - read-only
+#                                                      Gmail access so the Worker can poll for
+#                                                      OOLIO's scheduled Revenue Performance
+#                                                      Report email under a Gmail label the
+#                                                      owner sets up themselves. See the
+#                                                      ADAPTERS.gmail comment in worker.js.)
 # For the provider secrets: during integration the owner pastes the value to
 # YOU, then you walk them click-by-click through adding it in their Cloudflare
 # dashboard (Workers > their dashboard > Settings > Variables and Secrets >
@@ -55,10 +61,12 @@ binding = "TOKENS"
 # ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
-# Cron rung (only when an adapter uses scheduledPull to fetch a tool's own
-# export on a schedule). Uncomment and set a sensible cadence:
-# [triggers]
-# crons = ["0 3 * * *"]   # daily, 3am UTC - adjust to land after the tool's
-#                          # own export runs
+# Cron rung - polls Gmail daily for OOLIO's scheduled Revenue Performance
+# Report (see the ADAPTERS.gmail comment and fetchGmailOolioLatestCsv in
+# worker.js). A no-op until GMAIL_CLIENT_ID/SECRET are set and the owner
+# connects Gmail on the Connections screen. 3am UTC is arbitrary - any time
+# after OOLIO's own weekly schedule has run is fine.
+[triggers]
+crons = ["0 3 * * *"]
 # ----------------------------------------------------------------------------
 # EOF wrangler.toml

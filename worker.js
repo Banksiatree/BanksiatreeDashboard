@@ -284,6 +284,42 @@ const ADAPTERS = {
     async status(env, h) { return { connected: false }; },
     async fetchRange(env, h, q) { throw new NotConfigured('rostering'); },
     async fetchMonthly(env, h, q) { return { months: [], cost: [] }; }
+  },
+
+  /* >>> Not a KPI adapter - a report-delivery mechanism. The owner's email
+     is Google-hosted, so rather than moving their domain's DNS to
+     Cloudflare (needed for the Email Routing rung, and real risk to their
+     live email if done wrong), OOLIO's scheduled Revenue Performance
+     Report email is instead read straight out of Gmail via Google's own
+     API - no DNS/nameserver changes at all. Added as its own ADAPTERS
+     entry purely so it can reuse the existing generic OAuth machinery
+     (authStart/authCallback/getValidAccessToken/makeHelpers, all keyed by
+     ADAPTERS[source]) - it deliberately has no fetchRange/fetchMonthly/
+     status of the KPI-adapter shape, and is NOT in the 'accounting'/'pos'/
+     'rostering' lists used by apiMetrics/apiCashSplit/the Connections
+     loop, so it can never be mistaken for a business-data source there.
+     Scope is read-only and narrow (gmail.readonly) - see
+     fetchGmailOolioLatestCsv below for exactly what it reads (only
+     messages under a Gmail label the owner sets up themselves, never the
+     whole inbox). access_type=offline + prompt=consent (extraAuthParams)
+     because Google only returns a refresh_token on the first consent
+     otherwise, silently breaking the daily poll days or weeks later. */
+  gmail: {
+    configured: true,
+    auth: 'oauth',
+    oauth: {
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      scopes: 'https://www.googleapis.com/auth/gmail.readonly',
+      clientIdSecret: 'GMAIL_CLIENT_ID',
+      clientSecretSecret: 'GMAIL_CLIENT_SECRET',
+      tokenAuth: 'post',
+      extraAuthParams: { access_type: 'offline', prompt: 'consent' }
+    },
+    async status(env, h) {
+      const tokens = await h.getTokens();
+      return { connected: !!(tokens && tokens.access_token) };
+    }
   }
 };
 
@@ -1677,6 +1713,83 @@ async function apiHistoryGet(env, url) {
   return json({ weeks: out });
 }
 
+/* ----------------------------------------------------------------------------
+   OOLIO revenue-by-channel via Gmail (see the ADAPTERS.gmail comment for
+   why Gmail rather than Cloudflare Email Routing). Polled from
+   scheduled() below, not on a dashboard button - this is background
+   housekeeping catching an asynchronous emailed report, not a live
+   Xero/OOLIO pull, so it doesn't fall under the "nothing pulls live
+   except on demand" rule every dashboard tab follows.
+
+   Deliberately narrow scope: only ever searches messages under a Gmail
+   LABEL the owner sets up themselves (via a Gmail filter matching OOLIO's
+   sender) - never searches the inbox generally. "oolio-reports" is the
+   expected label name; change GMAIL_OOLIO_LABEL below if the owner's
+   filter uses a different one.
+
+   Still capture-first, same as the email() handler: OOLIO's Revenue
+   Performance Report's real CSV columns haven't been seen yet, so this
+   stashes the attachment for inspection (GET /api/debug/oolio-email)
+   rather than guessing how to parse it. Tracks gmail:lastProcessedId so
+   the same email isn't re-downloaded and re-stashed every single poll. */
+const GMAIL_OOLIO_LABEL = 'oolio-reports';
+
+function base64UrlToText(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+async function fetchGmailOolioLatestCsv(env, h) {
+  const searchUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' +
+    encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=5';
+  const search = await h.fetchJson(searchUrl);
+  const messages = search.messages || [];
+  if (!messages.length) return { checked: true, found: false, reason: 'no messages under label:' + GMAIL_OOLIO_LABEL };
+
+  const newestId = messages[0].id;
+  const lastProcessedId = await env.TOKENS.get('gmail:lastProcessedId');
+  if (lastProcessedId === newestId) return { checked: true, found: false, reason: 'already processed' };
+
+  const full = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '?format=full');
+  const headers = (full.payload && full.payload.headers) || [];
+  const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
+
+  function findCsvPart(part) {
+    if (!part) return null;
+    if (part.filename && /\.csv$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
+    for (const child of part.parts || []) {
+      const found = findCsvPart(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  const csvPart = findCsvPart(full.payload);
+  if (!csvPart) {
+    await env.TOKENS.put('gmail:lastProcessedId', newestId);
+    return { checked: true, found: false, reason: 'newest labelled email had no .csv attachment' };
+  }
+
+  const attachment = await h.fetchJson(
+    'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '/attachments/' + csvPart.body.attachmentId
+  );
+  const csvText = base64UrlToText(attachment.data);
+
+  const record = {
+    from: headerVal('From'),
+    to: 'gmail:' + GMAIL_OOLIO_LABEL,
+    subject: headerVal('Subject'),
+    receivedAt: new Date().toISOString(),
+    attachmentNames: [csvPart.filename],
+    csvFilename: csvPart.filename,
+    csvText
+  };
+  await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(record));
+  await env.TOKENS.put('gmail:lastProcessedId', newestId);
+  return { checked: true, found: true, subject: record.subject, filename: csvPart.filename };
+}
+
 /* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the
    What-If calculator (banksia-dashboard-spec.md #3.5). from/to is the true
    Mon-Sun window the client computes (4 full weeks); revenue is pulled on
@@ -2072,7 +2185,11 @@ async function authStart(env, source, url) {
     client_id: env[cfg.clientIdSecret] || '',
     redirect_uri: redirectUri,
     scope: cfg.scopes || '',
-    state
+    state,
+    /* Provider-specific extras (e.g. Google's access_type=offline&
+       prompt=consent, needed to guarantee a refresh_token comes back) -
+       harmless no-op for adapters that don't set this. */
+    ...(cfg.extraAuthParams || {})
   });
   return Response.redirect(cfg.authorizeUrl + '?' + p.toString(), 302);
 }
@@ -2584,7 +2701,24 @@ export default {
       const raw = await env.TOKENS.get('debug:oolio-email:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
     }
-    const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
+    /* Manual trigger for testing - the real check runs on the cron
+       schedule (scheduled() below), this just lets it be fired on demand
+       right after connecting Gmail rather than waiting for the next
+       scheduled run. */
+    if (path === '/api/gmail/check' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      try {
+        const result = await fetchGmailOolioLatestCsv(env, makeHelpers(env, 'gmail'));
+        return json(result);
+      } catch (err) {
+        return json({ checked: false, error: plainError(err.status || 500) }, 200);
+      }
+    }
+    if (path === '/api/gmail/status' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return json(await ADAPTERS.gmail.status(env, makeHelpers(env, 'gmail')));
+    }
+    const authRoute = /^\/auth\/(accounting|pos|rostering|gmail)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {
       if (!loggedIn) return Response.redirect(url.origin + '/', 302);
       return authRoute[2] === 'start' ? authStart(env, authRoute[1], url) : authCallback(env, authRoute[1], url);
@@ -2592,7 +2726,7 @@ export default {
     if (path === '/api/disconnect' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const source = url.searchParams.get('source');
-      if (['accounting', 'pos', 'rostering'].includes(source)) {
+      if (['accounting', 'pos', 'rostering', 'gmail'].includes(source)) {
         await clearTokens(env, source);
         return json({ ok: true });
       }
@@ -2629,6 +2763,18 @@ export default {
           console.log('scheduledPull failed for ' + source + ': ' + (e && e.message));
         }
       }
+    }
+    /* Only runs once Gmail is actually connected (Connections screen) -
+       a missing/expired token just logs and skips, same as any other
+       adapter's scheduledPull failing. */
+    try {
+      const tokens = await getTokens(env, 'gmail');
+      if (tokens && tokens.access_token) {
+        const result = await fetchGmailOolioLatestCsv(env, makeHelpers(env, 'gmail'));
+        console.log('gmail OOLIO poll: ' + JSON.stringify(result));
+      }
+    } catch (e) {
+      console.log('gmail OOLIO poll failed: ' + (e && e.message));
     }
   },
 

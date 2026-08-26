@@ -667,6 +667,14 @@ var state = {
     importing: false,
     importError: null,
     showImportPanel: false      /* the opt-in "replace the import" panel, once weeks already exist */
+  },
+  gmail: {
+    status: null,                /* last /api/gmail/status payload; null = not fetched yet */
+    statusLoading: false,
+    checking: false,
+    checkResult: null,           /* last /api/gmail/check payload, for the "Check now" button */
+    debug: null,                 /* last /api/debug/oolio-email payload */
+    debugLoading: false
   }
 };
 
@@ -1457,6 +1465,106 @@ function renderConnections(root) {
 
     root.appendChild(card);
   });
+
+  renderGmailCard(root);
+}
+
+/* ============================================================
+   Gmail (OOLIO revenue-by-channel) - not a SOURCES entry, since it's not
+   a KPI adapter (see the ADAPTERS.gmail comment in worker.js): a way to
+   read OOLIO's scheduled Revenue Performance Report email straight out of
+   Gmail, without moving the owner's domain DNS to Cloudflare. Its own
+   card here, own status fetch, own connect/disconnect/check actions.
+============================================================ */
+function fetchGmailStatus() {
+  var g = state.gmail;
+  if (g.statusLoading) return;
+  g.statusLoading = true;
+  render();
+  fetch('/api/gmail/status').then(function (res) { return res.json(); }).then(function (json) {
+    g.status = json; g.statusLoading = false; render();
+  }).catch(function () {
+    g.statusLoading = false; g.status = { connected: false, error: true }; render();
+  });
+}
+function fetchGmailDebug() {
+  var g = state.gmail;
+  g.debugLoading = true;
+  render();
+  fetch('/api/debug/oolio-email').then(function (res) { return res.json(); }).then(function (json) {
+    g.debug = json; g.debugLoading = false; render();
+  }).catch(function () {
+    g.debugLoading = false; render();
+  });
+}
+
+function renderGmailCard(root) {
+  var g = state.gmail;
+  if (!g.status && !g.statusLoading) fetchGmailStatus();
+
+  var card = el('div', 'conn-card fade-in');
+  var head = el('div', 'conn-head');
+  head.appendChild(el('span', 'conn-name', 'Gmail (OOLIO revenue by category)'));
+  if (g.status && g.status.connected) head.appendChild(el('span', 'conn-pill pill-ok', 'Connected'));
+  else head.appendChild(el('span', 'conn-pill pill-off', 'Not connected'));
+  card.appendChild(head);
+  card.appendChild(el('div', 'conn-line', 'Reads OOLIO’s scheduled Revenue Performance Report straight out of Gmail (read-only, and only messages under a Gmail label you set up yourself - never your whole inbox). Checked automatically once a day.'));
+
+  var act = el('div', 'conn-actions');
+  var connBtn = el('button', 'btn-plain', (g.status && g.status.connected) ? 'Reconnect' : 'Connect');
+  connBtn.onclick = function () { window.location.href = '/auth/gmail/start'; };
+  act.appendChild(connBtn);
+  if (g.status && g.status.connected) {
+    var discBtn = el('button', 'btn-plain', 'Disconnect');
+    discBtn.style.marginLeft = '8px';
+    discBtn.onclick = function () {
+      fetch('/api/disconnect?source=gmail', { method: 'POST' }).then(function () { g.status = null; g.checkResult = null; render(); });
+    };
+    act.appendChild(discBtn);
+
+    var checkBtn = el('button', 'btn-plain', g.checking ? 'Checking…' : 'Check for OOLIO report now');
+    checkBtn.style.marginLeft = '8px';
+    checkBtn.disabled = g.checking;
+    checkBtn.onclick = function () {
+      g.checking = true; g.checkResult = null; render();
+      fetch('/api/gmail/check', { method: 'POST' }).then(function (res) { return res.json(); }).then(function (json) {
+        g.checking = false; g.checkResult = json; fetchGmailDebug(); render();
+      }).catch(function () {
+        g.checking = false; g.checkResult = { checked: false, error: 'Could not reach the dashboard just now.' }; render();
+      });
+    };
+    act.appendChild(checkBtn);
+  }
+  card.appendChild(act);
+
+  if (g.checkResult) {
+    var msg = g.checkResult.found ? ('Found: "' + g.checkResult.subject + '" (' + g.checkResult.filename + ').')
+      : g.checkResult.checked ? ('Nothing new (' + (g.checkResult.reason || 'no match') + ').')
+      : ('Check failed: ' + (g.checkResult.error || 'unknown error'));
+    card.appendChild(el('div', 'conn-line', msg));
+  }
+
+  var cb = el('div', 'cb-url');
+  cb.innerHTML = 'Callback address for this connection (your AI may ask for it): <b>' + esc(location.origin + '/auth/gmail/callback') + '</b>';
+  card.appendChild(cb);
+
+  if (g.status && g.status.connected) {
+    if (!g.debug && !g.debugLoading) fetchGmailDebug();
+    if (g.debug && g.debug.found !== false) {
+      var dbgCard = el('div', 'conn-org');
+      dbgCard.style.marginTop = '0.6rem';
+      dbgCard.innerHTML = '<b>Last report captured:</b> "' + esc(g.debug.subject || '') + '" from ' + esc(g.debug.from || '') +
+        ' · ' + esc(g.debug.csvFilename || '') + ' · ' + (g.debug.receivedAt ? new Date(g.debug.receivedAt).toLocaleString() : '');
+      dbgCard.appendChild(document.createElement('br'));
+      var note = el('div', 'set-note');
+      note.style.marginTop = '4px';
+      note.textContent = 'Your AI hasn’t finished building the part that turns this into History’s revenue-by-channel numbers yet - once one lands, tell your AI and it’ll take it from here.';
+      dbgCard.appendChild(note);
+      card.appendChild(dbgCard);
+    }
+  }
+
+  root.appendChild(card);
 }
 
 /* ---------- One-off repair: rebuild monthly totals from the real daily data ---------- */
