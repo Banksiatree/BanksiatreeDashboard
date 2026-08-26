@@ -1668,22 +1668,30 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
    sheet JSON (see the History tab build plan for how that file was made
    and hand-verified). Body: { weeks: [ {week, weekEnding, source, ...}, ... ] }.
 
-   Refuses outright once any LIVE week exists (source:'live') - once the
-   app has started generating its own real weeks from Run the Numbers, an
-   import file can never be allowed to clobber them. But while every
-   existing record is still source:'import', re-running the import is
-   allowed and REPLACES the whole set - this is what lets a corrected
-   import file (a parsing bug fixed, a missing field added) be re-run
-   without the owner having to manually clear anything first. dashboard.html
-   still hides the big first-time panel once any data exists, but keeps a
-   small "replace the import" option visible for exactly this case. */
+   PARTIAL replace, not all-or-nothing: every existing week whose record
+   is still source:'import' gets deleted and replaced from the file (this
+   is what lets a corrected import file - a parsing bug fixed, a missing
+   field added - be re-run without the owner clearing anything by hand),
+   but any week that has gone source:'live' (a real Run the Numbers/OOLIO
+   pull happened for it) is left completely untouched, both as an
+   existing record AND as a target the incoming file is allowed to write
+   to. An earlier version of this refused the WHOLE import outright the
+   moment even one week went live, which blocked fixing every other
+   still-import-sourced week for an unrelated reason - this is the fix.
+   dashboard.html still hides the big first-time panel once any data
+   exists, but keeps a small "replace the import" option visible
+   regardless of whether some weeks have already gone live. */
 async function apiHistoryImport(env, request) {
   const existingKeys = await env.TOKENS.list({ prefix: 'history:week:' });
   const existingRaws = await Promise.all(existingKeys.keys.map((k) => env.TOKENS.get(k.name)));
-  const existingRecords = existingRaws.map((raw) => { try { return raw && JSON.parse(raw); } catch (e) { return null; } });
-  if (existingRecords.some((r) => r && r.source === 'live')) {
-    return json({ ok: false, error: 'History already has live weeks saved from Run the Numbers - import refused to avoid overwriting real data.' }, 409);
-  }
+  const liveWeeks = new Set();
+  const importKeyNames = [];
+  existingKeys.keys.forEach((k, i) => {
+    let rec = null;
+    try { rec = existingRaws[i] && JSON.parse(existingRaws[i]); } catch (e) {}
+    if (rec && rec.source === 'live') liveWeeks.add(k.name.slice('history:week:'.length));
+    else importKeyNames.push(k.name);
+  });
 
   let body; try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'bad json' }, 400); }
   const weeks = body && Array.isArray(body.weeks) ? body.weeks : null;
@@ -1692,9 +1700,12 @@ async function apiHistoryImport(env, request) {
     if (!w || !WEEK_RE.test(w.week)) return json({ ok: false, error: 'bad week in file: ' + JSON.stringify(w && w.week) }, 400);
   }
 
-  await Promise.all(existingKeys.keys.map((k) => env.TOKENS.delete(k.name)));
-  await Promise.all(weeks.map((w) => env.TOKENS.put('history:week:' + w.week, JSON.stringify(w))));
-  return json({ ok: true, imported: weeks.length, replaced: existingKeys.keys.length > 0 });
+  const toWrite = weeks.filter((w) => !liveWeeks.has(w.week));
+  const skipped = weeks.length - toWrite.length;
+
+  await Promise.all(importKeyNames.map((name) => env.TOKENS.delete(name)));
+  await Promise.all(toWrite.map((w) => env.TOKENS.put('history:week:' + w.week, JSON.stringify(w))));
+  return json({ ok: true, imported: toWrite.length, skippedLive: skipped, replaced: importKeyNames.length > 0 });
 }
 
 /* GET /api/history?from=&to= - reads whichever history:week: records fall

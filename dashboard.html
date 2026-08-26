@@ -3033,7 +3033,7 @@ function renderHistoryImport(root, replaceMode) {
   var card = el('div', 'oi-card');
   card.appendChild(el('div', 'oi-card-title', replaceMode ? 'Replace the import' : 'One-time import from your old spreadsheet'));
   card.appendChild(el('div', 'set-note', replaceMode
-    ? 'Choose an updated history-import.json to replace every imported week with a fresh copy. Safe to do as often as needed while nothing below has come from Run the Numbers yet - this will NOT touch any week that has.'
+    ? 'Choose an updated history-import.json to replace every still-imported week with a fresh copy. Safe to run as often as needed - any week that’s already gone live (pulled from Run the Numbers or OOLIO) is left completely untouched, even if this file also contains that week.'
     : 'No weeks yet. Choose the history-import.json file your AI prepared (it’s in the dashboard project folder, pulled down next time you Fetch in GitHub Desktop) to bring in every week back to January 2025. This runs once - the moment it succeeds this panel disappears for good, and new weeks accumulate on their own from Owner Input’s Run the Numbers.'));
   var fileInp = document.createElement('input');
   fileInp.type = 'file'; fileInp.accept = 'application/json'; fileInp.className = 'hist-import-file';
@@ -3291,16 +3291,16 @@ function renderHistory(root) {
   }
   renderHistoryYear(root, h.weeks);
 
-  /* A re-import is only offered while nothing below has come from Run the
-     Numbers yet (worker.js's apiHistoryImport enforces the same rule
-     server-side) - lets a corrected import file be re-run without
-     touching real live data once any exists. */
-  if (!h.weeks.some(function (w) { return w.source === 'live'; })) {
-    var toggle = el('button', 'pl-toggle', h.showImportPanel ? 'Cancel' : 'Replace the import');
-    toggle.onclick = function () { h.showImportPanel = !h.showImportPanel; render(); };
-    root.appendChild(toggle);
-    if (h.showImportPanel) renderHistoryImport(root, true);
-  }
+  /* Always offered, not just while every week is still import-sourced -
+     worker.js's apiHistoryImport only ever replaces weeks still
+     source:'import' and leaves any source:'live' week (a real Run the
+     Numbers/OOLIO pull) completely untouched, so re-running a corrected
+     file is safe regardless of whether some weeks have already gone
+     live. */
+  var toggle = el('button', 'pl-toggle', h.showImportPanel ? 'Cancel' : 'Replace the import');
+  toggle.onclick = function () { h.showImportPanel = !h.showImportPanel; render(); };
+  root.appendChild(toggle);
+  if (h.showImportPanel) renderHistoryImport(root, true);
 }
 
 function renderSettings(root) {
