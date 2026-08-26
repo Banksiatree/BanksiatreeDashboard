@@ -1418,14 +1418,17 @@ const WEEK_RE = /^\d{4}-\d{2}-\d{2}$/;
 async function apiOwnerInputGet(env, url) {
   const week = url.searchParams.get('week');
   if (!week || !WEEK_RE.test(week)) return json({ error: 'bad week' }, 400);
-  const [owners, entries, staffHoursRaw] = await Promise.all([
+  const [owners, entries, staffHoursRaw, notesRaw] = await Promise.all([
     getOwnersList(env),
     getOwnerWeekEntries(env, week),
-    env.TOKENS.get('ownerinput:staffhours:' + week)
+    env.TOKENS.get('ownerinput:staffhours:' + week),
+    env.TOKENS.get('ownerinput:notes:' + week)
   ]);
   let staffHours = null;
   if (staffHoursRaw) { try { staffHours = JSON.parse(staffHoursRaw); } catch (e) {} }
-  return json({ owners, entries, staffHours });
+  let notes = null;
+  if (notesRaw) { try { notes = JSON.parse(notesRaw); } catch (e) {} }
+  return json({ owners, entries, staffHours, notes });
 }
 
 /* POST /api/ownerinput/entry - body {week, ownerName, daysOff, workouts,
@@ -1456,6 +1459,23 @@ async function apiOwnerInputStaffHours(env, request) {
   const n = parseFloat(body.staffHours);
   const record = { staffHours: isFinite(n) ? n : 0, updatedAt: new Date().toISOString() };
   await env.TOKENS.put('ownerinput:staffhours:' + week, JSON.stringify(record));
+  return json({ ok: true });
+}
+
+/* POST /api/ownerinput/notes - body {week, notes}. Shared weekly free-text
+   note (same "whoever saves last wins" shared-field pattern as staff
+   hours) - carried into that week's History record the next time Run the
+   Numbers runs for it (see saveHistorySnapshot), so this is genuinely the
+   one place to type a week's note, matching the owner's own request that
+   note-taking live "in the Input button" rather than as a separate
+   History-only field. */
+async function apiOwnerInputNotes(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const week = body && body.week;
+  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad request' }, 400);
+  const notes = String((body && body.notes) || '').trim().slice(0, 2000);
+  const record = { notes, updatedAt: new Date().toISOString() };
+  await env.TOKENS.put('ownerinput:notes:' + week, JSON.stringify(record));
   return json({ ok: true });
 }
 
@@ -1519,31 +1539,44 @@ async function apiOwnerWages(env, url) {
    old sheet's exact categories (revenue by channel, COGS/wages by
    department, Bank feeds) rather than a simplified app-native shape.
 
-   One record per week at history:week:<mondayISO>, source:'import'|'live'
-   distinguishing sheet-imported weeks (which carry fields - Bank feeds
-   typed by hand, weekly notes, the legacy personal-stats block - a live
-   pull can't originate identically) from ones the app generated itself.
-   Every derived figure (COGS/wage % of Bank feeds, profit, avg $/sale,
-   avg $/hour) is left to dashboard.html, same "Worker/data supplies raw
-   numbers only" rule as the rest of this file - stored records hold $ and
-   count fields only, no precomputed ratios, so both import and live weeks
-   run through the exact same client-side maths.
+   One record per week at history:week:<mondayISO>, source:'import'|'live' -
+   both shapes carry the exact same fields (revenue by channel, bankFeeds,
+   cogs, wages, ownerWages, covers, opex, notes) so dashboard.html runs
+   every derived figure (COGS/wage % of Bank feeds, profit, avg $/sale,
+   avg $/hour) through one path regardless of source, same "Worker/data
+   supplies raw numbers only" rule as the rest of this file. A field is
+   null when genuinely unknown for that week rather than guessed - an
+   imported week's notes/ownerWages come from the sheet's own weekly-notes
+   comment and its owner-wage+super columns; a live week's come from
+   Owner Input's notes field and the same ownerWages figure the P&L tab's
+   "Owner wages" line already shows.
 ---------------------------------------------------------------------------- */
 
-/* Best-effort weekly capture - fetches revenue-by-channel, COGS/wages
-   splits (reusing exactly what P&L and Owner Wages already fetch, not
-   rebuilt), Bank feeds, Covers, and whatever staff hours are already
-   logged for the week, and writes one history:week: record. Called from
-   apiOwnerWages, always with a real Mon-Sun week. Overwrites any existing
-   record for the week (including a prior import) - the live figures are
-   the more current source once the app is actually being used weekly. */
+/* Best-effort weekly capture - fetches revenue-by-channel, COGS/wages/
+   Owner wages/Opex splits (reusing exactly what P&L and Owner Wages
+   already fetch, not rebuilt), Bank feeds, Covers, and whatever staff
+   hours/notes are already logged for the week, and writes one
+   history:week: record. Called from apiOwnerWages, always with a real
+   Mon-Sun week. Overwrites any existing record for the week (including a
+   prior import) - the live figures are the more current source once the
+   app is actually being used weekly.
+
+   ownerWages reuses split.opex.ownerWages - the same "Our Wages"/owner-
+   super-matched figure the P&L tab's own Owner Wages line already shows,
+   which already combines wage + super (see OWNER_WAGE_RE/OWNER_SUPER_RE),
+   so it lines up directly with the imported weeks' own combined owner
+   wage+super figure. opex reuses split.opex.opexTotal - the real
+   Operating Expenses total for the week, the same figure the P&L tab's
+   "Opex total" already shows - replacing the old sheet's hand-typed
+   "Cash Flow cost" with the real pulled number now that one exists. */
 async function saveHistorySnapshot(env, h, tenantId, week) {
   const to = shiftIsoDate(week, 6);
-  const [split, revSplit, bankFeeds, staffHoursRaw] = await Promise.all([
+  const [split, revSplit, bankFeeds, staffHoursRaw, notesRaw] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
     fetchXeroRevenueSplit(h, tenantId, week, to),
     fetchXeroBankFeeds(h, tenantId, week, to),
-    env.TOKENS.get('ownerinput:staffhours:' + week)
+    env.TOKENS.get('ownerinput:staffhours:' + week),
+    env.TOKENS.get('ownerinput:notes:' + week)
   ]);
 
   let wagesSplit = null;
@@ -1558,6 +1591,8 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
 
   let staffHours = null;
   if (staffHoursRaw) { try { staffHours = JSON.parse(staffHoursRaw).staffHours; } catch (e) {} }
+  let notes = null;
+  if (notesRaw) { try { notes = JSON.parse(notesRaw).notes || null; } catch (e) {} }
 
   const record = {
     week,
@@ -1565,21 +1600,18 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
     source: 'live',
     savedAt: new Date().toISOString(),
     revenue: { food: revSplit.buckets.food, bev: revSplit.buckets.bev, uber: revSplit.buckets.uber, event: revSplit.buckets.event, retail: revSplit.buckets.retail },
-    revenueUncategorised: revSplit.buckets.uncategorised,
     bankFeeds,
-    forecast: null,
     cogs: { food: split.cogs.buckets.boh, bev: split.cogs.buckets.foh, retail: split.cogs.buckets.retail },
-    cogsUncategorised: split.cogs.buckets.uncategorised,
     wages: {
       kitchen: wagesSplit ? wagesSplit.kitchenBoh : null,
       foh: wagesSplit ? wagesSplit.foh : null,
       hours: staffHours,
       total: split.opex.wagesSuperExclOwner
     },
+    ownerWages: split.opex.ownerWages,
     covers,
-    cashFlowCost: null,
-    legacyOwnerPersonal: null,
-    notes: null
+    opex: split.opex.opexTotal,
+    notes
   };
   await env.TOKENS.put('history:week:' + week, JSON.stringify(record));
 }
@@ -1587,13 +1619,23 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
 /* POST /api/history/import - the one-time bulk write from the pre-parsed
    sheet JSON (see the History tab build plan for how that file was made
    and hand-verified). Body: { weeks: [ {week, weekEnding, source, ...}, ... ] }.
-   Refuses outright if any history:week: record already exists - a second
-   import is never the right move once the app has started generating its
-   own live weeks, and this keeps the one-time panel genuinely one-time
-   (dashboard.html hides it the moment this has succeeded once). */
+
+   Refuses outright once any LIVE week exists (source:'live') - once the
+   app has started generating its own real weeks from Run the Numbers, an
+   import file can never be allowed to clobber them. But while every
+   existing record is still source:'import', re-running the import is
+   allowed and REPLACES the whole set - this is what lets a corrected
+   import file (a parsing bug fixed, a missing field added) be re-run
+   without the owner having to manually clear anything first. dashboard.html
+   still hides the big first-time panel once any data exists, but keeps a
+   small "replace the import" option visible for exactly this case. */
 async function apiHistoryImport(env, request) {
-  const existing = await env.TOKENS.list({ prefix: 'history:week:', limit: 1 });
-  if (existing.keys.length) return json({ ok: false, error: 'History already has data - import refused to avoid overwriting it.' }, 409);
+  const existingKeys = await env.TOKENS.list({ prefix: 'history:week:' });
+  const existingRaws = await Promise.all(existingKeys.keys.map((k) => env.TOKENS.get(k.name)));
+  const existingRecords = existingRaws.map((raw) => { try { return raw && JSON.parse(raw); } catch (e) { return null; } });
+  if (existingRecords.some((r) => r && r.source === 'live')) {
+    return json({ ok: false, error: 'History already has live weeks saved from Run the Numbers - import refused to avoid overwriting real data.' }, 409);
+  }
 
   let body; try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'bad json' }, 400); }
   const weeks = body && Array.isArray(body.weeks) ? body.weeks : null;
@@ -1602,8 +1644,9 @@ async function apiHistoryImport(env, request) {
     if (!w || !WEEK_RE.test(w.week)) return json({ ok: false, error: 'bad week in file: ' + JSON.stringify(w && w.week) }, 400);
   }
 
+  await Promise.all(existingKeys.keys.map((k) => env.TOKENS.delete(k.name)));
   await Promise.all(weeks.map((w) => env.TOKENS.put('history:week:' + w.week, JSON.stringify(w))));
-  return json({ ok: true, imported: weeks.length });
+  return json({ ok: true, imported: weeks.length, replaced: existingKeys.keys.length > 0 });
 }
 
 /* GET /api/history?from=&to= - reads whichever history:week: records fall
@@ -2502,6 +2545,10 @@ export default {
     if (path === '/api/ownerinput/staffhours' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiOwnerInputStaffHours(env, request);
+    }
+    if (path === '/api/ownerinput/notes' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerInputNotes(env, request);
     }
     if (path === '/api/ownerinput/owner' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);

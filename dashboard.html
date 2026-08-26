@@ -439,12 +439,12 @@ function defaultSettings() {
        retail calendar (each quarter 4+4+5=13 weeks, 52 weeks/year) - type
        in the real numbers from the sheet to match exactly. */
     weeksInMonth: [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5],
-    /* History tab's weekly Cash Flow cost target (spec 3.4's "Variance"
-       row) - the old sheet had this as a fixed number (2601) typed
-       straight into the formula rather than a cell anywhere, so there's
-       no real "owner's current value" to seed from; kept editable here
-       for whenever trading costs move on from that figure. */
-    cashFlowCostTargetWeekly: 2601
+    /* History tab's weekly Opex target (spec 3.4's "Variance" row) - the
+       old sheet had this as a fixed number (2601) typed straight into the
+       formula rather than a cell anywhere, so there's no real "owner's
+       current value" to seed from; kept editable here for whenever
+       trading costs move on from that figure. */
+    opexTargetWeekly: 2601
   };
 }
 function loadSettings() {
@@ -665,7 +665,8 @@ var state = {
     expandedMonth: null,         /* 'YYYY-MM' whose weeks are shown below the year table, or null */
     trendMetric: null,
     importing: false,
-    importError: null
+    importError: null,
+    showImportPanel: false      /* the opt-in "replace the import" panel, once weeks already exist */
   }
 };
 
@@ -2358,6 +2359,32 @@ function renderOwnerInput(root) {
   staffCard.appendChild(staffBtn);
   root.appendChild(staffCard);
 
+  /* Shared weekly note - free text, same "whoever saves last wins" shared
+     field as staff hours. Carried into this week's History record the
+     next time Run the Numbers runs for it (see worker.js's
+     saveHistorySnapshot) - this is the one place to write a week's note,
+     rather than a separate History-only field. */
+  var notesCard = el('div', 'oi-card');
+  notesCard.appendChild(el('div', 'oi-card-title', 'Notes for this week'));
+  notesCard.appendChild(el('div', 'set-note', 'Anything worth remembering about this week - shows up on the History tab once Run the Numbers below has been clicked.'));
+  var notesInp = document.createElement('textarea');
+  notesInp.rows = 3; notesInp.maxLength = 2000;
+  notesInp.style.cssText = 'width:100%;max-width:520px;margin-top:10px;font-family:\'DM Sans\',sans-serif;font-size:13px;padding:8px 10px;border:1px solid var(--border-med);border-radius:10px;resize:vertical;';
+  if (data.notes && typeof data.notes.notes === 'string') notesInp.value = data.notes.notes;
+  notesCard.appendChild(notesInp);
+  notesCard.appendChild(document.createElement('br'));
+  var notesBtn = el('button', 'btn-plain', 'Save note');
+  notesBtn.style.marginTop = '8px';
+  notesBtn.onclick = function () {
+    notesBtn.disabled = true;
+    fetch('/api/ownerinput/notes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: iso(mon), notes: notesInp.value })
+    }).then(function () { oi.data = null; fetchOwnerInput(); }).catch(function () { notesBtn.disabled = false; });
+  };
+  notesCard.appendChild(notesBtn);
+  root.appendChild(notesCard);
+
   /* Run the Numbers - derives an hourly wage rate from this week's total
      owner hours (logged above) and what Xero shows was actually drawn
      (same figure the P&L tab's "Owner wages" line uses), then splits that
@@ -2732,36 +2759,38 @@ function renderWhatIf(root) {
    live weeks run through the exact same maths.
 ============================================================ */
 function historyRevenueTotal(rev) {
-  if (!rev) return null;
+  if (!rev || (rev.food == null && rev.bev == null && rev.uber == null && rev.event == null && rev.retail == null)) return null;
   var food = rev.food || 0, bev = rev.bev || 0, uber = rev.uber || 0, event = rev.event || 0, retail = rev.retail || 0;
   return (food + bev + uber + event + retail) - uber * 0.3; /* nets out Uber's ~30% platform fee, same as the sheet's own R formula */
 }
 function historyCogsTotal(cogs) {
-  if (!cogs) return null;
+  if (!cogs || (cogs.food == null && cogs.bev == null && cogs.retail == null)) return null;
   return (cogs.food || 0) + (cogs.bev || 0) + (cogs.retail || 0);
 }
 function historyPctOfBank(v, bankFeeds) { return (v == null || !bankFeeds) ? null : (v / bankFeeds) * 100; }
+/* The full waterfall, same shape as the P&L tab's own net profit
+   (revenue - cogs - wages - opex - ownerWages) - Owner wages and Opex
+   both come out before this, per the owner's own request, rather than
+   the old sheet's habit of never deducting the owner's own pay from its
+   "Profit" line at all. Requires every input to be non-null (including
+   Opex and Owner wages now) rather than quietly treating a missing one
+   as zero - a week that's missing a real figure shows a dash here, not a
+   number that looks complete but isn't. */
 function historyProfit(rec) {
   var cogs = historyCogsTotal(rec.cogs), wages = rec.wages ? rec.wages.total : null;
-  if (rec.bankFeeds == null || cogs == null || wages == null) return null;
-  return rec.bankFeeds - cogs - wages;
+  if (rec.bankFeeds == null || cogs == null || wages == null || rec.opex == null || rec.ownerWages == null) return null;
+  return rec.bankFeeds - cogs - wages - rec.opex - rec.ownerWages;
 }
-function historyCashFlowProfit(rec) {
-  var p = historyProfit(rec);
-  if (p == null || rec.cashFlowCost == null) return null;
-  var ownerSuper = (rec.legacyOwnerPersonal && rec.legacyOwnerPersonal.super) || 0;
-  return p - rec.cashFlowCost - ownerSuper;
-}
-function historyOpexPct(rec) { return historyPctOfBank(rec.cashFlowCost, rec.bankFeeds); }
+function historyOpexPct(rec) { return historyPctOfBank(rec.opex, rec.bankFeeds); }
 /* weekCount scales the fixed weekly target to however many weeks this
    record actually aggregates (1 for a single week, the number of weeks in
-   a month that HAD a Cash Flow cost figure for a monthly rollup) - same
-   "weeks in month" scaling idea the Budget tab already uses for its own
-   weekly targets. */
+   a month that HAD an Opex figure for a monthly rollup) - same "weeks in
+   month" scaling idea the Budget tab already uses for its own weekly
+   targets. */
 function historyVariance(rec, weekCount) {
-  if (rec.cashFlowCost == null) return null;
-  var target = (typeof SETTINGS.cashFlowCostTargetWeekly === 'number') ? SETTINGS.cashFlowCostTargetWeekly : 2601;
-  return rec.cashFlowCost - target * (weekCount || 1);
+  if (rec.opex == null) return null;
+  var target = (typeof SETTINGS.opexTargetWeekly === 'number') ? SETTINGS.opexTargetWeekly : 2601;
+  return rec.opex - target * (weekCount || 1);
 }
 function historyAvgPerHour(w) { return (w && w.total != null && w.hours) ? w.total / w.hours : null; }
 function historyAvgSale(rec) { return (rec.bankFeeds != null && rec.covers) ? rec.bankFeeds / rec.covers : null; }
@@ -2774,27 +2803,45 @@ function historyAvgSale(rec) { return (rec.bankFeeds != null && rec.covers) ? re
    summed had it, so a month with a genuine gap still reads as a gap. */
 function historyAggregate(weeksArr) {
   var out = {
-    revenue: { food: 0, bev: 0, uber: 0, event: 0, retail: 0 },
-    bankFeeds: null, cogs: null, wages: null, covers: null, cashFlowCost: null,
-    legacyOwnerPersonal: { super: 0 },
-    weekCount: weeksArr.length, cfcWeekCount: 0
+    revenue: { food: null, bev: null, uber: null, event: null, retail: null },
+    bankFeeds: null, cogs: null, wages: null, ownerWages: null, covers: null, opex: null,
+    weekCount: weeksArr.length, opexWeekCount: 0
   };
-  var hasBank = false, hasCogs = false, hasWages = false, hasCovers = false, hasCfc = false;
-  var cogs = { food: 0, bev: 0, retail: 0 }, wages = { kitchen: 0, foh: 0, hours: 0, total: 0 };
+  /* Sums a leaf field ONLY across the weeks that actually had it, leaving
+     it null if none did - so a channel/bucket that's genuinely untracked
+     for every week being summed (e.g. COGS-retail is blank in most of the
+     old sheet's weeks) stays a dash, rather than every unknown quietly
+     becoming a 0 that drags the total down and reads as "definitely
+     zero" instead of "not known". */
+  function addLeaf(target, key, value) {
+    if (value == null) return;
+    target[key] = (target[key] || 0) + value;
+  }
+  var hasBank = false, hasCogsAny = false, hasWagesAny = false, hasOwnerWages = false, hasCovers = false, hasOpex = false;
+  var cogs = { food: null, bev: null, retail: null };
+  var wages = { kitchen: null, foh: null, hours: null, total: null };
   weeksArr.forEach(function (w) {
-    ['food', 'bev', 'uber', 'event', 'retail'].forEach(function (k) { out.revenue[k] += (w.revenue && w.revenue[k]) || 0; });
+    ['food', 'bev', 'uber', 'event', 'retail'].forEach(function (k) { addLeaf(out.revenue, k, w.revenue && w.revenue[k]); });
     if (w.bankFeeds != null) { out.bankFeeds = (out.bankFeeds || 0) + w.bankFeeds; hasBank = true; }
-    if (w.cogs) { hasCogs = true; cogs.food += w.cogs.food || 0; cogs.bev += w.cogs.bev || 0; cogs.retail += w.cogs.retail || 0; }
-    if (w.wages) { hasWages = true; wages.kitchen += w.wages.kitchen || 0; wages.foh += w.wages.foh || 0; wages.hours += w.wages.hours || 0; wages.total += w.wages.total || 0; }
+    if (w.cogs && (w.cogs.food != null || w.cogs.bev != null || w.cogs.retail != null)) {
+      hasCogsAny = true;
+      addLeaf(cogs, 'food', w.cogs.food); addLeaf(cogs, 'bev', w.cogs.bev); addLeaf(cogs, 'retail', w.cogs.retail);
+    }
+    if (w.wages && (w.wages.kitchen != null || w.wages.foh != null || w.wages.hours != null || w.wages.total != null)) {
+      hasWagesAny = true;
+      addLeaf(wages, 'kitchen', w.wages.kitchen); addLeaf(wages, 'foh', w.wages.foh);
+      addLeaf(wages, 'hours', w.wages.hours); addLeaf(wages, 'total', w.wages.total);
+    }
+    if (w.ownerWages != null) { out.ownerWages = (out.ownerWages || 0) + w.ownerWages; hasOwnerWages = true; }
     if (w.covers != null) { out.covers = (out.covers || 0) + w.covers; hasCovers = true; }
-    if (w.cashFlowCost != null) { out.cashFlowCost = (out.cashFlowCost || 0) + w.cashFlowCost; hasCfc = true; out.cfcWeekCount++; }
-    out.legacyOwnerPersonal.super += (w.legacyOwnerPersonal && w.legacyOwnerPersonal.super) || 0;
+    if (w.opex != null) { out.opex = (out.opex || 0) + w.opex; hasOpex = true; out.opexWeekCount++; }
   });
-  if (hasCogs) out.cogs = cogs;
-  if (hasWages) out.wages = wages;
+  if (hasCogsAny) out.cogs = cogs;
+  if (hasWagesAny) out.wages = wages;
   if (!hasBank) out.bankFeeds = null;
+  if (!hasOwnerWages) out.ownerWages = null;
   if (!hasCovers) out.covers = null;
-  if (!hasCfc) out.cashFlowCost = null;
+  if (!hasOpex) out.opex = null;
   return out;
 }
 
@@ -2823,11 +2870,11 @@ var HISTORY_ROWS = [
   { label: 'Avg $/hour', get: function (a) { return historyAvgPerHour(a.wages); }, fmt: fmtMoneyOrDash, cls: 'sub' },
   { label: 'Covers', get: function (a) { return a.covers; }, fmt: fmtInt },
   { label: 'Avg $/sale', get: function (a) { return historyAvgSale(a); }, fmt: fmtMoneyOrDash, cls: 'sub' },
-  { label: 'Profit', get: historyProfit, fmt: fmtMoneyOrDash, cls: 'total' },
-  { label: 'Cash Flow cost', get: function (a) { return a.cashFlowCost; }, fmt: fmtMoneyOrDash },
-  { label: 'Cash Flow Profit', get: historyCashFlowProfit, fmt: fmtMoneyOrDash, cls: 'total' },
+  { label: 'Opex', get: function (a) { return a.opex; }, fmt: fmtMoneyOrDash },
   { label: 'Opex % of Bank feeds', get: historyOpexPct, fmt: fmtPctVal, cls: 'sub' },
-  { label: 'Variance vs target', get: function (a) { return historyVariance(a, a.cfcWeekCount); }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Variance vs target', get: function (a) { return historyVariance(a, a.opexWeekCount); }, fmt: fmtMoneyOrDash, cls: 'sub' },
+  { label: 'Owner wages', get: function (a) { return a.ownerWages; }, fmt: fmtMoneyOrDash },
+  { label: 'Profit', get: historyProfit, fmt: fmtMoneyOrDash, cls: 'total' },
   { label: 'Weeks with data', get: function (a) { return a.weekCount; }, fmt: fmtInt, cls: 'sub' }
 ];
 
@@ -2863,16 +2910,20 @@ function fetchHistory() {
   });
 }
 
-/* One-time import panel - only ever shown while history:week: is empty on
-   the server (worker.js's apiHistoryImport refuses a second import once
-   any record exists). Reads the file entirely in the owner's own browser
-   session, under their own auth - nothing about the file passes through
-   me. */
-function renderHistoryImport(root) {
+/* One-time import panel - shown while history:week: is empty on the
+   server, OR (replaceMode) as an opt-in re-run while every existing
+   record is still source:'import' (worker.js's apiHistoryImport allows a
+   full replace in that case, but refuses outright once any 'live' week
+   exists - see its own comment). Reads the file entirely in the owner's
+   own browser session, under their own auth - nothing about the file
+   passes through me. */
+function renderHistoryImport(root, replaceMode) {
   var hi = state.history;
   var card = el('div', 'oi-card');
-  card.appendChild(el('div', 'oi-card-title', 'One-time import from your old spreadsheet'));
-  card.appendChild(el('div', 'set-note', 'No weeks yet. Choose the history-import.json file your AI prepared (it’s in the dashboard project folder, pulled down next time you Fetch in GitHub Desktop) to bring in every week back to January 2025. This runs once - the moment it succeeds this panel disappears for good, and new weeks accumulate on their own from Owner Input’s Run the Numbers.'));
+  card.appendChild(el('div', 'oi-card-title', replaceMode ? 'Replace the import' : 'One-time import from your old spreadsheet'));
+  card.appendChild(el('div', 'set-note', replaceMode
+    ? 'Choose an updated history-import.json to replace every imported week with a fresh copy. Safe to do as often as needed while nothing below has come from Run the Numbers yet - this will NOT touch any week that has.'
+    : 'No weeks yet. Choose the history-import.json file your AI prepared (it’s in the dashboard project folder, pulled down next time you Fetch in GitHub Desktop) to bring in every week back to January 2025. This runs once - the moment it succeeds this panel disappears for good, and new weeks accumulate on their own from Owner Input’s Run the Numbers.'));
   var fileInp = document.createElement('input');
   fileInp.type = 'file'; fileInp.accept = 'application/json'; fileInp.className = 'hist-import-file';
   card.appendChild(fileInp);
@@ -2893,7 +2944,7 @@ function renderHistoryImport(root) {
         .then(function (r) {
           hi.importing = false;
           if (!r.ok) { hi.importError = (r.j && r.j.error) || 'Import failed.'; render(); return; }
-          hi.weeks = null; fetchHistory();
+          hi.weeks = null; hi.year = null; hi.expandedMonth = null; hi.showImportPanel = false; fetchHistory();
         })
         .catch(function () { hi.importing = false; hi.importError = 'Could not reach the dashboard just now.'; render(); });
     };
@@ -3073,7 +3124,9 @@ var HISTORY_TREND_METRICS = [
   { key: 'wagePct', label: 'Wage % of Bank feeds', get: function (r) { return historyPctOfBank(r.wages ? r.wages.total : null, r.bankFeeds); }, fmt: fmtPctVal },
   { key: 'avgSale', label: 'Avg $/sale', get: historyAvgSale, fmt: fmtMoneyOrDash },
   { key: 'avgHour', label: 'Avg $/hour', get: function (r) { return historyAvgPerHour(r.wages); }, fmt: fmtMoneyOrDash },
-  { key: 'covers', label: 'Covers', get: function (r) { return r.covers; }, fmt: fmtInt }
+  { key: 'covers', label: 'Covers', get: function (r) { return r.covers; }, fmt: fmtInt },
+  { key: 'opex', label: 'Opex', get: function (r) { return r.opex; }, fmt: fmtMoneyOrDash },
+  { key: 'ownerWages', label: 'Owner wages', get: function (r) { return r.ownerWages; }, fmt: fmtMoneyOrDash }
 ];
 
 /* One bar per month of the selected year (not per week) - matches the
@@ -3121,6 +3174,17 @@ function renderHistory(root) {
     return;
   }
   renderHistoryYear(root, h.weeks);
+
+  /* A re-import is only offered while nothing below has come from Run the
+     Numbers yet (worker.js's apiHistoryImport enforces the same rule
+     server-side) - lets a corrected import file be re-run without
+     touching real live data once any exists. */
+  if (!h.weeks.some(function (w) { return w.source === 'live'; })) {
+    var toggle = el('button', 'pl-toggle', h.showImportPanel ? 'Cancel' : 'Replace the import');
+    toggle.onclick = function () { h.showImportPanel = !h.showImportPanel; render(); };
+    root.appendChild(toggle);
+    if (h.showImportPanel) renderHistoryImport(root, true);
+  }
 }
 
 function renderSettings(root) {
@@ -3385,24 +3449,24 @@ function renderSettings(root) {
   });
   root.appendChild(wimGrid);
 
-  /* History tab: the weekly Cash Flow cost target ("Variance" row, spec
-     3.4) - a fixed number the old sheet had hardcoded into its own
-     formula rather than a cell, so there's no "owner's current value" to
-     read back from anywhere. */
+  /* History tab: the weekly Opex target ("Variance" row, spec 3.4) - a
+     fixed number the old sheet had hardcoded into its own formula rather
+     than a cell, so there's no "owner's current value" to read back from
+     anywhere. */
   root.appendChild(el('div', 'screen-title', 'History'));
   root.appendChild(el('p', 'screen-sub', 'The one target number the old spreadsheet had hardcoded rather than in a cell.'));
   var histGrid = el('div', 'set-grid');
   var hc1 = el('div', 'set-cell');
-  hc1.appendChild(el('div', 'set-label', 'Cash Flow cost target · per week'));
+  hc1.appendChild(el('div', 'set-label', 'Opex target · per week'));
   var hi1 = document.createElement('input'); hi1.type = 'number'; hi1.step = 'any'; hi1.min = '0';
-  hi1.value = (typeof SETTINGS.cashFlowCostTargetWeekly === 'number') ? SETTINGS.cashFlowCostTargetWeekly : '';
+  hi1.value = (typeof SETTINGS.opexTargetWeekly === 'number') ? SETTINGS.opexTargetWeekly : '';
   hi1.onchange = function () {
     var val = parseFloat(hi1.value);
-    SETTINGS.cashFlowCostTargetWeekly = isFinite(val) ? val : 0;
+    SETTINGS.opexTargetWeekly = isFinite(val) ? val : 0;
     saveSettings(); render();
   };
   hc1.appendChild(hi1);
-  hc1.appendChild(el('div', 'set-note', 'History’s Variance row is each week’s Cash Flow cost minus this.'));
+  hc1.appendChild(el('div', 'set-note', 'History’s Variance row is each week’s Opex minus this.'));
   histGrid.appendChild(hc1);
   root.appendChild(histGrid);
 
