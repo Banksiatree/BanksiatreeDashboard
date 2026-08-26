@@ -5,6 +5,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
+  "dependencies": {
+    "postal-mime": "^3.0.0"
+  },
   "devDependencies": {
     "wrangler": "^4"
   },

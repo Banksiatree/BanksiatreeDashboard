@@ -31,6 +31,7 @@
 ============================================================================ */
 
 import dashboardHtml from './dashboard.html';
+import PostalMime from 'postal-mime';
 
 /* ----------------------------------------------------------------------------
    Provider adapters - THE PART YOU BUILD.
@@ -2574,6 +2575,15 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryImport(env, request);
     }
+    /* TEMPORARY - see the email() handler's own comment. Lets the real
+       OOLIO Revenue Performance Report email be inspected once one has
+       landed, so the real parser can be built against real columns
+       instead of guessed ones. Remove once that parser exists. */
+    if (path === '/api/debug/oolio-email' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const raw = await env.TOKENS.get('debug:oolio-email:latest');
+      return json(raw ? JSON.parse(raw) : { found: false });
+    }
     const authRoute = /^\/auth\/(accounting|pos|rostering)\/(start|callback)$/.exec(path);
     if (authRoute && request.method === 'GET') {
       if (!loggedIn) return Response.redirect(url.origin + '/', 302);
@@ -2624,15 +2634,39 @@ export default {
 
   /* Email rung (Path B): the tool's own report scheduler emails its export;
      the owner's domain on their Cloudflare routes that address here (Email
-     Routing -> this Worker). Complete when this rung is chosen:
-       1. parse the message with postal-mime (add the dependency)
-       2. find the CSV/report attachment, work out which source sent it
-          (sender address or subject)
-       3. reuse adapter.parseExport + saveIngestedRows + noteSync, exactly
-          like /api/ingest
-     Until then this logs and discards. */
+     Routing -> this Worker).
+
+     CAPTURE-FIRST, not parse-first: this is wired for OOLIO's Revenue
+     Performance Report (the "by Category" export - see the History tab's
+     revenue-by-channel work), but that report's real CSV column layout
+     has never been seen, and guessing it is exactly the mistake that
+     shipped the Budget tab broken three times. So for now this just
+     stashes the latest email's CSV attachment (and enough metadata to
+     tell it apart from a stray/wrong email) at debug:oolio-email:latest,
+     readable via GET /api/debug/oolio-email. Once a real one has landed
+     and its columns are confirmed, replace this with real parsing
+     (adapter.parseExport-style) that turns it into weekly category
+     totals and folds them into history:week: records. */
   async email(message, env, ctx) {
-    console.log('email received from ' + message.from + '; email ingest not wired yet');
+    try {
+      const parsed = await PostalMime.parse(message.raw, { attachmentEncoding: 'utf8' });
+      const attachments = parsed.attachments || [];
+      const csvAttachment = attachments.find((a) => /\.csv$/i.test(a.filename || '') || (a.mimeType || '').includes('csv'));
+      const record = {
+        from: message.from,
+        to: message.to,
+        subject: parsed.subject || null,
+        receivedAt: new Date().toISOString(),
+        attachmentNames: attachments.map((a) => a.filename),
+        csvFilename: csvAttachment ? csvAttachment.filename : null,
+        csvText: csvAttachment ? String(csvAttachment.content) : null
+      };
+      await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(record));
+      console.log('email captured from ' + message.from + ' subject="' + record.subject + '" csv=' + (csvAttachment ? csvAttachment.filename : 'none'));
+    } catch (err) {
+      await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify({ error: String((err && err.message) || err), receivedAt: new Date().toISOString() }));
+      console.log('email parse failed: ' + ((err && err.message) || err));
+    }
   }
 };
 // EOF worker.js
