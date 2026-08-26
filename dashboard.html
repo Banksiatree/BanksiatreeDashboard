@@ -2768,18 +2768,20 @@ function historyCogsTotal(cogs) {
   return (cogs.food || 0) + (cogs.bev || 0) + (cogs.retail || 0);
 }
 function historyPctOfBank(v, bankFeeds) { return (v == null || !bankFeeds) ? null : (v / bankFeeds) * 100; }
-/* The full waterfall, same shape as the P&L tab's own net profit
-   (revenue - cogs - wages - opex - ownerWages) - Owner wages and Opex
-   both come out before this, per the owner's own request, rather than
-   the old sheet's habit of never deducting the owner's own pay from its
-   "Profit" line at all. Requires every input to be non-null (including
-   Opex and Owner wages now) rather than quietly treating a missing one
-   as zero - a week that's missing a real figure shows a dash here, not a
-   number that looks complete but isn't. */
+/* Revenue - Wages - COGS - Owner wages - Opex, per the owner's exact
+   spec (matching how the sheet read even though its own AP formula
+   technically used Bank feeds as the base - Revenue is the real trading
+   income figure and is what's used here). Opex itself never contains
+   any wage or owner-wage dollars (walkXeroOpexDetail excludes both from
+   the opex bucket before this ever sees it), so nothing here is ever
+   double-subtracted. Requires every input to be non-null rather than
+   quietly treating a missing one as zero - a week that's missing a real
+   figure shows a dash here, not a number that looks complete but isn't. */
 function historyProfit(rec) {
+  var revenue = historyRevenueTotal(rec.revenue);
   var cogs = historyCogsTotal(rec.cogs), wages = rec.wages ? rec.wages.total : null;
-  if (rec.bankFeeds == null || cogs == null || wages == null || rec.opex == null || rec.ownerWages == null) return null;
-  return rec.bankFeeds - cogs - wages - rec.opex - rec.ownerWages;
+  if (revenue == null || cogs == null || wages == null || rec.opex == null || rec.ownerWages == null) return null;
+  return revenue - wages - cogs - rec.ownerWages - rec.opex;
 }
 function historyOpexPct(rec) { return historyPctOfBank(rec.opex, rec.bankFeeds); }
 /* weekCount scales the fixed weekly target to however many weeks this
