@@ -217,6 +217,7 @@ body {
 .pl-figs { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .pl-actual { font-family: 'Khand', sans-serif; font-size: 30px; font-weight: 700; color: var(--black); }
 .pl-budget { font-size: 12.5px; color: var(--muted); }
+.pl-pct { font-size: 12.5px; color: var(--muted); }
 .pl-toggle { display: inline-block; background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; padding: 8px 4px; margin: 2px 0; text-decoration: underline; min-height: 32px; text-align: left; }
 .pl-breakdown { margin-top: 0.6rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
 .pl-breakdown-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0; }
@@ -255,6 +256,13 @@ body {
 .budget-table.narrow { grid-template-columns: 190px repeat(4, 140px); min-width: 0; }
 .budget-table.hist { grid-template-columns: 210px repeat(12, 90px); min-width: 1290px; }
 .budget-cell.yearcol { background: var(--accent-dim); font-weight: 600; }
+/* .total/.yearcol's own background is semi-transparent (--accent-dim), which
+   is fine for an ordinary scrolling cell but not for the sticky left label
+   column - scrolled-past content shows through behind it as you scroll
+   sideways. Higher specificity (3 classes) than either modifier alone, so
+   this always wins and keeps the frozen column solid regardless of which
+   row it's in. */
+.budget-cell.rowlabel.total, .budget-cell.rowlabel.yearcol { background: var(--cream2); }
 
 /* History tab */
 .hist-select { font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border-med); border-radius: 20px; background: #fff; }
@@ -631,7 +639,8 @@ var state = {
   pl: {
     period: 'thisMonth',       /* thisMonth | lastMonth | ytd */
     loading: false,
-    data: null,                /* last /api/pl payload */
+    data: null,                /* last /api/pl payload - restorePLCache() below fills this in on boot if a matching cached pull exists */
+    fetchedAt: null,           /* when that data was actually pulled (may be from a past visit, not this page load) */
     error: null,
     openCogs: false, openWages: false, openOpex: false  /* which dropdown breakdowns are expanded */
   },
@@ -2087,6 +2096,21 @@ function resolvePLPeriod(key) {
   return { from: from, to: to, label: label, key: key, elapsedFraction: elapsedFraction, empty: empty };
 }
 
+/* Survives a tab switch, a page reload, even closing and reopening the
+   browser - keyed by period, so switching from "This month" to "Last
+   month" and back doesn't show the wrong figures. This is purely about
+   not losing a pull that already happened (a mobile browser reloading a
+   backgrounded tab was wiping state.pl.data entirely, forcing a re-pull
+   for no real reason) - it does NOT auto-fetch anything on its own,
+   still fully manual-trigger, same as every other Xero-backed tab. */
+function loadPLCache(period) {
+  var c = loadJson('vd_pl_cache_' + period, null);
+  return c && c.data ? c : null;
+}
+function savePLCache(period, data) {
+  try { localStorage.setItem('vd_pl_cache_' + period, JSON.stringify({ data: data, fetchedAt: new Date().toISOString() })); } catch (e) {}
+}
+
 /* Manual trigger only - the spec's "nothing pulls live except on demand"
    rule applies here same as everywhere else, so unlike the generic
    Dashboard/Cash Split tabs this one does NOT auto-fetch on open. */
@@ -2102,7 +2126,9 @@ function fetchPL() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   }).then(function (json) {
-    pl.data = json; pl.loading = false; render();
+    pl.data = json; pl.loading = false; pl.fetchedAt = new Date().toISOString();
+    if (json && json.available) savePLCache(pl.period, json);
+    render();
   }).catch(function () {
     pl.loading = false; pl.error = 'Could not reach the dashboard just now. Try again.'; render();
   });
@@ -2152,7 +2178,21 @@ function plCard(container, opts) {
   var figs = el('div', 'pl-figs');
   var fmtFn = opts.fmt === 'int' ? fmtInt : function (v) { return v == null ? '—' : fmtMoney(v); };
   figs.appendChild(el('div', 'pl-actual', esc(fmtFn(opts.actual))));
-  if (opts.budget != null) figs.appendChild(el('div', 'pl-budget', 'Budget ' + esc(fmtFn(opts.budget))));
+  /* % of revenue alongside the $ figure - every line except Revenue
+     itself (where it would trivially always read 100%) and Transactions
+     (a count, not a dollar figure - % of revenue makes no sense for it). */
+  if (opts.pctBase) {
+    var actualPct = (opts.actual != null) ? (opts.actual / opts.pctBase) * 100 : null;
+    figs.appendChild(el('div', 'pl-pct', actualPct != null ? (actualPct.toFixed(1) + '% of revenue') : ''));
+  }
+  if (opts.budget != null) {
+    var budgetLine = 'Budget ' + esc(fmtFn(opts.budget));
+    if (opts.pctBase) {
+      var budgetPct = (opts.budget / opts.pctBase) * 100;
+      budgetLine += ' (' + budgetPct.toFixed(1) + '%)';
+    }
+    figs.appendChild(el('div', 'pl-budget', budgetLine));
+  }
   card.appendChild(figs);
 
   if (opts.breakdown && opts.breakdown.length) {
@@ -2187,7 +2227,13 @@ function renderPL(root) {
   pbar.appendChild(el('span', 'period-label', 'Period'));
   [ { key: 'thisMonth', label: 'This month' }, { key: 'lastMonth', label: 'Last month' }, { key: 'ytd', label: 'All completed months this year' } ].forEach(function (p) {
     var chip = el('button', 'pchip' + (pl.period === p.key ? ' on' : ''), p.label);
-    chip.onclick = function () { pl.period = p.key; pl.data = null; pl.error = null; render(); };
+    chip.onclick = function () {
+      pl.period = p.key; pl.error = null;
+      var cached = loadPLCache(p.key);
+      pl.data = cached ? cached.data : null;
+      pl.fetchedAt = cached ? cached.fetchedAt : null;
+      render();
+    };
     pbar.appendChild(chip);
   });
   root.appendChild(pbar);
@@ -2203,11 +2249,23 @@ function renderPL(root) {
     return;
   }
 
-  var runBtn = el('button', 'btn-primary-dash', pl.loading ? 'Fetching…' : 'Run the Numbers');
+  /* A page reload (a backgrounded mobile tab getting suspended and reloaded
+     being the actual reason this kept happening) wipes pl.data from memory
+     but not the cache underneath it - restore from there rather than
+     forcing a whole fresh pull just because the in-memory copy is gone. */
+  if (!pl.data && !pl.loading) {
+    var restored = loadPLCache(pl.period);
+    if (restored) { pl.data = restored.data; pl.fetchedAt = restored.fetchedAt; }
+  }
+
+  var runBtn = el('button', 'btn-primary-dash', pl.loading ? 'Fetching…' : (pl.data ? 'Refresh' : 'Run the Numbers'));
   runBtn.style.margin = '0.2rem 0 1.1rem';
   runBtn.disabled = pl.loading;
   runBtn.onclick = function () { fetchPL(); };
   root.appendChild(runBtn);
+  if (pl.data && pl.fetchedAt) {
+    root.appendChild(el('div', 'set-note', 'Pulled ' + new Date(pl.fetchedAt).toLocaleString() + ' - click Refresh for the latest.'));
+  }
 
   if (pl.error) root.appendChild(el('div', 'banner banner-coral', esc(pl.error)));
 
@@ -2245,7 +2303,7 @@ function renderPL(root) {
       { label: 'Retail', value: d.cogs.retail }
     ];
     if (d.cogs.uncategorised) cogsBreakdown.push({ label: 'Uncategorised — needs checking', value: d.cogs.uncategorised, uncategorised: true });
-    plCard(cards, { label: 'COGS', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.cogs : null, breakdown: cogsBreakdown, openField: 'openCogs' });
+    plCard(cards, { label: 'COGS', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.cogs : null, breakdown: cogsBreakdown, openField: 'openCogs', pctBase: d.revenue.actual });
   }
 
   if (d.wages) {
@@ -2260,22 +2318,22 @@ function renderPL(root) {
     } else {
       wageBreakdown.push({ label: 'Unassigned — “4 Labour” split unavailable this time', value: d.wages.unassigned, uncategorised: true });
     }
-    plCard(cards, { label: 'Wages', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.wages : null, breakdown: wageBreakdown, openField: 'openWages' });
+    plCard(cards, { label: 'Wages', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.wages : null, breakdown: wageBreakdown, openField: 'openWages', pctBase: d.revenue.actual });
   }
 
   if (d.opex) {
     var opexBreakdown = d.opex.lines.slice().sort(function (a, b) { return b.value - a.value; }).map(function (l) { return { label: l.label, value: l.value }; });
-    plCard(cards, { label: 'Opex total', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.opex : null, breakdown: opexBreakdown, openField: 'openOpex' });
+    plCard(cards, { label: 'Opex total', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.opex : null, breakdown: opexBreakdown, openField: 'openOpex', pctBase: d.revenue.actual });
   }
 
   /* Owner wages: interim source is Xero's own "Owner Wages and Salaries" +
      "Distribution of Profit" accounts, until the Owner Input tab (built
      later) supplies the owner-entered hours/pay figure instead - see
      spec 3.1. No budget comparison for this line. */
-  if (d.ownerWages) plCard(cards, { label: 'Owner wages', actual: d.ownerWages.actual, fmt: 'money' });
+  if (d.ownerWages) plCard(cards, { label: 'Owner wages', actual: d.ownerWages.actual, fmt: 'money', pctBase: d.revenue.actual });
 
   if (d.netProfit) {
-    plCard(cards, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: hasBudget ? d.budget.netProfit : null });
+    plCard(cards, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: hasBudget ? d.budget.netProfit : null, pctBase: d.revenue.actual });
   }
 
   root.appendChild(cards);
