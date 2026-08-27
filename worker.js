@@ -433,19 +433,36 @@ async function fetchXeroPL(h, tenantId, from, to) {
    as the rest of the file (see dashboard.html's own header comment).
 ---------------------------------------------------------------------------- */
 
+/* Account-name lookup, not keyword regex - confirmed directly against the
+   owner's real Chart of Accounts (their "COGS BOH"/"COGS FOH" custom saved
+   report, which Xero's API can't fetch by name - a documented limitation,
+   not something guessable from account names either: real BOH accounts
+   here are things like "Drystore/frozen" and "Consumables", which no
+   food/kitchen keyword would ever match). Anything not in this list falls
+   into 'uncategorised' rather than being guessed - same visible-catch-all
+   principle as before, but the catch-all should now only ever catch a
+   genuinely NEW account the owner adds later, not most of BOH like before.
+   Keep this list in sync with the owner's Chart of Accounts if they add or
+   rename Cost of Sales accounts. */
+const COGS_BOH_ACCOUNTS = new Set([
+  'bakery', 'consumables', 'drystore/frozen', 'eggs', 'freight',
+  'fruit & vegetables', 'processed meats', 'raw meat', 'seafood', 'packaging - boh'
+]);
+const COGS_FOH_ACCOUNTS = new Set([
+  'beer, wine & spirits', 'coffee, milk & tea', 'juices', 'packaging - foh', 'soft drinks'
+]);
 const COGS_RETAIL_RE = /5-3600|retail/i;
-const COGS_BOH_RE = /food|kitchen/i;
-const COGS_FOH_RE = /beverage|\bbar\b|wine|beer|liquor|drinks?/i;
 
 function walkXeroCogsSplit(section, periodIndex, acc) {
   for (const row of section.Rows || []) {
     if (row.RowType === 'Row') {
       const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
       const value = xeroCellValue(row, periodIndex);
+      const key = label.trim().toLowerCase();
       let bucket;
       if (COGS_RETAIL_RE.test(label)) bucket = 'retail';
-      else if (COGS_BOH_RE.test(label)) bucket = 'boh';
-      else if (COGS_FOH_RE.test(label)) bucket = 'foh';
+      else if (COGS_BOH_ACCOUNTS.has(key)) bucket = 'boh';
+      else if (COGS_FOH_ACCOUNTS.has(key)) bucket = 'foh';
       else bucket = 'uncategorised';
       acc.buckets[bucket] += value;
       acc.lines.push({ label, value, bucket });
