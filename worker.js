@@ -1577,7 +1577,18 @@ async function apiOwnerWages(env, url) {
        failure (e.g. the "4 Labour" tracking category lookup hiccupping)
        must never break the owner-wage figure this endpoint has always
        returned, so it's wrapped in its own try/catch and swallowed. */
-    try { await saveHistorySnapshot(env, h, tenantId, from); } catch (e) {}
+    /* TEMPORARY - see GET /api/debug/history-snapshot. Owner reported "Run
+       the Numbers" for a week producing no visible change to that week's
+       History record, with no error shown anywhere (the catch below used
+       to swallow silently) - this captures either the real failure or the
+       actual record that got saved, so it can be read back instead of
+       guessed at. Remove once confirmed fixed. */
+    try {
+      const saved = await saveHistorySnapshot(env, h, tenantId, from);
+      await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week: from, ok: true, saved, at: new Date().toISOString() }));
+    } catch (e) {
+      try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week: from, ok: false, error: String((e && e.stack) || (e && e.message) || e), at: new Date().toISOString() })); } catch (e2) {}
+    }
     return json({ available: true, actual: split.opex.ownerWages });
   } catch (err) {
     return json({ available: false, error: plainError(err.status || 500) });
@@ -1674,7 +1685,7 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
     ? { uber: revSplit.buckets.uber }
     : { food: revSplit.buckets.food, bev: revSplit.buckets.bev, uber: revSplit.buckets.uber, event: revSplit.buckets.event, retail: revSplit.buckets.retail };
 
-  await mergeHistoryWeek(env, week, {
+  return mergeHistoryWeek(env, week, {
     source: 'live',
     revenue: revenuePatch,
     bankFeeds,
@@ -2899,6 +2910,13 @@ export default {
     if (path === '/api/debug/oolio-email' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const raw = await env.TOKENS.get('debug:oolio-email:latest');
+      return json(raw ? JSON.parse(raw) : { found: false });
+    }
+    /* TEMPORARY - see the comment in apiOwnerWages. Remove once the
+       History "Run the Numbers produces no change" report is resolved. */
+    if (path === '/api/debug/history-snapshot' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const raw = await env.TOKENS.get('debug:history-snapshot:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
     }
     /* Manual trigger for testing - the real check runs on the cron
