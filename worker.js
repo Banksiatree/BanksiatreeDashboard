@@ -1625,18 +1625,29 @@ async function apiOwnerWages(env, url) {
    "Cash Flow cost" with the real pulled number now that one exists. */
 async function saveHistorySnapshot(env, h, tenantId, week) {
   const to = shiftIsoDate(week, 6);
-  const [split, revSplit, bankFeeds, staffHoursRaw, notesRaw, existingRaw] = await Promise.all([
+  /* Payroll for this trading week is processed the following Monday but
+     POSTED (the date Xero actually records) the Wednesday after that -
+     confirmed directly by the owner, not guessed - so a wage journal for
+     week-ending Sunday always lands 3 days past this week's own Mon-Sun
+     range, in the FOLLOWING week's dates. Same lag-correction technique
+     already used for revenue's Tue-Mon posting delay (shiftIsoDate), just
+     a different, wages-specific offset - querying the plain week window
+     for wages would always come back empty/short. */
+  const wagesFrom = shiftIsoDate(week, 3);
+  const wagesTo = shiftIsoDate(to, 3);
+  const [split, revSplit, bankFeeds, staffHoursRaw, notesRaw, existingRaw, wagesFlatSplit] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
     fetchXeroRevenueSplit(h, tenantId, week, to),
     fetchXeroBankFeeds(h, tenantId, week, to),
     env.TOKENS.get('ownerinput:staffhours:' + week),
     env.TOKENS.get('ownerinput:notes:' + week),
-    env.TOKENS.get('history:week:' + week)
+    env.TOKENS.get('history:week:' + week),
+    fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo)
   ]);
 
   let wagesSplit = null;
   const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, '4 labour');
-  if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, week, to, trackingCategoryId);
+  if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, wagesFrom, wagesTo, trackingCategoryId);
 
   let covers = null;
   const posAdapter = ADAPTERS.pos;
@@ -1672,7 +1683,7 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
       kitchen: wagesSplit ? wagesSplit.kitchenBoh : null,
       foh: wagesSplit ? wagesSplit.foh : null,
       hours: staffHours,
-      total: split.opex.wagesSuperExclOwner
+      total: wagesFlatSplit.opex.wagesSuperExclOwner
     },
     ownerWages: split.opex.ownerWages,
     covers,
