@@ -678,7 +678,8 @@ var state = {
     importError: null,
     showImportPanel: false,     /* the opt-in "replace the import" panel, once weeks already exist */
     budget: { loading: false, data: null, error: null, year: null },   /* last /api/budget payload, for the "vs Budget" comparison */
-    recompute: { loading: false, result: null, error: null }   /* POST /api/history/recompute-live outcome */
+    recompute: { loading: false, result: null, error: null },   /* POST /api/history/recompute-live outcome */
+    pullWeek: { loadingWeek: null, error: null }   /* POST /api/history/pull-week - which single week (if any) is mid-pull */
   },
   gmail: {
     status: null,                /* last /api/gmail/status payload; null = not fetched yet */
@@ -3112,6 +3113,33 @@ function fetchHistoryRecomputeLive() {
   });
 }
 
+/* Manual trigger, one specific past week at a time - the only way to get
+   real Xero/OOLIO figures onto a week that's still carrying the old
+   spreadsheet import (recompute-live above only ever touches weeks
+   already confirmed live). Converts that week to source:'live', same as
+   Run the Numbers would. */
+function fetchHistoryPullWeek(week) {
+  var pw = state.history.pullWeek;
+  if (pw.loadingWeek) return;
+  pw.loadingWeek = week; pw.error = null;
+  render();
+  fetch('/api/history/pull-week', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: week }) }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    pw.loadingWeek = null;
+    if (json.available === false) {
+      pw.error = json.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : 'Not available right now.';
+    } else {
+      state.history.weeks = null; /* force a fresh /api/history read so the table reflects the pull */
+    }
+    render();
+    if (json.available !== false) fetchHistory();
+  }).catch(function () {
+    pw.loadingWeek = null; pw.error = 'Could not reach the dashboard just now.'; render();
+  });
+}
+
 /* One-time import panel - shown while history:week: is empty on the
    server, OR (replaceMode) as an opt-in re-run while every existing
    record is still source:'import' (worker.js's apiHistoryImport allows a
@@ -3393,6 +3421,24 @@ function renderHistoryMonthExpand(root, monthKey, weeksList) {
   var oolioWeeks = sorted.filter(function (w) { return w.revenueSource === 'oolio'; }).length;
   if (oolioWeeks) {
     card.appendChild(el('div', 'set-note', oolioWeeks + ' week' + (oolioWeeks === 1 ? '' : 's') + ' had Food/Bev/Event/Retail revenue from OOLIO directly (more accurate than the Xero-account guess) - Uber still comes from Xero either way.'));
+  }
+
+  var importedWeeks = sorted.filter(function (w) { return w.source !== 'live'; });
+  if (importedWeeks.length && !isManual()) {
+    var pw = state.history.pullWeek;
+    var pullWrap = el('div');
+    pullWrap.style.marginTop = '10px';
+    pullWrap.appendChild(el('div', 'set-label', 'Still showing the old spreadsheet import - pull real numbers for one week:'));
+    if (pw.error) pullWrap.appendChild(el('div', 'banner banner-coral', esc(pw.error)));
+    importedWeeks.forEach(function (w) {
+      var isLoading = pw.loadingWeek === w.week;
+      var btn = el('button', 'pl-toggle', isLoading ? 'Pulling ' + historyWeekLabel(w) + '…' : ('Pull real numbers for ' + historyWeekLabel(w)));
+      btn.disabled = !!pw.loadingWeek;
+      btn.style.display = 'block';
+      btn.onclick = function () { fetchHistoryPullWeek(w.week); };
+      pullWrap.appendChild(btn);
+    });
+    card.appendChild(pullWrap);
   }
 
   root.appendChild(card);

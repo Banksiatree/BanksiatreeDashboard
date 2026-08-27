@@ -1834,6 +1834,44 @@ async function apiHistoryRecomputeLive(env) {
   return json({ available: true, totalLive: liveWeeks.length, recomputed, failed });
 }
 
+/* POST /api/history/pull-week - body {week}. Pulls real Xero/OOLIO figures
+   for ONE arbitrary past week and overwrites whatever's there, converting
+   it to source:'live' regardless of whether it was previously import or
+   already live. Owner Input's "Run the Numbers" only ever reaches "this
+   week"/"last week" (both relative to today); a week further back than
+   that - most of History, since only a couple of weeks have ever actually
+   been live - has no other way to get real numbers pulled for it, so a
+   week still carrying the old spreadsheet's placeholder/gap data (e.g. a
+   week the sheet was never filled in for) just stays that way forever
+   with no path to fix it. This is that path, for exactly one named week
+   at a time, chosen deliberately by the owner rather than swept up in
+   bulk like recompute-live above (which only ever touches weeks already
+   confirmed live, since those are known-safe to blindly overwrite - an
+   import week might carry hand-typed detail, like Bank feeds or notes,
+   that pulling live could silently lose if done in bulk without the
+   owner choosing each one). */
+async function apiHistoryPullWeek(env, request) {
+  const body = await request.json().catch(() => null);
+  const week = body && body.week;
+  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad week' }, 400);
+
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+  try {
+    const saved = await saveHistorySnapshot(env, h, tenantId, week);
+    return json({ available: true, saved });
+  } catch (err) {
+    return json({ available: false, error: plainError(err.status || 500) });
+  }
+}
+
 /* ----------------------------------------------------------------------------
    OOLIO revenue-by-channel via Gmail (see the ADAPTERS.gmail comment for
    why Gmail rather than Cloudflare Email Routing). Polled from
@@ -2966,6 +3004,10 @@ export default {
     if (path === '/api/history/recompute-live' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryRecomputeLive(env);
+    }
+    if (path === '/api/history/pull-week' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryPullWeek(env, request);
     }
     /* TEMPORARY - see the email() handler's own comment. Lets the real
        OOLIO Revenue Performance Report email be inspected once one has
