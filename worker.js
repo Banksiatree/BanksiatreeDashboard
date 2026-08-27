@@ -421,7 +421,7 @@ async function fetchXeroPL(h, tenantId, from, to) {
    ID - confirmed against Xero's own developer forum, an open unimplemented
    feature request). Same underlying ledger though, so this replicates the
    same figures via the plain Reports/ProfitAndLoss endpoint:
-     - Wages split (Kitchen/BOH, FOH, Owner): the "4 Labour" tracking
+     - Wages split (Kitchen/BOH, FOH, Owner): the "Labour" tracking
        category IS fetchable - trackingCategoryID returns one column per
        tracking option, covering the whole P&L.
      - COGS split (FOH/BOH/Retail): no tracking category confirmed for this
@@ -582,7 +582,7 @@ async function fetchXeroPLSplit(h, tenantId, from, to) {
 
 /* Tracking category lookup, cached in KV like xeroTenantId - avoids a
    TrackingCategories call on every P&L fetch. Case-insensitive substring
-   match on Name (e.g. "4 Labour"), only considers ACTIVE categories. */
+   match on Name (e.g. "Labour"), only considers ACTIVE categories. */
 async function xeroTrackingCategoryId(env, h, tenantId, nameSubstring) {
   const cacheKey = 'xero:trackingcat:' + nameSubstring.toLowerCase();
   const cached = env.TOKENS ? await env.TOKENS.get(cacheKey) : null;
@@ -841,7 +841,7 @@ async function apiPL(env, url) {
 
   let wagesSplit = null;
   try {
-    const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, '4 labour');
+    const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, 'labour');
     if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, from, to, trackingCategoryId);
   } catch (err) { errors.wages = plainError(err.status || 500); }
 
@@ -1574,7 +1574,7 @@ async function apiOwnerWages(env, url) {
     /* Also extends this same "Run the Numbers" click to capture a full
        History snapshot (#3.4) for the week, since from/to here is always
        a real Mon-Sun trading week already. Best-effort: a History-saving
-       failure (e.g. the "4 Labour" tracking category lookup hiccupping)
+       failure (e.g. the "Labour" tracking category lookup hiccupping)
        must never break the owner-wage figure this endpoint has always
        returned, so it's wrapped in its own try/catch and swallowed. */
     /* TEMPORARY - see GET /api/debug/history-snapshot. Owner reported "Run
@@ -1657,7 +1657,7 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
   ]);
 
   let wagesSplit = null;
-  const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, '4 labour');
+  const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, 'labour');
   if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, wagesFrom, wagesTo, trackingCategoryId);
   /* TEMPORARY - see GET /api/debug/history-snapshot (which now also
      surfaces this under a wagesDebug key). Kitchen/FOH split came back
