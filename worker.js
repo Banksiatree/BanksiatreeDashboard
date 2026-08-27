@@ -2935,6 +2935,28 @@ export default {
       const raw = await env.TOKENS.get('debug:wages-split:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
     }
+    /* TEMPORARY - live, uncached pull of every Tracking Category Xero has
+       right now (name + status), to see directly why the "4 labour"
+       substring match started coming back empty rather than guessing
+       further from screenshots. Remove once resolved. */
+    if (path === '/api/debug/tracking-categories' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const h = makeHelpers(env, 'accounting');
+      let tenantId;
+      try { tenantId = await xeroTenantId(env, h); }
+      catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
+      try {
+        const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/TrackingCategories', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+        const cats = (data && data.TrackingCategories) || [];
+        return json({
+          available: true,
+          categories: cats.map((c) => ({
+            name: c.Name, status: c.Status, id: c.TrackingCategoryID,
+            options: (c.Options || []).map((o) => ({ name: o.Name, status: o.Status }))
+          }))
+        });
+      } catch (err) { return json({ available: false, error: plainError(err.status || 500), status: err.status, body: err.body }); }
+    }
     /* Manual trigger for testing - the real check runs on the cron
        schedule (scheduled() below), this just lets it be fired on demand
        right after connecting Gmail rather than waiting for the next
