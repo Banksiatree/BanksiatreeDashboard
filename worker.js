@@ -1785,6 +1785,55 @@ async function apiHistoryGet(env, url) {
   return json({ weeks: out });
 }
 
+/* POST /api/history/recompute-live - re-runs saveHistorySnapshot for every
+   week that's already source:'live'. "Run the Numbers" only ever refreshes
+   whichever week Owner Input currently calls "This week"/"Last week" - a
+   week that went live earlier and has since rolled past "last week" can
+   never be touched again through that path, so it just sits there forever
+   with whatever numbers it was saved with, even after a real bug fix (like
+   the COGS BOH/FOH keyword fix or the wages tracking-category name fix)
+   that would produce completely different, correct numbers if it were
+   just re-run. This is the manual, explicit "go fix every already-live
+   week now that the code is right" action - same on-demand-only rule as
+   every other Xero pull, just scoped to every live week instead of one. */
+async function apiHistoryRecomputeLive(env) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try {
+    tenantId = await xeroTenantId(env, h);
+  } catch (err) {
+    return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
+  }
+
+  const liveWeeks = [];
+  let cursor;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix: 'history:week:', cursor } : { prefix: 'history:week:' });
+    const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+    page.keys.forEach((k, i) => {
+      let rec = null;
+      try { rec = raws[i] && JSON.parse(raws[i]); } catch (e) {}
+      if (rec && rec.source === 'live') liveWeeks.push(k.name.slice('history:week:'.length));
+    });
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+
+  const failed = [];
+  let recomputed = 0;
+  for (const week of liveWeeks) {
+    try {
+      await saveHistorySnapshot(env, h, tenantId, week);
+      recomputed++;
+    } catch (err) {
+      failed.push({ week, error: plainError(err.status || 500) });
+    }
+  }
+  return json({ available: true, totalLive: liveWeeks.length, recomputed, failed });
+}
+
 /* ----------------------------------------------------------------------------
    OOLIO revenue-by-channel via Gmail (see the ADAPTERS.gmail comment for
    why Gmail rather than Cloudflare Email Routing). Polled from
@@ -2913,6 +2962,10 @@ export default {
     if (path === '/api/history/import' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryImport(env, request);
+    }
+    if (path === '/api/history/recompute-live' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryRecomputeLive(env);
     }
     /* TEMPORARY - see the email() handler's own comment. Lets the real
        OOLIO Revenue Performance Report email be inspected once one has

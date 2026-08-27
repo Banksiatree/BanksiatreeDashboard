@@ -677,7 +677,8 @@ var state = {
     importing: false,
     importError: null,
     showImportPanel: false,     /* the opt-in "replace the import" panel, once weeks already exist */
-    budget: { loading: false, data: null, error: null, year: null }   /* last /api/budget payload, for the "vs Budget" comparison */
+    budget: { loading: false, data: null, error: null, year: null },   /* last /api/budget payload, for the "vs Budget" comparison */
+    recompute: { loading: false, result: null, error: null }   /* POST /api/history/recompute-live outcome */
   },
   gmail: {
     status: null,                /* last /api/gmail/status payload; null = not fetched yet */
@@ -3081,6 +3082,36 @@ function fetchHistory() {
   });
 }
 
+/* Manual trigger only (its own button, own click) - re-runs the same
+   snapshot save "Run the Numbers" does, but for EVERY week that's already
+   source:'live', not just whichever one Owner Input currently calls
+   "last week". Needed because a week that's gone live and rolled past
+   "last week" can never be touched again through that path - if a real
+   bug fix changes what it should have shown, this is the only way to
+   actually apply it to weeks already saved. */
+function fetchHistoryRecomputeLive() {
+  var rc = state.history.recompute;
+  if (rc.loading) return;
+  rc.loading = true; rc.error = null; rc.result = null;
+  render();
+  fetch('/api/history/recompute-live', { method: 'POST' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (json) {
+    rc.loading = false;
+    if (json.available === false) {
+      rc.error = json.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : 'Not available right now.';
+    } else {
+      rc.result = json;
+      state.history.weeks = null; /* force a fresh /api/history read so the table reflects the recompute */
+    }
+    render();
+    if (json.available !== false) fetchHistory();
+  }).catch(function () {
+    rc.loading = false; rc.error = 'Could not reach the dashboard just now.'; render();
+  });
+}
+
 /* One-time import panel - shown while history:week: is empty on the
    server, OR (replaceMode) as an opt-in re-run while every existing
    record is still source:'import' (worker.js's apiHistoryImport allows a
@@ -3479,6 +3510,20 @@ function renderHistory(root) {
   toggle.onclick = function () { h.showImportPanel = !h.showImportPanel; render(); };
   root.appendChild(toggle);
   if (h.showImportPanel) renderHistoryImport(root, true);
+
+  if (!isManual()) {
+    var rc = h.recompute;
+    var rcBtn = el('button', 'pl-toggle', rc.loading ? 'Recomputing…' : 'Recompute all live weeks');
+    rcBtn.disabled = rc.loading;
+    rcBtn.onclick = function () { fetchHistoryRecomputeLive(); };
+    root.appendChild(rcBtn);
+    if (rc.error) root.appendChild(el('div', 'banner banner-coral', esc(rc.error)));
+    if (rc.result) {
+      var msg = 'Recomputed ' + rc.result.recomputed + ' of ' + rc.result.totalLive + ' live weeks.';
+      if (rc.result.failed && rc.result.failed.length) msg += ' ' + rc.result.failed.length + ' failed - try again in a bit.';
+      root.appendChild(el('div', 'set-note', msg));
+    }
+  }
 }
 
 function renderSettings(root) {
