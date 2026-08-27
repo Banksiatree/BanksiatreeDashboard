@@ -1659,6 +1659,17 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
   let wagesSplit = null;
   const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, '4 labour');
   if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, wagesFrom, wagesTo, trackingCategoryId);
+  /* TEMPORARY - see GET /api/debug/history-snapshot (which now also
+     surfaces this under a wagesDebug key). Kitchen/FOH split came back
+     null even after the posting-lag fix - this captures exactly why
+     (no tracking category found at all, vs. found but the shifted window
+     returned no tagged rows) instead of guessing further. Remove once
+     resolved. */
+  try {
+    await env.TOKENS.put('debug:wages-split:latest', JSON.stringify({
+      week, wagesFrom, wagesTo, trackingCategoryId: trackingCategoryId || null, wagesSplit, at: new Date().toISOString()
+    }));
+  } catch (e) {}
 
   let covers = null;
   const posAdapter = ADAPTERS.pos;
@@ -2917,6 +2928,11 @@ export default {
     if (path === '/api/debug/history-snapshot' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const raw = await env.TOKENS.get('debug:history-snapshot:latest');
+      return json(raw ? JSON.parse(raw) : { found: false });
+    }
+    if (path === '/api/debug/wages-split' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const raw = await env.TOKENS.get('debug:wages-split:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
     }
     /* Manual trigger for testing - the real check runs on the cron
