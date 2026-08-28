@@ -1866,8 +1866,16 @@ async function apiHistoryPullWeek(env, request) {
   }
   try {
     const saved = await saveHistorySnapshot(env, h, tenantId, week);
+    /* TEMPORARY - see GET /api/debug/history-snapshot. Owner reported this
+       endpoint producing no visible change even after the response itself
+       claims success - capturing the exact payload sent back so it can be
+       compared against what the History tab actually shows, instead of
+       guessing whether the save or the display is what's wrong. Remove
+       once resolved. */
+    try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week, ok: true, source: 'pull-week', saved, at: new Date().toISOString() })); } catch (e) {}
     return json({ available: true, saved });
   } catch (err) {
+    try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week, ok: false, source: 'pull-week', error: String((err && err.stack) || (err && err.message) || err), at: new Date().toISOString() })); } catch (e) {}
     return json({ available: false, error: plainError(err.status || 500) });
   }
 }
