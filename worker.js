@@ -1967,7 +1967,20 @@ function base64UrlToBytes(b64url) {
    wholesale, and writes the result back. Lets two independent triggers -
    Owner Input's Run the Numbers (Xero) and the Gmail OOLIO poll - both
    contribute to the same week's record without one wiping out fields the
-   other already set. */
+   other already set.
+
+   CONFIRMED LIVE DATA LOSS BUG (fixed here): a nested-object patch's own
+   `null` fields used to overwrite the existing value outright (plain
+   object spread doesn't skip null/undefined keys) - so any OOLIO PDF
+   parse that came back with no matching rows for a bucket (returns null
+   for that bucket, by design, rather than guessing) silently WIPED
+   whatever good revenue was already there for that week, including
+   during early testing before the real PDF parser existed. This ran
+   several times against real historical weeks before being caught. Now
+   a patch's null/undefined values inside a merged nested object are
+   skipped entirely - "unknown this time" no longer means "erase what we
+   already knew". A top-level (non-nested) field can still be explicitly
+   set to null on purpose (e.g. clearing notes). */
 async function mergeHistoryWeek(env, week, patch) {
   const raw = await env.TOKENS.get('history:week:' + week);
   let existing = null;
@@ -1975,7 +1988,9 @@ async function mergeHistoryWeek(env, week, patch) {
   const merged = existing ? { ...existing } : { week, weekEnding: shiftIsoDate(week, 6), source: 'live' };
   for (const [key, val] of Object.entries(patch)) {
     if (val && typeof val === 'object' && !Array.isArray(val) && merged[key] && typeof merged[key] === 'object') {
-      merged[key] = { ...merged[key], ...val };
+      const cleanVal = {};
+      for (const [k2, v2] of Object.entries(val)) { if (v2 != null) cleanVal[k2] = v2; }
+      merged[key] = { ...merged[key], ...cleanVal };
     } else {
       merged[key] = val;
     }
@@ -3106,6 +3121,36 @@ export default {
           }))
         });
       } catch (err) { return json({ available: false, error: plainError(err.status || 500), status: err.status, body: err.body }); }
+    }
+    /* TEMPORARY - full-scope audit after finding mergeHistoryWeek's null-
+       overwrite bug. Lists every history:week: record's revenue total
+       against its Bank feeds figure - a revenue total under half the Bank
+       feeds figure is a strong signal that week got nulled out by the bug
+       (an OOLIO parse that came back empty, wiping real data) rather than
+       genuinely having low revenue that week. Remove once the full damage
+       is found and repaired. */
+    if (path === '/api/debug/history-audit' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const out = [];
+      let cursor;
+      for (;;) {
+        const page = await env.TOKENS.list(cursor ? { prefix: 'history:week:', cursor } : { prefix: 'history:week:' });
+        const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+        page.keys.forEach((k, i) => {
+          let rec = null;
+          try { rec = raws[i] && JSON.parse(raws[i]); } catch (e) {}
+          if (!rec) return;
+          const rev = rec.revenue || {};
+          const revTotal = (rev.food || 0) + (rev.bev || 0) + (rev.uber || 0) + (rev.event || 0) + (rev.retail || 0) + (rev.uncategorised || 0);
+          const bankFeeds = rec.bankFeeds || 0;
+          const suspicious = bankFeeds > 0 && revTotal < bankFeeds * 0.5;
+          out.push({ week: rec.week, source: rec.source, revenueSource: rec.revenueSource || null, revTotal: Math.round(revTotal * 100) / 100, bankFeeds, suspicious });
+        });
+        if (page.list_complete) break;
+        cursor = page.cursor;
+      }
+      out.sort((a, b) => (a.week < b.week ? -1 : a.week > b.week ? 1 : 0));
+      return json({ weeks: out, suspiciousCount: out.filter((w) => w.suspicious).length });
     }
     /* Manual trigger for testing - the real check runs on the cron
        schedule (scheduled() below), this just lets it be fired on demand
