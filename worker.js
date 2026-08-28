@@ -3060,7 +3060,7 @@ export default {
     }
     /* TEMPORARY, ONE-TIME - see apiHistoryRepairAug10Revenue's comment.
        Remove this route once run once. */
-    if (path === '/api/history/repair-aug10-revenue' && request.method === 'POST') {
+    if (path === '/api/history/repair-aug10-revenue' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryRepairAug10Revenue(env);
     }
