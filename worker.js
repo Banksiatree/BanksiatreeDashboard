@@ -1687,14 +1687,36 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
      fetchGmailOolioReport) - genuinely more accurate than this keyword
      guess on Xero account names, so once revenueSource is 'oolio' this
      never overwrites them, only ever refreshes Uber (which OOLIO's
-     report doesn't carry at all). Falls back to Xero's own classification
-     for all five channels, same as before, until an OOLIO report has
-     actually been read for the week. */
+     report doesn't carry at all).
+
+     CONFIRMED BROKEN for this venue's real Chart of Accounts (a live
+     incident, not a hypothetical): Trading Income here is organised by
+     payment channel (Cash deposits/Eftpos Sales/Delivery sales/Catering
+     Income/Fee income), not by product category at all - none of those
+     names contain "food"/"beverage"/"uber"/"retail", so the keyword
+     guess below classifies almost everything as itself, i.e. wrongly.
+     Once wiped a real week's Food/Bev/Uber/Event/Retail breakdown down to
+     near-zero when a live pull ran on a week that already had good data
+     (an import, or an earlier OOLIO read). Two protections now: never
+     touch a week that already has ANY of these five fields populated
+     from a better source, and for a genuinely first-time week with
+     nothing there yet, don't attempt the unreliable per-channel guess at
+     all - put the whole real total under uncategorised, visibly, rather
+     than silently mis-splitting it, until an OOLIO report actually
+     supplies the real breakdown. */
   let existing = null;
   if (existingRaw) { try { existing = JSON.parse(existingRaw); } catch (e) {} }
-  const revenuePatch = (existing && existing.revenueSource === 'oolio')
-    ? { uber: revSplit.buckets.uber }
-    : { food: revSplit.buckets.food, bev: revSplit.buckets.bev, uber: revSplit.buckets.uber, event: revSplit.buckets.event, retail: revSplit.buckets.retail };
+  const existingRevenue = existing && existing.revenue;
+  const hasRevenueAlready = !!(existingRevenue && [existingRevenue.food, existingRevenue.bev, existingRevenue.uber, existingRevenue.event, existingRevenue.retail].some((v) => v != null));
+  let revenuePatch;
+  if (existing && existing.revenueSource === 'oolio') {
+    revenuePatch = { uber: revSplit.buckets.uber };
+  } else if (hasRevenueAlready) {
+    revenuePatch = {};
+  } else {
+    const revTotal = revSplit.buckets.food + revSplit.buckets.bev + revSplit.buckets.uber + revSplit.buckets.event + revSplit.buckets.retail + revSplit.buckets.uncategorised;
+    revenuePatch = { food: 0, bev: 0, uber: 0, event: 0, retail: 0, uncategorised: revTotal };
+  }
 
   return mergeHistoryWeek(env, week, {
     source: 'live',
@@ -1878,6 +1900,25 @@ async function apiHistoryPullWeek(env, request) {
     try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week, ok: false, source: 'pull-week', error: String((err && err.stack) || (err && err.message) || err), at: new Date().toISOString() })); } catch (e) {}
     return json({ available: false, error: plainError(err.status || 500) });
   }
+}
+
+/* TEMPORARY, ONE-TIME REPAIR - see the revenuePatch comment above
+   saveHistorySnapshot. Before that fix existed, pull-week overwrote
+   2026-08-10's real imported Food/Bev/Uber/Event/Retail revenue
+   breakdown with the broken Xero keyword guess. This restores exactly
+   the original imported values (read from the same history-import.json
+   the week was first imported from) and nothing else - COGS/wages/opex
+   stay as the now-correctly-recomputed live figures, only the revenue
+   field is touched. Remove this endpoint once run once. */
+async function apiHistoryRepairAug10Revenue(env) {
+  const week = '2026-08-10';
+  const original = { food: 14526.02, bev: 7573.89, uber: 0, event: 475, retail: 316.81 };
+  const raw = await env.TOKENS.get('history:week:' + week);
+  if (!raw) return json({ ok: false, error: 'week not found' }, 404);
+  const rec = JSON.parse(raw);
+  rec.revenue = original;
+  await env.TOKENS.put('history:week:' + week, JSON.stringify(rec));
+  return json({ ok: true, week, revenue: rec.revenue });
 }
 
 /* ----------------------------------------------------------------------------
@@ -3016,6 +3057,12 @@ export default {
     if (path === '/api/history/pull-week' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryPullWeek(env, request);
+    }
+    /* TEMPORARY, ONE-TIME - see apiHistoryRepairAug10Revenue's comment.
+       Remove this route once run once. */
+    if (path === '/api/history/repair-aug10-revenue' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryRepairAug10Revenue(env);
     }
     /* TEMPORARY - see the email() handler's own comment. Lets the real
        OOLIO Revenue Performance Report email be inspected once one has
