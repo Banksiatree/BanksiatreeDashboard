@@ -645,7 +645,7 @@ var state = {
     openCogs: false, openWages: false, openOpex: false  /* which dropdown breakdowns are expanded */
   },
   ownerInput: {
-    week: 'thisWeek',          /* thisWeek | lastWeek */
+    week: 'lastWeek',          /* thisWeek | lastWeek - defaults to last week since Run the Numbers is always done Monday for the week that just ended, not the one just starting */
     myOwner: loadJson('vd_myowner', null),  /* remembered pick, this device only - convenience, not auth */
     data: null,                /* last /api/ownerinput payload */
     loading: false,
