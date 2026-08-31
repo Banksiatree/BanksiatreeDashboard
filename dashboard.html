@@ -1571,7 +1571,9 @@ function renderGmailCard(root) {
       dbgCard.appendChild(document.createElement('br'));
       var note = el('div', 'set-note');
       note.style.marginTop = '4px';
-      note.textContent = 'Your AI hasn’t finished building the part that turns this into History’s revenue-by-channel numbers yet - once one lands, tell your AI and it’ll take it from here.';
+      note.textContent = g.debug.parsedWeek
+        ? ('Parsed as the week of ' + g.debug.parsedWeek + ' - ' + (g.debug.parsedRows ? g.debug.parsedRows.length : 0) + ' reporting groups read and merged into History.')
+        : 'Found this email but couldn’t parse a week/data from it - click "Check for OOLIO report now" to retry, or tell your AI if it keeps failing.';
       dbgCard.appendChild(note);
       card.appendChild(dbgCard);
     }
