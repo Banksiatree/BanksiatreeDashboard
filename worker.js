@@ -3241,6 +3241,41 @@ export default {
         return json({ available: true, period, revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads, netProfit: r.netProfit });
       } catch (err) { return json({ available: false, error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
     }
+    /* TEMPORARY - netProfit came back 0 even though revenue/cogs/wages
+       extracted correctly from the same report via the same cell-reading
+       function, meaning findXeroNetProfitRow matched SOME row but pulled
+       the wrong value from it (or matched the wrong row entirely - e.g.
+       a mid-report placeholder also labelled "Net Profit" with a 0
+       value, found before the real bottom-line one). Dumps every row's
+       type/title/label/raw-cells so the real structure can be seen
+       directly instead of guessed at again. Remove once resolved. */
+    if (path === '/api/debug/cashsplit-rawrows' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const h = makeHelpers(env, 'accounting');
+      let tenantId;
+      try { tenantId = await xeroTenantId(env, h); }
+      catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
+      try {
+        const period = last4CompletedQuarters();
+        const url2 = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + period.from + '&toDate=' + period.to;
+        const data = await h.fetchJson(url2, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+        const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+        const out = [];
+        function walk(list, depth) {
+          for (const row of list || []) {
+            out.push({
+              depth,
+              rowType: row.RowType,
+              title: row.Title || null,
+              cells: (row.Cells || []).map((c) => c.Value)
+            });
+            if (row.Rows) walk(row.Rows, depth + 1);
+          }
+        }
+        walk(rows, 0);
+        return json({ available: true, period, rows: out });
+      } catch (err) { return json({ available: false, error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
+    }
     if (path === '/api/debug/tracking-categories' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const h = makeHelpers(env, 'accounting');
