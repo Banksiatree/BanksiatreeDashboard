@@ -1984,6 +1984,23 @@ function parseOolioReportingGroupsPdf(text) {
   return rows;
 }
 
+/* OOLIO's "Sales Summary.pdf" - a single store row with a weekly
+   transaction Count as its first data column (verified against the real
+   report: "684 $26,125.44 $1,018.33 ..." right after the "Sales Summary"
+   header/column-label block, confirmed matching the independently-summed
+   per-channel counts on "Sales by Channel.pdf" exactly). The store name
+   ("The Banksia Tree") and every column label above it wrap across
+   several lines with no digits in them, so the first integer immediately
+   followed by a dollar amount is unambiguously the Count, not a date or
+   a column header. */
+function parseOolioSalesSummaryCount(text) {
+  const idx = String(text || '').indexOf('Sales Summary');
+  if (idx < 0) return null;
+  const m = /(\d[\d,]*)\s+\$[\d,]+\.\d{2}/.exec(text.slice(idx));
+  if (!m) return null;
+  return parseInt(m[1].replace(/,/g, ''), 10);
+}
+
 /* The report's own "From: DD/MM/YYYY ..." line (Australian date order,
    confirmed in the real sample) gives the exact Mon-Sun week - no
    shifting or guessing needed, unlike the Xero pulls elsewhere in this
@@ -2041,23 +2058,28 @@ async function fetchGmailOolioReport(env, h, force) {
   const messages = search.messages || [];
   if (!messages.length) return { checked: true, found: false, reason: 'no messages under label:' + GMAIL_OOLIO_LABEL };
 
-  /* "Reporting Groups" specifically - confirmed live that OOLIO actually
-     sends SEVERAL SEPARATE emails each week under this label ("Weekly
-     Sales summary", "Reconciliation report-weekly", "Dashboard sales",
-     "Categories", ...), arriving within seconds of each other - only
-     "Weekly Sales summary" carries the Reporting Groups PDF this app
-     reads. Which one Gmail returns as literally newest varies week to
-     week depending on exact send order, so checking only messages[0] and
-     giving up if THAT ONE lacked the PDF was unreliable - a week where
-     the right email arrived a few seconds before an unrelated one meant
-     the check silently gave up every time. Scans the most recent few
+  /* Confirmed live that OOLIO actually sends SEVERAL SEPARATE emails each
+     week under this label ("Weekly Sales summary", "Reconciliation
+     report-weekly", "Dashboard sales", "Categories", ...), arriving
+     within seconds of each other. The "Weekly Sales summary" email
+     itself carries THREE PDFs - "Reporting Groups.pdf" (revenue by
+     category, already used), "Sales by Channel.pdf", and "Sales
+     Summary.pdf" (a single clean weekly transaction count, e.g. "684" -
+     confirmed matching the sum of Sales by Channel's per-channel counts
+     exactly). Which email Gmail returns as literally newest varies week
+     to week, so checking only messages[0] and giving up if THAT ONE
+     lacked the Reporting Groups PDF was unreliable - a week where the
+     right email arrived a few seconds before an unrelated one meant the
+     check silently gave up every time. Scans the most recent few
      messages (still newest-first) and uses the first one that actually
-     has the PDF, instead of assuming the newest message overall is it. */
-  function findReportingGroupsPart(part) {
+     has Reporting Groups, instead of assuming the newest message overall
+     is it - then reads Sales Summary straight off that SAME message
+     (no extra search needed, it's a sibling attachment). */
+  function findPdfPart(part, nameRe) {
     if (!part) return null;
-    if (part.filename && /report.*group/i.test(part.filename) && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
+    if (part.filename && nameRe.test(part.filename) && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
     for (const child of part.parts || []) {
-      const found = findReportingGroupsPart(child);
+      const found = findPdfPart(child, nameRe);
       if (found) return found;
     }
     return null;
@@ -2067,7 +2089,7 @@ async function fetchGmailOolioReport(env, h, force) {
   let full = null, pdfPart = null, msgId = null;
   for (const msg of messages) {
     const candidate = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
-    const found = findReportingGroupsPart(candidate.payload);
+    const found = findPdfPart(candidate.payload, /report.*group/i);
     if (found) { full = candidate; pdfPart = found; msgId = msg.id; break; }
   }
   if (!pdfPart) {
@@ -2089,6 +2111,21 @@ async function fetchGmailOolioReport(env, h, force) {
   const week = oolioReportWeekFromText(text);
   const rows = parseOolioReportingGroupsPdf(text);
 
+  /* Sales Summary is a sibling attachment on this same message - best
+     effort, missing/unparsable doesn't block the revenue merge above. */
+  let transactions = null;
+  try {
+    const salesSummaryPart = findPdfPart(full.payload, /^sales summary\.pdf$/i);
+    if (salesSummaryPart) {
+      const ssAttachment = await h.fetchJson(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + salesSummaryPart.body.attachmentId
+      );
+      const ssPdf = await getDocumentProxy(base64UrlToBytes(ssAttachment.data));
+      const { text: ssText } = await extractText(ssPdf, { mergePages: true });
+      transactions = parseOolioSalesSummaryCount(ssText);
+    }
+  } catch (e) { /* revenue merge still proceeds without a transaction count */ }
+
   const debugRecord = {
     from: headerVal('From'),
     to: 'gmail:' + GMAIL_OOLIO_LABEL,
@@ -2098,7 +2135,8 @@ async function fetchGmailOolioReport(env, h, force) {
     csvFilename: pdfPart.filename,
     csvText: text,
     parsedWeek: week,
-    parsedRows: rows
+    parsedRows: rows,
+    transactions
   };
   await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(debugRecord));
   await env.TOKENS.put('gmail:lastProcessedId', msgId);
@@ -2108,9 +2146,11 @@ async function fetchGmailOolioReport(env, h, force) {
   }
 
   const revenue = oolioRevenueFromReportingGroups(rows);
-  await mergeHistoryWeek(env, week, { revenue, revenueSource: 'oolio' });
+  const patch = { revenue, revenueSource: 'oolio' };
+  if (transactions != null) patch.covers = transactions;
+  await mergeHistoryWeek(env, week, patch);
 
-  return { checked: true, found: true, merged: true, week, subject: debugRecord.subject, filename: pdfPart.filename, revenue };
+  return { checked: true, found: true, merged: true, week, subject: debugRecord.subject, filename: pdfPart.filename, revenue, transactions };
 }
 
 /* TEMPORARY DIAGNOSTIC - owner wants transaction counts switched to come
