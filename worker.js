@@ -382,6 +382,30 @@ function walkXeroOpex(section, periodIndex, acc) {
     }
   }
 }
+/* Xero's own bottom-line "Net Profit" row, straight off the report - not
+   reconstructed from separate COGS/Wages/Owner-wages/Opex figures. Owner
+   explicit instruction after a wrong custom reconstruction attempt: this
+   report already computes Total Income - Total Expenses correctly, with
+   wages/owner wages classified however Xero itself has them set up, so
+   reading it directly avoids re-deriving (and potentially
+   mis-categorising) that math independently. Standard Xero terminology
+   ("Net Profit", not "Gross Profit" or any other line) - searched fully
+   recursively since its exact nesting/RowType can vary by report layout,
+   matched on label text alone rather than assumed position. */
+function findXeroNetProfitRow(rows) {
+  for (const row of rows || []) {
+    if (row.RowType === 'Row' || row.RowType === 'SummaryRow') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      if (/^net profit$/i.test(label.trim())) return row;
+    }
+    if (row.Rows) {
+      const found = findXeroNetProfitRow(row.Rows);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function walkXeroPL(reportRows, periodIndex) {
   let revenue = 0, cogs = 0;
   const opexAcc = { wagesSuper: 0, overheads: 0 };
@@ -401,7 +425,9 @@ function walkXeroPL(reportRows, periodIndex) {
       walkXeroOpex(row, periodIndex, opexAcc);
     }
   }
-  return { revenue, cogs, wagesSuper: opexAcc.wagesSuper, overheads: opexAcc.overheads };
+  const netProfitRow = findXeroNetProfitRow(reportRows);
+  const netProfit = netProfitRow ? xeroCellValue(netProfitRow, periodIndex) : null;
+  return { revenue, cogs, wagesSuper: opexAcc.wagesSuper, overheads: opexAcc.overheads, netProfit };
 }
 
 /* Issues one Xero P&L call for a date range and returns the parsed figures.
@@ -1146,27 +1172,25 @@ async function apiCashSplit(env) {
 
   let pl = null, plError = null;
   try {
-    /* fetchXeroPLSplit, not the simpler fetchXeroPL - CONFIRMED LIVE BUG
-       (fixed here): fetchXeroPL's wagesSuper/overheads totals explicitly
-       EXCLUDE owner wages entirely (walkXeroOpex skips DISTRIBUTION_OF_
-       PROFIT_RE/OWNER_WAGE_RE/OWNER_SUPER_RE rows outright, on purpose -
-       they're meant to be a separate line elsewhere), but nothing here
-       was then subtracting owner wages either, so "net profit" was
-       really "profit before owner wages" - a large real cost silently
-       missing, overstating the Cash/profit rate substantially (owner
-       reported ~24% shown vs an expected ~8%). True net profit is
-       Revenue - COGS - Wages - Owner wages - Opex, same formula already
-       used by the P&L tab's own "True net profit" line and History's
-       Profit row - fetchXeroPLSplit is what those already use, since it
-       returns ownerWages as its own field instead of discarding it. */
-    const r = await fetchXeroPLSplit(h, tenantId, period.from, period.to);
-    const cogsTotal = r.cogs.buckets.foh + r.cogs.buckets.boh + r.cogs.buckets.retail + r.cogs.buckets.uncategorised;
-    const netRevenue = r.revenue - cogsTotal;
-    const netProfit = netRevenue - r.opex.wagesSuperExclOwner - r.opex.ownerWages - r.opex.opexTotal;
-    const cogsPct = r.revenue ? cogsTotal / r.revenue : 0;
-    const cashPctRaw = netRevenue ? netProfit / netRevenue : 0;
+    /* Net profit here is Xero's OWN bottom-line "Net Profit" figure
+       straight off the report (walkXeroPL's netProfit, via
+       findXeroNetProfitRow) - explicit owner instruction, after an
+       earlier attempt tried to reconstruct it by subtracting Wages and
+       Owner wages as separate custom-categorised deductions, which
+       wasn't what was wanted: wages and owner wages are meant to stay
+       inside Xero's own Opex grouping for this rate, not pulled out and
+       resubtracted independently. Reading the report's own total avoids
+       re-deriving (and potentially mis-categorising) that math at all -
+       whatever Xero itself already nets everything down to is what's
+       used, no separate wages/owner-wages logic here. cogsPct is
+       unchanged (revenue and cogs totals, not disputed). */
+    const r = await fetchXeroPL(h, tenantId, period.from, period.to);
+    const netRevenue = r.revenue - r.cogs;
+    const netProfit = r.netProfit;
+    const cogsPct = r.revenue ? r.cogs / r.revenue : 0;
+    const cashPctRaw = (netRevenue && netProfit != null) ? netProfit / netRevenue : 0;
     pl = {
-      revenue: r.revenue, cogs: cogsTotal, wagesSuper: r.opex.wagesSuperExclOwner, ownerWages: r.opex.ownerWages, overheads: r.opex.opexTotal,
+      revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads,
       netRevenue, netProfit, cogsPct,
       cashPctRaw, cashPct: Math.max(cashPctRaw, 0.01), cashFloored: cashPctRaw < 0.01
     };
@@ -3201,10 +3225,22 @@ export default {
       const raw = await env.TOKENS.get('debug:wages-split:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
     }
-    /* TEMPORARY - live, uncached pull of every Tracking Category Xero has
-       right now (name + status), to see directly why the "4 labour"
-       substring match started coming back empty rather than guessing
-       further from screenshots. Remove once resolved. */
+    /* TEMPORARY - verifies findXeroNetProfitRow actually found the right
+       row before trusting Cash Split's Profit% on it - live, over the
+       same last4CompletedQuarters() window Cash Split itself uses.
+       Remove once confirmed matching the owner's real Xero P&L. */
+    if (path === '/api/debug/cashsplit-netprofit' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const h = makeHelpers(env, 'accounting');
+      let tenantId;
+      try { tenantId = await xeroTenantId(env, h); }
+      catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
+      try {
+        const period = last4CompletedQuarters();
+        const r = await fetchXeroPL(h, tenantId, period.from, period.to);
+        return json({ available: true, period, revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads, netProfit: r.netProfit });
+      } catch (err) { return json({ available: false, error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
+    }
     if (path === '/api/debug/tracking-categories' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const h = makeHelpers(env, 'accounting');
