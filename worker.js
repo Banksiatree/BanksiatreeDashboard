@@ -1602,18 +1602,7 @@ async function apiOwnerWages(env, url) {
        failure (e.g. the "Labour" tracking category lookup hiccupping)
        must never break the owner-wage figure this endpoint has always
        returned, so it's wrapped in its own try/catch and swallowed. */
-    /* TEMPORARY - see GET /api/debug/history-snapshot. Owner reported "Run
-       the Numbers" for a week producing no visible change to that week's
-       History record, with no error shown anywhere (the catch below used
-       to swallow silently) - this captures either the real failure or the
-       actual record that got saved, so it can be read back instead of
-       guessed at. Remove once confirmed fixed. */
-    try {
-      const saved = await saveHistorySnapshot(env, h, tenantId, from);
-      await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week: from, ok: true, saved, at: new Date().toISOString() }));
-    } catch (e) {
-      try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week: from, ok: false, error: String((e && e.stack) || (e && e.message) || e), at: new Date().toISOString() })); } catch (e2) {}
-    }
+    try { await saveHistorySnapshot(env, h, tenantId, from); } catch (e) {}
     return json({ available: true, actual: split.opex.ownerWages });
   } catch (err) {
     return json({ available: false, error: plainError(err.status || 500) });
@@ -1682,17 +1671,6 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
   let wagesSplit = null;
   const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, 'labour');
   if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, wagesFrom, wagesTo, trackingCategoryId);
-  /* TEMPORARY - see GET /api/debug/history-snapshot (which now also
-     surfaces this under a wagesDebug key). Kitchen/FOH split came back
-     null even after the posting-lag fix - this captures exactly why
-     (no tracking category found at all, vs. found but the shifted window
-     returned no tagged rows) instead of guessing further. Remove once
-     resolved. */
-  try {
-    await env.TOKENS.put('debug:wages-split:latest', JSON.stringify({
-      week, wagesFrom, wagesTo, trackingCategoryId: trackingCategoryId || null, wagesSplit, at: new Date().toISOString()
-    }));
-  } catch (e) {}
 
   let covers = null;
   const posAdapter = ADAPTERS.pos;
@@ -1889,69 +1867,10 @@ async function apiHistoryPullWeek(env, request) {
   }
   try {
     const saved = await saveHistorySnapshot(env, h, tenantId, week);
-    /* TEMPORARY - see GET /api/debug/history-snapshot. Owner reported this
-       endpoint producing no visible change even after the response itself
-       claims success - capturing the exact payload sent back so it can be
-       compared against what the History tab actually shows, instead of
-       guessing whether the save or the display is what's wrong. Remove
-       once resolved. */
-    try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week, ok: true, source: 'pull-week', saved, at: new Date().toISOString() })); } catch (e) {}
     return json({ available: true, saved });
   } catch (err) {
-    try { await env.TOKENS.put('debug:history-snapshot:latest', JSON.stringify({ week, ok: false, source: 'pull-week', error: String((err && err.stack) || (err && err.message) || err), at: new Date().toISOString() })); } catch (e) {}
     return json({ available: false, error: plainError(err.status || 500) });
   }
-}
-
-/* TEMPORARY REPAIR TOOL - resets one week's Food/Bev/Uber/Event/Retail
-   revenue fields to null (an honest "no reliable data yet" state,
-   consistent with what a never-touched week looks like now that
-   saveHistorySnapshot never guesses this from Xero), clearing whatever
-   wrong/guessed/duplicated numbers are currently sitting there. Does NOT
-   touch bankFeeds/cogs/wages/opex/notes - only revenue. Superseded a
-   week-specific version of this (2026-08-10 only) after discovering the
-   values it restored from history-import.json were themselves wrong -
-   an exact duplicate of 2026-08-17's figures, not real 10-16 Aug data.
-   Generic now (?week=YYYY-MM-DD) since the same clobbering bug affected
-   multiple weeks, not just one - see GET /api/debug/history-audit for
-   the full list. Remove this endpoint once every affected week is clean
-   and future weeks are only ever populated by a real OOLIO report. */
-async function apiHistoryClearRevenue(env, url) {
-  const week = url.searchParams.get('week');
-  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad week' }, 400);
-  const raw = await env.TOKENS.get('history:week:' + week);
-  if (!raw) return json({ ok: false, error: 'week not found' }, 404);
-  const rec = JSON.parse(raw);
-  rec.revenue = { food: null, bev: null, uber: null, event: null, retail: null, uncategorised: null };
-  delete rec.revenueSource;
-  await env.TOKENS.put('history:week:' + week, JSON.stringify(rec));
-  return json({ ok: true, week, revenue: rec.revenue });
-}
-
-/* TEMPORARY REPAIR TOOL - a plain GET (clickable link, same reasoning as
-   apiHistoryClearRevenue: a POST-only repair endpoint is friction with
-   no payoff for a one-time admin action) that directly sets one week's
-   revenue fields to specific values, passed as query params. Used to
-   restore weeks damaged by the old mergeHistoryWeek null-overwrite bug
-   (fixed, but not retroactive) using the exact figures from the original
-   history-import.json, cross-checked against neighbouring weeks before
-   use (unlike the very first repair attempt, which turned out to
-   restore a duplicated/wrong value - this endpoint exists so the values
-   being written are visible in the URL itself, not buried in code, and
-   can be checked before clicking). Does not touch bankFeeds/cogs/wages/
-   opex/notes - only revenue. Remove once every affected week is fixed. */
-async function apiHistoryRestoreRevenue(env, url) {
-  const week = url.searchParams.get('week');
-  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad week' }, 400);
-  const num = (k) => { const v = url.searchParams.get(k); return v === null || v === '' ? null : Number(v); };
-  const revenue = { food: num('food'), bev: num('bev'), uber: num('uber'), event: num('event'), retail: num('retail') };
-  const raw = await env.TOKENS.get('history:week:' + week);
-  if (!raw) return json({ ok: false, error: 'week not found' }, 404);
-  const rec = JSON.parse(raw);
-  rec.revenue = revenue;
-  delete rec.revenueSource;
-  await env.TOKENS.put('history:week:' + week, JSON.stringify(rec));
-  return json({ ok: true, week, revenue: rec.revenue });
 }
 
 /* ----------------------------------------------------------------------------
@@ -2253,54 +2172,6 @@ async function fetchGmailOolioReport(env, h, force) {
   await mergeHistoryWeek(env, week, patch);
 
   return { checked: true, found: true, merged: true, week, subject: debugRecord.subject, filename: pdfPart.filename, revenue, transactions };
-}
-
-/* TEMPORARY DIAGNOSTIC - owner wants transaction counts switched to come
-   from OOLIO's "Sales summary" email/report too (currently transactions
-   come from the separate POS webhook/CSV feed, ADAPTERS.pos). Before
-   writing any parser for it, need to see the REAL PDF text and layout -
-   same "verify against the real file before guessing" discipline that
-   made parseOolioReportingGroupsPdf work correctly the first time,
-   rather than assuming column names. Walks every PDF attachment on the
-   most recent labelled emails and returns each one's raw extracted text
-   (trimmed) so the right one can be identified and its actual structure
-   read directly. Remove once the real parser exists. */
-async function apiDebugOolioAllAttachments(env) {
-  const h = makeHelpers(env, 'gmail');
-  const searchUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' +
-    encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=5';
-  const search = await h.fetchJson(searchUrl);
-  const messages = search.messages || [];
-  const { getDocumentProxy, extractText } = await import('unpdf');
-
-  function findAllPdfParts(part, out) {
-    if (!part) return;
-    if (part.filename && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) out.push(part);
-    for (const child of part.parts || []) findAllPdfParts(child, out);
-  }
-
-  const out = [];
-  for (const msg of messages) {
-    const full = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
-    const headers = (full.payload && full.payload.headers) || [];
-    const subject = (headers.find((x) => x.name.toLowerCase() === 'subject') || {}).value || '';
-    const pdfParts = [];
-    findAllPdfParts(full.payload, pdfParts);
-    const attachments = [];
-    for (const part of pdfParts) {
-      try {
-        const attachment = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '/attachments/' + part.body.attachmentId);
-        const pdfBytes = base64UrlToBytes(attachment.data);
-        const pdf = await getDocumentProxy(pdfBytes);
-        const { text } = await extractText(pdf, { mergePages: true });
-        attachments.push({ filename: part.filename, text: String(text || '').slice(0, 3000) });
-      } catch (err) {
-        attachments.push({ filename: part.filename, error: String((err && err.message) || err) });
-      }
-    }
-    out.push({ subject, attachments });
-  }
-  return json({ messages: out });
 }
 
 /* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the
@@ -3213,18 +3084,6 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryPullWeek(env, request);
     }
-    /* TEMPORARY - see apiHistoryClearRevenue's comment. Remove once every
-       affected week is clean. */
-    if (path === '/api/history/clear-revenue' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      return apiHistoryClearRevenue(env, url);
-    }
-    /* TEMPORARY - see apiHistoryRestoreRevenue's comment. Remove once
-       every affected week is fixed. */
-    if (path === '/api/history/restore-revenue' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      return apiHistoryRestoreRevenue(env, url);
-    }
     /* TEMPORARY - see the email() handler's own comment. Lets the real
        OOLIO Revenue Performance Report email be inspected once one has
        landed, so the real parser can be built against real columns
@@ -3233,91 +3092,6 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const raw = await env.TOKENS.get('debug:oolio-email:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
-    }
-    /* TEMPORARY - see the comment in apiOwnerWages. Remove once the
-       History "Run the Numbers produces no change" report is resolved. */
-    if (path === '/api/debug/history-snapshot' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const raw = await env.TOKENS.get('debug:history-snapshot:latest');
-      return json(raw ? JSON.parse(raw) : { found: false });
-    }
-    if (path === '/api/debug/wages-split' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const raw = await env.TOKENS.get('debug:wages-split:latest');
-      return json(raw ? JSON.parse(raw) : { found: false });
-    }
-    /* TEMPORARY - verifies walkXeroPL's corrected netProfit (Gross Profit
-       + Other Income - Operating Expenses excluding Distribution of
-       profit) against the owner's real Xero data - live, over the same
-       last4CompletedQuarters() window Cash Split itself uses. Remove
-       once confirmed matching (expected ~$101,439.59 / ~10.7% cashPct
-       for the 2025-07-01 to 2026-06-30 period already checked by hand). */
-    if (path === '/api/debug/cashsplit-netprofit' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const h = makeHelpers(env, 'accounting');
-      let tenantId;
-      try { tenantId = await xeroTenantId(env, h); }
-      catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
-      try {
-        const period = last4CompletedQuarters();
-        const r = await fetchXeroPL(h, tenantId, period.from, period.to);
-        return json({ available: true, period, revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads, netProfit: r.netProfit });
-      } catch (err) { return json({ available: false, error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
-    }
-    if (path === '/api/debug/tracking-categories' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const h = makeHelpers(env, 'accounting');
-      let tenantId;
-      try { tenantId = await xeroTenantId(env, h); }
-      catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
-      try {
-        const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/TrackingCategories', { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-        const cats = (data && data.TrackingCategories) || [];
-        return json({
-          available: true,
-          categories: cats.map((c) => ({
-            name: c.Name, status: c.Status, id: c.TrackingCategoryID,
-            options: (c.Options || []).map((o) => ({ name: o.Name, status: o.Status }))
-          }))
-        });
-      } catch (err) { return json({ available: false, error: plainError(err.status || 500), status: err.status, body: err.body }); }
-    }
-    /* TEMPORARY - full-scope audit after finding mergeHistoryWeek's null-
-       overwrite bug. Lists every history:week: record's revenue total
-       against its Bank feeds figure - a revenue total under half the Bank
-       feeds figure is a strong signal that week got nulled out by the bug
-       (an OOLIO parse that came back empty, wiping real data) rather than
-       genuinely having low revenue that week. Remove once the full damage
-       is found and repaired. */
-    if (path === '/api/debug/history-audit' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const out = [];
-      let cursor;
-      for (;;) {
-        const page = await env.TOKENS.list(cursor ? { prefix: 'history:week:', cursor } : { prefix: 'history:week:' });
-        const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
-        page.keys.forEach((k, i) => {
-          let rec = null;
-          try { rec = raws[i] && JSON.parse(raws[i]); } catch (e) {}
-          if (!rec) return;
-          const rev = rec.revenue || {};
-          const revTotal = (rev.food || 0) + (rev.bev || 0) + (rev.uber || 0) + (rev.event || 0) + (rev.retail || 0) + (rev.uncategorised || 0);
-          const bankFeeds = rec.bankFeeds || 0;
-          const suspicious = bankFeeds > 0 && revTotal < bankFeeds * 0.5;
-          out.push({ week: rec.week, source: rec.source, revenueSource: rec.revenueSource || null, revTotal: Math.round(revTotal * 100) / 100, bankFeeds, suspicious });
-        });
-        if (page.list_complete) break;
-        cursor = page.cursor;
-      }
-      out.sort((a, b) => (a.week < b.week ? -1 : a.week > b.week ? 1 : 0));
-      return json({ weeks: out, suspiciousCount: out.filter((w) => w.suspicious).length });
-    }
-    /* TEMPORARY - see apiDebugOolioAllAttachments's comment. Remove once
-       the real "Sales summary" transaction-count parser exists. */
-    if (path === '/api/debug/oolio-all-attachments' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      try { return await apiDebugOolioAllAttachments(env); }
-      catch (err) { return json({ error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
     }
     /* Manual trigger for testing - the real check runs on the cron
        schedule (scheduled() below), this just lets it be fired on demand
