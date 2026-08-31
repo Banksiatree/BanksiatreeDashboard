@@ -1862,6 +1862,32 @@ async function apiHistoryClearRevenue(env, url) {
   return json({ ok: true, week, revenue: rec.revenue });
 }
 
+/* TEMPORARY REPAIR TOOL - a plain GET (clickable link, same reasoning as
+   apiHistoryClearRevenue: a POST-only repair endpoint is friction with
+   no payoff for a one-time admin action) that directly sets one week's
+   revenue fields to specific values, passed as query params. Used to
+   restore weeks damaged by the old mergeHistoryWeek null-overwrite bug
+   (fixed, but not retroactive) using the exact figures from the original
+   history-import.json, cross-checked against neighbouring weeks before
+   use (unlike the very first repair attempt, which turned out to
+   restore a duplicated/wrong value - this endpoint exists so the values
+   being written are visible in the URL itself, not buried in code, and
+   can be checked before clicking). Does not touch bankFeeds/cogs/wages/
+   opex/notes - only revenue. Remove once every affected week is fixed. */
+async function apiHistoryRestoreRevenue(env, url) {
+  const week = url.searchParams.get('week');
+  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad week' }, 400);
+  const num = (k) => { const v = url.searchParams.get(k); return v === null || v === '' ? null : Number(v); };
+  const revenue = { food: num('food'), bev: num('bev'), uber: num('uber'), event: num('event'), retail: num('retail') };
+  const raw = await env.TOKENS.get('history:week:' + week);
+  if (!raw) return json({ ok: false, error: 'week not found' }, 404);
+  const rec = JSON.parse(raw);
+  rec.revenue = revenue;
+  delete rec.revenueSource;
+  await env.TOKENS.put('history:week:' + week, JSON.stringify(rec));
+  return json({ ok: true, week, revenue: rec.revenue });
+}
+
 /* ----------------------------------------------------------------------------
    OOLIO revenue-by-channel via Gmail (see the ADAPTERS.gmail comment for
    why Gmail rather than Cloudflare Email Routing). Polled from
@@ -2023,9 +2049,21 @@ function oolioReportWeekFromText(text) {
    this silently breaking. "Instructions" (always $0 in the real sample -
    looks like a non-revenue admin group) and anything else unmatched
    fold into uncategorised rather than being dropped. */
+/* CONFIRMED LIVE BUG (fixed here): a bucket with no matching reporting
+   group used to come back null - reasonable-looking on its own ("we
+   don't know"), but mergeHistoryWeek now correctly skips null patch
+   fields to avoid clobbering good data (see its own comment), so a null
+   uncategorised here left a STALE PLACEHOLDER VALUE from before this
+   report existed sitting untouched instead of being zeroed out -
+   doubling a week's revenue total (real category split PLUS the old
+   placeholder, both counted). Once a real report has been successfully
+   parsed at all (rows.length > 0, i.e. this function is even called),
+   every bucket is a genuinely KNOWN value - 0 if that reporting group
+   simply had no sales that week, never null - so the merge always
+   overwrites whatever guess/placeholder was there before with the real,
+   complete picture this report actually has. */
 function oolioRevenueFromReportingGroups(rows) {
-  const out = { food: 0, bev: 0, event: 0, retail: 0, uncategorised: 0 };
-  const has = { food: false, bev: false, event: false, retail: false, uncategorised: false };
+  const revenue = { food: 0, bev: 0, event: 0, retail: 0, uncategorised: 0 };
   for (const r of rows) {
     const name = r.name || '';
     let bucket;
@@ -2035,11 +2073,9 @@ function oolioRevenueFromReportingGroups(rows) {
     else if (/cater|event/i.test(name)) bucket = 'event';
     else if (/retail/i.test(name)) bucket = 'retail';
     else bucket = 'uncategorised';
-    out[bucket] += r.netSalesExTax;
-    has[bucket] = true;
+    revenue[bucket] += r.netSalesExTax;
   }
-  const revenue = {};
-  for (const k of Object.keys(out)) revenue[k] = has[k] ? Math.round(out[k] * 100) / 100 : null;
+  for (const k of Object.keys(revenue)) revenue[k] = Math.round(revenue[k] * 100) / 100;
   return revenue;
 }
 
@@ -3116,6 +3152,12 @@ export default {
     if (path === '/api/history/clear-revenue' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryClearRevenue(env, url);
+    }
+    /* TEMPORARY - see apiHistoryRestoreRevenue's comment. Remove once
+       every affected week is fixed. */
+    if (path === '/api/history/restore-revenue' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryRestoreRevenue(env, url);
     }
     /* TEMPORARY - see the email() handler's own comment. Lets the real
        OOLIO Revenue Performance Report email be inspected once one has
