@@ -1146,13 +1146,27 @@ async function apiCashSplit(env) {
 
   let pl = null, plError = null;
   try {
-    const r = await fetchXeroPL(h, tenantId, period.from, period.to);
-    const netRevenue = r.revenue - r.cogs;
-    const netProfit = netRevenue - r.wagesSuper - r.overheads;
-    const cogsPct = r.revenue ? r.cogs / r.revenue : 0;
+    /* fetchXeroPLSplit, not the simpler fetchXeroPL - CONFIRMED LIVE BUG
+       (fixed here): fetchXeroPL's wagesSuper/overheads totals explicitly
+       EXCLUDE owner wages entirely (walkXeroOpex skips DISTRIBUTION_OF_
+       PROFIT_RE/OWNER_WAGE_RE/OWNER_SUPER_RE rows outright, on purpose -
+       they're meant to be a separate line elsewhere), but nothing here
+       was then subtracting owner wages either, so "net profit" was
+       really "profit before owner wages" - a large real cost silently
+       missing, overstating the Cash/profit rate substantially (owner
+       reported ~24% shown vs an expected ~8%). True net profit is
+       Revenue - COGS - Wages - Owner wages - Opex, same formula already
+       used by the P&L tab's own "True net profit" line and History's
+       Profit row - fetchXeroPLSplit is what those already use, since it
+       returns ownerWages as its own field instead of discarding it. */
+    const r = await fetchXeroPLSplit(h, tenantId, period.from, period.to);
+    const cogsTotal = r.cogs.buckets.foh + r.cogs.buckets.boh + r.cogs.buckets.retail + r.cogs.buckets.uncategorised;
+    const netRevenue = r.revenue - cogsTotal;
+    const netProfit = netRevenue - r.opex.wagesSuperExclOwner - r.opex.ownerWages - r.opex.opexTotal;
+    const cogsPct = r.revenue ? cogsTotal / r.revenue : 0;
     const cashPctRaw = netRevenue ? netProfit / netRevenue : 0;
     pl = {
-      revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads,
+      revenue: r.revenue, cogs: cogsTotal, wagesSuper: r.opex.wagesSuperExclOwner, ownerWages: r.opex.ownerWages, overheads: r.opex.opexTotal,
       netRevenue, netProfit, cogsPct,
       cashPctRaw, cashPct: Math.max(cashPctRaw, 0.01), cashFloored: cashPctRaw < 0.01
     };
