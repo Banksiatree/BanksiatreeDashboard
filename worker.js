@@ -1014,6 +1014,22 @@ function lastCompletedQuarter() {
   };
 }
 
+/* The last FOUR completed calendar quarters (a rolling year ending at the
+   same quarter boundary lastCompletedQuarter uses) - explicit owner
+   correction: GST% and Cash/profit% were being derived from a single
+   quarter, which can be unusually strong or weak on its own and skew the
+   rate (confirmed live: profit was coming out far too high). Same end
+   date as lastCompletedQuarter, just starting 3 quarters earlier, so
+   both GST (G1/1A/1B) and P&L (revenue/COGS/net profit) get summed over
+   a full rolling year before the ratio is taken, same "sum over the
+   full period, then divide once" approach the owner specified. */
+function last4CompletedQuarters() {
+  const last = lastCompletedQuarter();
+  const lastFrom = new Date(last.from + 'T00:00:00Z');
+  const start = new Date(Date.UTC(lastFrom.getUTCFullYear(), lastFrom.getUTCMonth() - 9, 1));
+  return { from: start.toISOString().slice(0, 10), to: last.to };
+}
+
 /* Pages through a Xero list endpoint (BankTransactions/Payments both work
    the same way: up to 100 per page, `page` query param, 1-indexed). The
    `where` clause is sent as an optimisation, but the real, authoritative
@@ -1103,12 +1119,14 @@ async function apiCashSplit(env) {
     return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
   }
 
-  /* Last fully completed quarter, always - see fetchXeroCashBasisGst's block
-     comment for why. Same period is used for the COGS/Cash P&L figures
-     below too, so all three rates come from the one consistent, stable,
-     already-closed quarter rather than an in-progress one. */
-  const period = lastCompletedQuarter();
-  period.label = period.from + ' to ' + period.to + ' (last completed quarter)';
+  /* Last FOUR completed quarters (a rolling year), always - explicit owner
+     correction: a single quarter can be unusually strong or weak and skew
+     GST%/Cash% on its own (confirmed live: profit was coming out far too
+     high off just the last quarter). Same period is used for the COGS/
+     Cash P&L figures below too, so all three rates come from the one
+     consistent, stable, already-closed rolling year. */
+  const period = last4CompletedQuarters();
+  period.label = period.from + ' to ' + period.to + ' (last 4 completed quarters)';
 
   let gst = null, gstError = null;
   try {
