@@ -1044,16 +1044,6 @@ async function fetchXeroPaged(h, tenantId, path, whereClause, dateField, from, t
   return out;
 }
 
-/* "Bank feeds" for the History tab (banksia-dashboard-spec.md #3.4) - the
-   old spreadsheet's own denominator for nearly every %, a raw weekly $
-   figure the owner typed by hand from their bank statement. Reuses the
-   RECEIVE-type BankTransactions pull already built for Cash Split's GST
-   calc (fetchXeroPaged), just summed over a week instead of a quarter. */
-async function fetchXeroBankFeeds(h, tenantId, from, to) {
-  const dateWhere = 'Date >= DateTime(' + from.split('-').map(Number).join(',') + ') && Date <= DateTime(' + to.split('-').map(Number).join(',') + ') && Type=="RECEIVE"';
-  const items = await fetchXeroPaged(h, tenantId, 'BankTransactions', dateWhere, 'Date', from, to);
-  return items.reduce((sum, t) => sum + (Number(t.Total) || 0), 0);
-}
 
 /* Calculates G1/1A/1B for a date range from real transactions - see the
    block comment above for the full method. Known scope gap: doesn't include
@@ -1605,9 +1595,8 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
      for wages would always come back empty/short. */
   const wagesFrom = shiftIsoDate(week, 3);
   const wagesTo = shiftIsoDate(to, 3);
-  const [split, bankFeeds, staffHoursRaw, notesRaw, wagesFlatSplit] = await Promise.all([
+  const [split, staffHoursRaw, notesRaw, wagesFlatSplit] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
-    fetchXeroBankFeeds(h, tenantId, week, to),
     env.TOKENS.get('ownerinput:staffhours:' + week),
     env.TOKENS.get('ownerinput:notes:' + week),
     fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo)
@@ -1656,7 +1645,7 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
      overwriting it, because this patch doesn't include revenue at all. */
   return mergeHistoryWeek(env, week, {
     source: 'live',
-    bankFeeds,
+    bankFeeds: split.revenue, /* "Bank feeds" here means Xero's P&L "Total Trading Income" line for the week - explicit owner correction, was previously the sum of real BankTransactions (cash literally hitting the account), a different accrual-vs-cash figure entirely and the actual reason it kept looking wrong */
     cogs: { food: split.cogs.buckets.boh, bev: split.cogs.buckets.foh, retail: split.cogs.buckets.retail },
     wages: {
       kitchen: wagesSplit ? wagesSplit.kitchenBoh : null,
