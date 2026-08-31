@@ -2113,6 +2113,54 @@ async function fetchGmailOolioReport(env, h, force) {
   return { checked: true, found: true, merged: true, week, subject: debugRecord.subject, filename: pdfPart.filename, revenue };
 }
 
+/* TEMPORARY DIAGNOSTIC - owner wants transaction counts switched to come
+   from OOLIO's "Sales summary" email/report too (currently transactions
+   come from the separate POS webhook/CSV feed, ADAPTERS.pos). Before
+   writing any parser for it, need to see the REAL PDF text and layout -
+   same "verify against the real file before guessing" discipline that
+   made parseOolioReportingGroupsPdf work correctly the first time,
+   rather than assuming column names. Walks every PDF attachment on the
+   most recent labelled emails and returns each one's raw extracted text
+   (trimmed) so the right one can be identified and its actual structure
+   read directly. Remove once the real parser exists. */
+async function apiDebugOolioAllAttachments(env) {
+  const h = makeHelpers(env, 'gmail');
+  const searchUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' +
+    encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=5';
+  const search = await h.fetchJson(searchUrl);
+  const messages = search.messages || [];
+  const { getDocumentProxy, extractText } = await import('unpdf');
+
+  function findAllPdfParts(part, out) {
+    if (!part) return;
+    if (part.filename && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) out.push(part);
+    for (const child of part.parts || []) findAllPdfParts(child, out);
+  }
+
+  const out = [];
+  for (const msg of messages) {
+    const full = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
+    const headers = (full.payload && full.payload.headers) || [];
+    const subject = (headers.find((x) => x.name.toLowerCase() === 'subject') || {}).value || '';
+    const pdfParts = [];
+    findAllPdfParts(full.payload, pdfParts);
+    const attachments = [];
+    for (const part of pdfParts) {
+      try {
+        const attachment = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '/attachments/' + part.body.attachmentId);
+        const pdfBytes = base64UrlToBytes(attachment.data);
+        const pdf = await getDocumentProxy(pdfBytes);
+        const { text } = await extractText(pdf, { mergePages: true });
+        attachments.push({ filename: part.filename, text: String(text || '').slice(0, 3000) });
+      } catch (err) {
+        attachments.push({ filename: part.filename, error: String((err && err.message) || err) });
+      }
+    }
+    out.push({ subject, attachments });
+  }
+  return json({ messages: out });
+}
+
 /* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the
    What-If calculator (banksia-dashboard-spec.md #3.5). from/to is the true
    Mon-Sun window the client computes (4 full weeks); revenue is pulled on
@@ -3101,6 +3149,13 @@ export default {
       }
       out.sort((a, b) => (a.week < b.week ? -1 : a.week > b.week ? 1 : 0));
       return json({ weeks: out, suspiciousCount: out.filter((w) => w.suspicious).length });
+    }
+    /* TEMPORARY - see apiDebugOolioAllAttachments's comment. Remove once
+       the real "Sales summary" transaction-count parser exists. */
+    if (path === '/api/debug/oolio-all-attachments' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      try { return await apiDebugOolioAllAttachments(env); }
+      catch (err) { return json({ error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
     }
     /* Manual trigger for testing - the real check runs on the cron
        schedule (scheduled() below), this just lets it be fired on demand
