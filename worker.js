@@ -382,32 +382,49 @@ function walkXeroOpex(section, periodIndex, acc) {
     }
   }
 }
-/* Xero's own bottom-line "Net Profit" row, straight off the report - not
-   reconstructed from separate COGS/Wages/Owner-wages/Opex figures. Owner
-   explicit instruction after a wrong custom reconstruction attempt: this
-   report already computes Total Income - Total Expenses correctly, with
-   wages/owner wages classified however Xero itself has them set up, so
-   reading it directly avoids re-deriving (and potentially
-   mis-categorising) that math independently. Standard Xero terminology
-   ("Net Profit", not "Gross Profit" or any other line) - searched fully
-   recursively since its exact nesting/RowType can vary by report layout,
-   matched on label text alone rather than assumed position. */
-function findXeroNetProfitRow(rows) {
+/* CONFIRMED LIVE (not a guess): reading Xero's own bottom-line "Net
+   Profit" row doesn't work for this business - their Chart of Accounts
+   includes a "Distribution of profit" operating-expense line that
+   sweeps whatever profit exists out as an expense, so Xero's own Net
+   Profit always computes to exactly $0.00 (Gross Profit + Other Income
+   - Operating Expenses cancels out to the cent, every period - verified
+   directly against the real report). Cash Split's own Net Profit is
+   instead Gross Profit + Other Income - Operating Expenses, EXCLUDING
+   only "Distribution of profit" specifically (a profit-sweep mechanism,
+   not a real cost) - Wages/Owner wages (e.g. "Our Wages") stay INSIDE
+   this total as real costs, explicit owner instruction, deliberately
+   different from walkXeroOpex's exclusions used elsewhere in this file
+   (P&L tab, History) which pull owner wages out as their own separate
+   line - this is a distinct formula for this one rate only. */
+function findXeroRowByLabel(rows, labelRe) {
   for (const row of rows || []) {
     if (row.RowType === 'Row' || row.RowType === 'SummaryRow') {
       const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
-      if (/^net profit$/i.test(label.trim())) return row;
+      if (labelRe.test(label.trim())) return row;
     }
     if (row.Rows) {
-      const found = findXeroNetProfitRow(row.Rows);
+      const found = findXeroRowByLabel(row.Rows, labelRe);
       if (found) return found;
     }
   }
   return null;
 }
+function sumXeroSectionExcluding(section, periodIndex, excludeRe) {
+  let total = 0;
+  for (const row of section.Rows || []) {
+    if (row.RowType === 'Row') {
+      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
+      if (excludeRe.test(label)) continue;
+      total += xeroCellValue(row, periodIndex);
+    } else if (row.RowType === 'Section') {
+      total += sumXeroSectionExcluding(row, periodIndex, excludeRe);
+    }
+  }
+  return total;
+}
 
 function walkXeroPL(reportRows, periodIndex) {
-  let revenue = 0, cogs = 0;
+  let revenue = 0, cogs = 0, otherIncome = 0, opexExclDistribution = null;
   const opexAcc = { wagesSuper: 0, overheads: 0 };
   for (const row of reportRows) {
     if (row.RowType !== 'Section') continue;
@@ -418,15 +435,20 @@ function walkXeroPL(reportRows, periodIndex) {
     if (title.includes('cost of sales')) {
       const s = findXeroSummary(row);
       cogs += s ? xeroCellValue(s, periodIndex) : 0;
+    } else if (title.includes('other income')) {
+      const s = findXeroSummary(row);
+      otherIncome += s ? xeroCellValue(s, periodIndex) : 0;
     } else if (!title.includes('other') && (title.includes('income') || title.includes('revenue') || title.includes('trading income'))) {
       const s = findXeroSummary(row);
       revenue += s ? xeroCellValue(s, periodIndex) : 0;
     } else if (title.includes('operating expenses') || title === 'expenses' || title.includes('less operating expenses')) {
       walkXeroOpex(row, periodIndex, opexAcc);
+      opexExclDistribution = sumXeroSectionExcluding(row, periodIndex, DISTRIBUTION_OF_PROFIT_RE);
     }
   }
-  const netProfitRow = findXeroNetProfitRow(reportRows);
-  const netProfit = netProfitRow ? xeroCellValue(netProfitRow, periodIndex) : null;
+  const grossProfitRow = findXeroRowByLabel(reportRows, /^gross profit$/i);
+  const grossProfit = grossProfitRow ? xeroCellValue(grossProfitRow, periodIndex) : (revenue - cogs);
+  const netProfit = opexExclDistribution == null ? null : (grossProfit + otherIncome - opexExclDistribution);
   return { revenue, cogs, wagesSuper: opexAcc.wagesSuper, overheads: opexAcc.overheads, netProfit };
 }
 
@@ -1172,18 +1194,17 @@ async function apiCashSplit(env) {
 
   let pl = null, plError = null;
   try {
-    /* Net profit here is Xero's OWN bottom-line "Net Profit" figure
-       straight off the report (walkXeroPL's netProfit, via
-       findXeroNetProfitRow) - explicit owner instruction, after an
-       earlier attempt tried to reconstruct it by subtracting Wages and
-       Owner wages as separate custom-categorised deductions, which
-       wasn't what was wanted: wages and owner wages are meant to stay
-       inside Xero's own Opex grouping for this rate, not pulled out and
-       resubtracted independently. Reading the report's own total avoids
-       re-deriving (and potentially mis-categorising) that math at all -
-       whatever Xero itself already nets everything down to is what's
-       used, no separate wages/owner-wages logic here. cogsPct is
-       unchanged (revenue and cogs totals, not disputed). */
+    /* Net profit here is walkXeroPL's netProfit - Gross Profit + Other
+       Income - Operating Expenses, excluding only "Distribution of
+       profit" (see walkXeroPL's own comment: reading Xero's literal
+       bottom-line "Net Profit" row doesn't work for this business, it
+       always computes to exactly $0.00 because Distribution of profit
+       sweeps all profit out as an expense - confirmed against the real
+       report, not guessed). Wages/Owner wages stay INSIDE this total as
+       real costs, explicit owner instruction - deliberately different
+       from the P&L tab's/History's own "True net profit", which pulls
+       owner wages out as a separate line. cogsPct is unchanged (revenue
+       and cogs totals, not disputed). */
     const r = await fetchXeroPL(h, tenantId, period.from, period.to);
     const netRevenue = r.revenue - r.cogs;
     const netProfit = r.netProfit;
@@ -3225,10 +3246,12 @@ export default {
       const raw = await env.TOKENS.get('debug:wages-split:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
     }
-    /* TEMPORARY - verifies findXeroNetProfitRow actually found the right
-       row before trusting Cash Split's Profit% on it - live, over the
-       same last4CompletedQuarters() window Cash Split itself uses.
-       Remove once confirmed matching the owner's real Xero P&L. */
+    /* TEMPORARY - verifies walkXeroPL's corrected netProfit (Gross Profit
+       + Other Income - Operating Expenses excluding Distribution of
+       profit) against the owner's real Xero data - live, over the same
+       last4CompletedQuarters() window Cash Split itself uses. Remove
+       once confirmed matching (expected ~$101,439.59 / ~10.7% cashPct
+       for the 2025-07-01 to 2026-06-30 period already checked by hand). */
     if (path === '/api/debug/cashsplit-netprofit' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const h = makeHelpers(env, 'accounting');
@@ -3239,41 +3262,6 @@ export default {
         const period = last4CompletedQuarters();
         const r = await fetchXeroPL(h, tenantId, period.from, period.to);
         return json({ available: true, period, revenue: r.revenue, cogs: r.cogs, wagesSuper: r.wagesSuper, overheads: r.overheads, netProfit: r.netProfit });
-      } catch (err) { return json({ available: false, error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
-    }
-    /* TEMPORARY - netProfit came back 0 even though revenue/cogs/wages
-       extracted correctly from the same report via the same cell-reading
-       function, meaning findXeroNetProfitRow matched SOME row but pulled
-       the wrong value from it (or matched the wrong row entirely - e.g.
-       a mid-report placeholder also labelled "Net Profit" with a 0
-       value, found before the real bottom-line one). Dumps every row's
-       type/title/label/raw-cells so the real structure can be seen
-       directly instead of guessed at again. Remove once resolved. */
-    if (path === '/api/debug/cashsplit-rawrows' && request.method === 'GET') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const h = makeHelpers(env, 'accounting');
-      let tenantId;
-      try { tenantId = await xeroTenantId(env, h); }
-      catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
-      try {
-        const period = last4CompletedQuarters();
-        const url2 = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + period.from + '&toDate=' + period.to;
-        const data = await h.fetchJson(url2, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-        const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
-        const out = [];
-        function walk(list, depth) {
-          for (const row of list || []) {
-            out.push({
-              depth,
-              rowType: row.RowType,
-              title: row.Title || null,
-              cells: (row.Cells || []).map((c) => c.Value)
-            });
-            if (row.Rows) walk(row.Rows, depth + 1);
-          }
-        }
-        walk(rows, 0);
-        return json({ available: true, period, rows: out });
       } catch (err) { return json({ available: false, error: plainError(err.status || 500), message: String((err && err.message) || err) }); }
     }
     if (path === '/api/debug/tracking-categories' && request.method === 'GET') {
