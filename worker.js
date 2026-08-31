@@ -472,57 +472,15 @@ function walkXeroCogsSplit(section, periodIndex, acc) {
   }
 }
 
-/* Revenue-by-channel split for the History tab (banksia-dashboard-spec.md
-   #3.4) - matches the old spreadsheet's Food/Bev/Uber/Event/Retail revenue
-   columns. Nothing else in this app splits revenue at all; same keyword-
-   match-with-visible-catch-all pattern as walkXeroCogsSplit above, checked
-   in this order (Uber before Retail/Food/Bev - a delivery-platform account
-   name is the one most likely to also contain "food"). */
-const REV_UBER_RE = /uber/i;
-const REV_RETAIL_RE = /retail|merchandise/i;
-const REV_EVENT_RE = /event|catering|function/i;
-const REV_BEV_RE = /beverage|\bbar\b|wine|beer|liquor|drinks?/i;
-const REV_FOOD_RE = /food|kitchen|meals?|dining/i;
-
-function walkXeroRevenueSplit(section, periodIndex, acc) {
-  for (const row of section.Rows || []) {
-    if (row.RowType === 'Row') {
-      const label = (row.Cells && row.Cells[0] && row.Cells[0].Value) || '';
-      const value = xeroCellValue(row, periodIndex);
-      let bucket;
-      if (REV_UBER_RE.test(label)) bucket = 'uber';
-      else if (REV_RETAIL_RE.test(label)) bucket = 'retail';
-      else if (REV_EVENT_RE.test(label)) bucket = 'event';
-      else if (REV_BEV_RE.test(label)) bucket = 'bev';
-      else if (REV_FOOD_RE.test(label)) bucket = 'food';
-      else bucket = 'uncategorised';
-      acc.buckets[bucket] += value;
-      acc.lines.push({ label, value, bucket });
-    } else if (row.RowType === 'Section') {
-      walkXeroRevenueSplit(row, periodIndex, acc);
-    }
-  }
-}
-
-/* Own report call (not reused from fetchXeroPLSplit) - History needs the
-   Income section walked by channel keyword instead of just summed, and
-   this keeps that walk fully independent of the already-shipped P&L/
-   Budget/What-If code paths rather than risking a shared-function change
-   touching them. */
-async function fetchXeroRevenueSplit(h, tenantId, from, to) {
-  const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
-  const data = await h.fetchJson(url, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
-  const rows = (data && data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
-  const acc = { buckets: { food: 0, bev: 0, uber: 0, event: 0, retail: 0, uncategorised: 0 }, lines: [] };
-  for (const row of rows) {
-    if (row.RowType !== 'Section') continue;
-    const title = (row.Title || '').toLowerCase();
-    if (!title.includes('other') && (title.includes('income') || title.includes('revenue') || title.includes('trading income'))) {
-      walkXeroRevenueSplit(row, 0, acc);
-    }
-  }
-  return acc;
-}
+/* Revenue-by-channel (Food/Bev/Uber/Event/Retail) is NEVER derived from
+   Xero - removed entirely per explicit owner instruction, after this
+   venue's Trading Income accounts were confirmed to be organised by
+   payment channel (Cash deposits/Eftpos Sales/Delivery sales/...), not
+   product category, making any Xero-side keyword guess structurally
+   wrong, and after a guess-based "safe fallback" version of this still
+   caused real data loss on a live pull. The only source for this
+   breakdown is OOLIO's own Reporting Groups report (see
+   fetchGmailOolioReport / oolioRevenueFromReportingGroups below). */
 
 /* Splits Operating Expenses into: owner's own equity-style drawings
    (excluded from every other bucket, same OWNER_WAGE_RE/OWNER_SUPER_RE/
@@ -1617,14 +1575,15 @@ async function apiOwnerWages(env, url) {
    "Owner wages" line already shows.
 ---------------------------------------------------------------------------- */
 
-/* Best-effort weekly capture - fetches revenue-by-channel, COGS/wages/
-   Owner wages/Opex splits (reusing exactly what P&L and Owner Wages
-   already fetch, not rebuilt), Bank feeds, Covers, and whatever staff
-   hours/notes are already logged for the week, and writes one
-   history:week: record. Called from apiOwnerWages, always with a real
-   Mon-Sun week. Overwrites any existing record for the week (including a
-   prior import) - the live figures are the more current source once the
-   app is actually being used weekly.
+/* Best-effort weekly capture - fetches COGS/wages/Owner wages/Opex splits
+   (reusing exactly what P&L and Owner Wages already fetch, not rebuilt),
+   Bank feeds, Covers, and whatever staff hours/notes are already logged
+   for the week, and writes one history:week: record. Does NOT touch
+   revenue-by-channel at all - that only ever comes from OOLIO's own
+   report (see the section below). Called from apiOwnerWages, always with
+   a real Mon-Sun week. Overwrites any existing record for the week
+   (including a prior import) - the live figures are the more current
+   source once the app is actually being used weekly.
 
    ownerWages reuses split.opex.ownerWages - the same "Our Wages"/owner-
    super-matched figure the P&L tab's own Owner Wages line already shows,
@@ -1646,13 +1605,11 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
      for wages would always come back empty/short. */
   const wagesFrom = shiftIsoDate(week, 3);
   const wagesTo = shiftIsoDate(to, 3);
-  const [split, revSplit, bankFeeds, staffHoursRaw, notesRaw, existingRaw, wagesFlatSplit] = await Promise.all([
+  const [split, bankFeeds, staffHoursRaw, notesRaw, wagesFlatSplit] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
-    fetchXeroRevenueSplit(h, tenantId, week, to),
     fetchXeroBankFeeds(h, tenantId, week, to),
     env.TOKENS.get('ownerinput:staffhours:' + week),
     env.TOKENS.get('ownerinput:notes:' + week),
-    env.TOKENS.get('history:week:' + week),
     fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo)
   ]);
 
@@ -1682,45 +1639,23 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
   let notes = null;
   if (notesRaw) { try { notes = JSON.parse(notesRaw).notes || null; } catch (e) {} }
 
-  /* Food/Bev/Event/Retail come from OOLIO's own till categories once a
-     Reporting Groups report has been read for this week (see
-     fetchGmailOolioReport) - genuinely more accurate than this keyword
-     guess on Xero account names, so once revenueSource is 'oolio' this
-     never overwrites them, only ever refreshes Uber (which OOLIO's
-     report doesn't carry at all).
-
-     CONFIRMED BROKEN for this venue's real Chart of Accounts (a live
-     incident, not a hypothetical): Trading Income here is organised by
+  /* Revenue-by-channel (Food/Bev/Uber/Event/Retail) NEVER comes from Xero
+     at all, full stop - explicit owner instruction, after two real
+     incidents: this venue's Trading Income accounts are organised by
      payment channel (Cash deposits/Eftpos Sales/Delivery sales/Catering
-     Income/Fee income), not by product category at all - none of those
-     names contain "food"/"beverage"/"uber"/"retail", so the keyword
-     guess below classifies almost everything as itself, i.e. wrongly.
-     Once wiped a real week's Food/Bev/Uber/Event/Retail breakdown down to
-     near-zero when a live pull ran on a week that already had good data
-     (an import, or an earlier OOLIO read). Two protections now: never
-     touch a week that already has ANY of these five fields populated
-     from a better source, and for a genuinely first-time week with
-     nothing there yet, don't attempt the unreliable per-channel guess at
-     all - put the whole real total under uncategorised, visibly, rather
-     than silently mis-splitting it, until an OOLIO report actually
-     supplies the real breakdown. */
-  let existing = null;
-  if (existingRaw) { try { existing = JSON.parse(existingRaw); } catch (e) {} }
-  const existingRevenue = existing && existing.revenue;
-  const hasRevenueAlready = !!(existingRevenue && [existingRevenue.food, existingRevenue.bev, existingRevenue.uber, existingRevenue.event, existingRevenue.retail].some((v) => v != null));
-  let revenuePatch;
-  if (existing && existing.revenueSource === 'oolio') {
-    revenuePatch = { uber: revSplit.buckets.uber };
-  } else if (hasRevenueAlready) {
-    revenuePatch = {};
-  } else {
-    const revTotal = revSplit.buckets.food + revSplit.buckets.bev + revSplit.buckets.uber + revSplit.buckets.event + revSplit.buckets.retail + revSplit.buckets.uncategorised;
-    revenuePatch = { food: 0, bev: 0, uber: 0, event: 0, retail: 0, uncategorised: revTotal };
-  }
-
+     Income/Fee income), not by product category, so any Xero-based guess
+     is structurally wrong for this chart of accounts; and an earlier
+     guess-based attempt at a "safe fallback" actually wiped good data on
+     a live pull. The ONLY source for this breakdown is OOLIO's own
+     Reporting Groups report, read via Gmail (fetchGmailOolioReport,
+     which calls mergeHistoryWeek directly with revenueSource:'oolio' -
+     not through this function at all). saveHistorySnapshot simply never
+     touches the revenue field, in either direction - a week with no
+     OOLIO report yet keeps whatever it already has (usually nothing),
+     and a week that does have one is never at risk of this function
+     overwriting it, because this patch doesn't include revenue at all. */
   return mergeHistoryWeek(env, week, {
     source: 'live',
-    revenue: revenuePatch,
     bankFeeds,
     cogs: { food: split.cogs.buckets.boh, bev: split.cogs.buckets.foh, retail: split.cogs.buckets.retail },
     wages: {
@@ -1902,21 +1837,27 @@ async function apiHistoryPullWeek(env, request) {
   }
 }
 
-/* TEMPORARY, ONE-TIME REPAIR - see the revenuePatch comment above
-   saveHistorySnapshot. Before that fix existed, pull-week overwrote
-   2026-08-10's real imported Food/Bev/Uber/Event/Retail revenue
-   breakdown with the broken Xero keyword guess. This restores exactly
-   the original imported values (read from the same history-import.json
-   the week was first imported from) and nothing else - COGS/wages/opex
-   stay as the now-correctly-recomputed live figures, only the revenue
-   field is touched. Remove this endpoint once run once. */
-async function apiHistoryRepairAug10Revenue(env) {
-  const week = '2026-08-10';
-  const original = { food: 14526.02, bev: 7573.89, uber: 0, event: 475, retail: 316.81 };
+/* TEMPORARY REPAIR TOOL - resets one week's Food/Bev/Uber/Event/Retail
+   revenue fields to null (an honest "no reliable data yet" state,
+   consistent with what a never-touched week looks like now that
+   saveHistorySnapshot never guesses this from Xero), clearing whatever
+   wrong/guessed/duplicated numbers are currently sitting there. Does NOT
+   touch bankFeeds/cogs/wages/opex/notes - only revenue. Superseded a
+   week-specific version of this (2026-08-10 only) after discovering the
+   values it restored from history-import.json were themselves wrong -
+   an exact duplicate of 2026-08-17's figures, not real 10-16 Aug data.
+   Generic now (?week=YYYY-MM-DD) since the same clobbering bug affected
+   multiple weeks, not just one - see GET /api/debug/history-audit for
+   the full list. Remove this endpoint once every affected week is clean
+   and future weeks are only ever populated by a real OOLIO report. */
+async function apiHistoryClearRevenue(env, url) {
+  const week = url.searchParams.get('week');
+  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad week' }, 400);
   const raw = await env.TOKENS.get('history:week:' + week);
   if (!raw) return json({ ok: false, error: 'week not found' }, 404);
   const rec = JSON.parse(raw);
-  rec.revenue = original;
+  rec.revenue = { food: null, bev: null, uber: null, event: null, retail: null, uncategorised: null };
+  delete rec.revenueSource;
   await env.TOKENS.put('history:week:' + week, JSON.stringify(rec));
   return json({ ok: true, week, revenue: rec.revenue });
 }
@@ -1945,15 +1886,13 @@ async function apiHistoryRepairAug10Revenue(env) {
    build) - verified line-by-line against the real file before writing
    parseOolioReportingGroupsPdf below.
 
-   No Uber line in this report - OOLIO's till categories don't cover
-   Uber Eats, so that channel keeps coming from Xero's own keyword match
-   (fetchXeroRevenueSplit), same as before. mergeHistoryWeek + the
-   revenueSource flag on each record is what keeps the two sources from
-   fighting over the same fields: an OOLIO-sourced week's Food/Bev/Event/
-   Retail are never overwritten by a later, cruder Xero classification -
-   saveHistorySnapshot below only ever touches revenue.uber once
-   revenueSource is 'oolio'. gmail:lastProcessedId stops the same email
-   being re-downloaded and re-parsed on every poll. */
+   No Uber line in this report - OOLIO's till categories don't cover Uber
+   Eats, and per explicit owner instruction Xero is never used for any
+   part of revenue-by-channel any more (a prior Xero-based Uber refresh
+   was removed along with the rest of that classification) - Uber simply
+   has no live source right now and stays whatever it already is until
+   one exists. gmail:lastProcessedId stops the same email being
+   re-downloaded and re-parsed on every poll. */
 const GMAIL_OOLIO_LABEL = 'oolio-reports';
 
 function base64UrlToBytes(b64url) {
@@ -3073,11 +3012,11 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiHistoryPullWeek(env, request);
     }
-    /* TEMPORARY, ONE-TIME - see apiHistoryRepairAug10Revenue's comment.
-       Remove this route once run once. */
-    if (path === '/api/history/repair-aug10-revenue' && request.method === 'GET') {
+    /* TEMPORARY - see apiHistoryClearRevenue's comment. Remove once every
+       affected week is clean. */
+    if (path === '/api/history/clear-revenue' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
-      return apiHistoryRepairAug10Revenue(env);
+      return apiHistoryClearRevenue(env, url);
     }
     /* TEMPORARY - see the email() handler's own comment. Lets the real
        OOLIO Revenue Performance Report email be inspected once one has
