@@ -2041,17 +2041,18 @@ async function fetchGmailOolioReport(env, h, force) {
   const messages = search.messages || [];
   if (!messages.length) return { checked: true, found: false, reason: 'no messages under label:' + GMAIL_OOLIO_LABEL };
 
-  const newestId = messages[0].id;
-  const lastProcessedId = await env.TOKENS.get('gmail:lastProcessedId');
-  if (!force && lastProcessedId === newestId) return { checked: true, found: false, reason: 'already processed' };
-
-  const full = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '?format=full');
-  const headers = (full.payload && full.payload.headers) || [];
-  const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
-
-  /* "Reporting Groups" specifically - the real email carries two OTHER
-     PDFs alongside it ("Sales by Channel", "Sales Summary") that must
-     NOT be picked up by accident. */
+  /* "Reporting Groups" specifically - confirmed live that OOLIO actually
+     sends SEVERAL SEPARATE emails each week under this label ("Weekly
+     Sales summary", "Reconciliation report-weekly", "Dashboard sales",
+     "Categories", ...), arriving within seconds of each other - only
+     "Weekly Sales summary" carries the Reporting Groups PDF this app
+     reads. Which one Gmail returns as literally newest varies week to
+     week depending on exact send order, so checking only messages[0] and
+     giving up if THAT ONE lacked the PDF was unreliable - a week where
+     the right email arrived a few seconds before an unrelated one meant
+     the check silently gave up every time. Scans the most recent few
+     messages (still newest-first) and uses the first one that actually
+     has the PDF, instead of assuming the newest message overall is it. */
   function findReportingGroupsPart(part) {
     if (!part) return null;
     if (part.filename && /report.*group/i.test(part.filename) && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
@@ -2061,14 +2062,24 @@ async function fetchGmailOolioReport(env, h, force) {
     }
     return null;
   }
-  const pdfPart = findReportingGroupsPart(full.payload);
-  if (!pdfPart) {
-    await env.TOKENS.put('gmail:lastProcessedId', newestId);
-    return { checked: true, found: false, reason: 'newest labelled email had no Reporting Groups PDF attachment' };
+
+  const lastProcessedId = await env.TOKENS.get('gmail:lastProcessedId');
+  let full = null, pdfPart = null, msgId = null;
+  for (const msg of messages) {
+    const candidate = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
+    const found = findReportingGroupsPart(candidate.payload);
+    if (found) { full = candidate; pdfPart = found; msgId = msg.id; break; }
   }
+  if (!pdfPart) {
+    return { checked: true, found: false, reason: 'none of the ' + messages.length + ' most recent labelled emails had a Reporting Groups PDF attachment' };
+  }
+  if (!force && lastProcessedId === msgId) return { checked: true, found: false, reason: 'already processed' };
+
+  const headers = (full.payload && full.payload.headers) || [];
+  const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
 
   const attachment = await h.fetchJson(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + newestId + '/attachments/' + pdfPart.body.attachmentId
+    'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + pdfPart.body.attachmentId
   );
   const pdfBytes = base64UrlToBytes(attachment.data);
   const { getDocumentProxy, extractText } = await import('unpdf');
@@ -2090,7 +2101,7 @@ async function fetchGmailOolioReport(env, h, force) {
     parsedRows: rows
   };
   await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(debugRecord));
-  await env.TOKENS.put('gmail:lastProcessedId', newestId);
+  await env.TOKENS.put('gmail:lastProcessedId', msgId);
 
   if (!week || !rows.length) {
     return { checked: true, found: true, merged: false, subject: debugRecord.subject, filename: pdfPart.filename, reason: !week ? 'could not read a Mon-Sun week from the report' : 'no data rows parsed' };
