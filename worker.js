@@ -2858,9 +2858,8 @@ function shiftIsoDate(s, days) {
   return dt.toISOString().slice(0, 10);
 }
 
-async function fetchSlot(env, q, debugOut) {
-  /* One period slot: pull each configured source; null where unavailable.
-     debugOut (optional, TEMP - see apiMetrics) collects why, if it fails. */
+async function fetchSlot(env, q) {
+  /* One period slot: pull each configured source; null where unavailable. */
   const out = {};
   for (const source of ['accounting', 'pos', 'rostering']) {
     const adapter = ADAPTERS[source];
@@ -2871,13 +2870,6 @@ async function fetchSlot(env, q, debugOut) {
       await noteSync(env, source);
     } catch (err) {
       out[source] = null; /* per-source failure never breaks the whole payload */
-      if (debugOut) {
-        debugOut[source] = {
-          status: err && err.status,
-          message: String((err && err.message) || err).slice(0, 200),
-          body: err && err.body ? String(err.body).slice(0, 400) : null
-        };
-      }
     }
   }
   return out;
@@ -2922,9 +2914,8 @@ async function apiMetrics(env, url) {
     /* These three were previously awaited one after another - each one doing
        a live Xero call plus KV reads - which serialised their latency. They
        don't depend on each other, so run them concurrently. */
-    const curDebug = {}; /* TEMP diagnostic - see apiMetrics's debug field below */
     const [curOut, prevOut, yoyOut] = await Promise.all([
-      fetchSlot(env, { ...base, ...cur }, curDebug),
+      fetchSlot(env, { ...base, ...cur }),
       prev ? fetchSlot(env, { ...base, ...prev }) : Promise.resolve(null),
       yoy ? fetchSlot(env, { ...base, ...yoy }) : Promise.resolve(null)
     ]);
@@ -2945,19 +2936,7 @@ async function apiMetrics(env, url) {
         } catch (err) { trendOut[source] = null; }
       }
     }
-    /* TEMP diagnostic snapshot - what date range "cur" (usually "this week")
-       actually resolved to server-side, and why any source came back null,
-       if it did. Remove this whole block (and the debug: line below, and the
-       debugOut plumbing in fetchSlot above) once the zero-figures issue is
-       confirmed fixed. */
-    data = {
-      generatedAt: new Date().toISOString(), periods: periods, trend: trendOut,
-      debug: {
-        curRangeRequested: cur,
-        curRevenueRangeUsed: { from: shiftIsoDate(cur.from, 1), to: shiftIsoDate(cur.to, 1) },
-        curErrors: curDebug
-      }
-    };
+    data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
     if (env.TOKENS) {
       try { await env.TOKENS.put(cacheKey, JSON.stringify(data), { expirationTtl: METRICS_CACHE_TTL }); } catch (e) {}
     }
@@ -2968,8 +2947,7 @@ async function apiMetrics(env, url) {
     protected: true,
     sources: { accounting: sAcc, pos: sPos, rostering: sRos },
     periods: data.periods,
-    trend: data.trend,
-    debug: data.debug
+    trend: data.trend
   });
 }
 
