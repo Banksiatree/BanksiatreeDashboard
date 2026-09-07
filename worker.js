@@ -813,6 +813,40 @@ async function fetchXeroBudget(h, tenantId, from, to, bucketMap, nameMap) {
    figure (status colour, catch-up gaps, transaction targets) is left to
    dashboard.html, same rule as the rest of the app: the Worker supplies raw
    data, the dashboard computes metrics. */
+
+/* P&L's transaction count and History's transaction count used to come
+   from two different places (the POS webhook/CSV feed vs OOLIO's own
+   Sales Summary report once History pulls one in) and could genuinely
+   disagree for the same month, confirmed live (2953 vs 3344) - explicit
+   owner instruction to make both always agree, by having P&L read the
+   exact same covers figure History already has per week, rather than
+   pulling its own separate count. Sums history:week:'s covers field for
+   every week whose weekEnding falls in [from,to] - the same "which month
+   does this week belong to" rule History's own month grouping uses
+   (weekEnding.slice(0,7)), so a P&L calendar-month period lines up with
+   the same weeks History would show for that month. Returns null (not
+   0) if no week in range has a covers figure yet, so the dashboard can
+   tell "genuinely zero" from "nothing pulled for this period yet". */
+async function sumHistoryCoversInRange(env, from, to) {
+  let total = 0, any = false;
+  let cursor;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix: 'history:week:', cursor } : { prefix: 'history:week:' });
+    const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+    raws.forEach((raw) => {
+      if (!raw) return;
+      let rec; try { rec = JSON.parse(raw); } catch (e) { return; }
+      if (rec.weekEnding >= from && rec.weekEnding <= to && typeof rec.covers === 'number') {
+        total += rec.covers;
+        any = true;
+      }
+    });
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  return any ? total : null;
+}
+
 async function apiPL(env, url) {
   const adapter = ADAPTERS.accounting;
   if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
@@ -853,26 +887,7 @@ async function apiPL(env, url) {
 
   let transactions = null;
   try {
-    const posAdapter = ADAPTERS.pos;
-    if (posAdapter && posAdapter.configured) {
-      const spanDays = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
-      if (spanDays > 35) {
-        /* fetchRange reads day-by-day (a KV get AND a KV list-scan per
-           date - see its own comment) - fine for a week/month, but blows
-           past Cloudflare's per-invocation subrequest limit over a
-           multi-month span like "All completed months this year".
-           fetchMonthly instead reads one pre-aggregated total per month
-           (monthagg:pos:<YYYY-MM>) - exactly the fast path it was built
-           for (see the "Trend queries" comment above it). from/to are
-           always month-aligned for any period long enough to hit this
-           branch, so summing whole months is exact, not approximate. */
-        const r = await posAdapter.fetchMonthly(env, h, { fromMonth: from.slice(0, 7), toMonth: to.slice(0, 7) });
-        transactions = r.count.reduce((sum, c) => sum + (c || 0), 0);
-      } else {
-        const r = await posAdapter.fetchRange(env, h, { from, to });
-        transactions = r.count;
-      }
-    }
+    transactions = await sumHistoryCoversInRange(env, from, to);
   } catch (err) { errors.transactions = plainError(err.status || 500); }
 
   let budget = null;
