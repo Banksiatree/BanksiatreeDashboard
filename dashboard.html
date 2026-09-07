@@ -211,30 +211,27 @@ body {
 .pl-catchup-title { font-family: 'Khand', sans-serif; font-size: 16px; font-weight: 600; color: var(--c-blue-text); margin-bottom: 0.4rem; }
 .pl-catchup-row { font-size: 13.5px; color: var(--c-blue-text); line-height: 1.8; }
 
-/* Compact one-screen P&L table - every line (incl. COGS/Wages BOH/FOH,
-   always visible, not behind a toggle) with actual, % of revenue and
-   target/budget in one dense row, on-target status as a coloured dot
-   rather than a full badge to keep the whole thing on one screen. */
-.pl-table-wrap { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #fffdf9; margin-bottom: 0.6rem; }
-.pl-table { display: grid; grid-template-columns: minmax(0,1.7fr) minmax(0,1fr) minmax(0,0.85fr); }
-.pl-tcell { padding: 6px 8px; font-size: 12.5px; border-bottom: 1px solid var(--border); display: flex; align-items: center; min-width: 0; }
-.pl-tcell.head { font-family: 'Khand', sans-serif; font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); background: var(--cream2); }
-.pl-tcell.label { font-weight: 600; color: var(--black); gap: 6px; }
-.pl-tcell.label.sub { padding-left: 1.1rem; font-weight: 400; font-style: italic; color: var(--muted); font-size: 11.5px; }
-.pl-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--border-med); }
-.pl-dot.good { background: var(--c-green); }
-.pl-dot.amber { background: var(--c-amber); }
-.pl-dot.bad { background: var(--c-coral); }
-.pl-tcell.num { flex-direction: column; align-items: flex-end; justify-content: center; gap: 1px; font-family: 'Khand', sans-serif; font-weight: 700; font-size: 14px; white-space: nowrap; }
-.pl-tcell.num.sub { font-size: 12px; font-weight: 500; }
-.pl-tcell.num .pl-tcell-pct { font-family: 'DM Sans', sans-serif; font-weight: 400; font-size: 10px; color: var(--muted); }
-.pl-tcell.target { color: var(--muted); font-weight: 500; font-size: 12px; justify-content: flex-end; text-align: right; }
-.pl-tcell.good .pl-tcell-main { color: var(--c-green); }
-.pl-tcell.amber .pl-tcell-main { color: var(--c-amber); }
-.pl-tcell.bad .pl-tcell-main { color: var(--c-coral); }
-.pl-row-total .pl-tcell { background: var(--accent-dim); border-top: 2px solid var(--accent); }
-.pl-row-total .pl-tcell.label { font-size: 13.5px; }
-.pl-row-total .pl-tcell.num { font-size: 17px; }
+/* Compact one-screen P&L card grid - COGS/Wages each get their own
+   Total/FOH/BOH cards side by side (a 3-up row is far more compact than
+   stacking them, and shows the split at a glance - explicit owner
+   reference image). Every card: big value, target, an ON TRACK/BEHIND
+   pill, and a $ spent vs budget caption. */
+.pl-grid { display: grid; gap: 8px; margin-bottom: 0.6rem; }
+.pl-grid.cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.pl-grid.cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.pl-stat-card { background: #fffdf9; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 0.75rem; min-width: 0; }
+.pl-stat-card.total { background: var(--accent-dim); border-color: var(--accent); }
+.pl-stat-label { font-family: 'Khand', sans-serif; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 0.3rem; }
+.pl-stat-value-row { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 0.3rem; }
+.pl-stat-value { font-family: 'Khand', sans-serif; font-size: 21px; font-weight: 700; color: var(--black); white-space: nowrap; }
+.pl-stat-target { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.pl-stat-pill { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 20px; margin-bottom: 0.3rem; }
+.pl-stat-pill.good { background: var(--c-green-bg); color: var(--c-green); }
+.pl-stat-pill.amber { background: var(--c-amber-bg); color: var(--c-amber); }
+.pl-stat-pill.bad { background: var(--c-coral-bg); color: var(--c-coral); }
+.pl-stat-caption { font-size: 10.5px; color: var(--text); line-height: 1.4; }
+.pl-stat-caption .over { color: var(--c-coral); font-weight: 600; }
+.pl-stat-caption .under { color: var(--c-green); font-weight: 600; }
 
 /* Owner Input tab */
 .oi-owners { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 0.4rem; }
@@ -2157,32 +2154,59 @@ function plCatchUpGap(actual, budget, elapsedFraction, goodDir) {
   return gap > 0 ? gap : 0;
 }
 
-/* One dense row in the compact one-screen P&L table: label (+ an
-   on-target status dot, unless it's a sub-row like BOH/FOH which has no
-   target of its own), actual (+ % of revenue underneath when pctBase is
-   given), and the target/budget figure. Explicit owner request: the
-   whole P&L - including COGS/Wages' BOH/FOH split, previously hidden
-   behind a "show line items" toggle - needs to fit on one screen, so
-   this replaces the old one-card-per-metric layout with dense rows
-   instead of expandable cards. */
-function plTableRow(table, opts) {
+/* "$X spent · $Y over/left of $Z budget" caption under a cost-style
+   stat card - the reference image's own wording exactly ("over" in
+   coral when over budget, "left" in green when under). Revenue-style
+   (goodDir 'up') metrics get "ahead of"/"behind" instead of "over"/"left",
+   since more is good there, not less. */
+function plStatCaption(actual, budget, fmtFn, goodDir) {
+  if (actual == null) return '';
+  var s = esc(fmtFn(actual)) + ' actual';
+  if (budget == null) return s;
+  var diff = actual - budget;
+  if (Math.abs(diff) < 0.005) return s + ' · on target (' + esc(fmtFn(budget)) + ')';
+  var over = diff > 0; /* actual is numerically above the budget figure */
+  var favourable = goodDir === 'down' ? !over : over; /* is that direction actually good here? */
+  var cls = favourable ? 'under' : 'over'; /* CSS class name reused for colour only, not the word */
+  var word = goodDir === 'down' ? (over ? 'over' : 'left') : (over ? 'ahead of' : 'behind');
+  return s + ' · <span class="' + cls + '">' + esc(fmtFn(Math.abs(diff))) + ' ' + word + '</span> ' + esc(fmtFn(budget)) + ' target';
+}
+
+/* One card in the compact one-screen P&L grid: big value + target,
+   an ON TRACK/BEHIND pill, and a $ actual-vs-target caption - explicit
+   owner reference image, replacing the earlier dense-table attempt
+   (still too tall/didn't show BOH/FOH clearly enough). COGS and Wages
+   each get their Total/FOH/BOH cards laid out 3-up (pl-grid.cols-3) so
+   the split is visible at a glance rather than needing a sub-row. */
+function plStatCard(container, opts) {
   var fmtFn = opts.fmt === 'int' ? fmtInt : function (v) { return v == null ? '—' : fmtMoney(v); };
-  var status = (opts.budget != null && !opts.sub) ? plStatus(opts.actual, opts.budget, opts.goodDir || 'up') : null;
-  var rowCls = opts.total ? ' pl-row-total' : '';
+  var status = opts.budget != null ? plStatus(opts.actual, opts.budget, opts.goodDir || 'up') : null;
+  var card = el('div', 'pl-stat-card' + (opts.total ? ' total' : ''));
+  card.appendChild(el('div', 'pl-stat-label', esc(opts.label)));
 
-  var labelCell = el('div', 'pl-tcell label' + (opts.sub ? ' sub' : '') + rowCls);
-  if (!opts.sub) labelCell.appendChild(el('span', 'pl-dot' + (status ? ' ' + status : '')));
-  labelCell.appendChild(document.createTextNode(opts.label));
-  table.appendChild(labelCell);
-
-  var numCell = el('div', 'pl-tcell num' + (opts.sub ? ' sub' : '') + (status ? ' ' + status : '') + rowCls);
-  numCell.appendChild(el('div', 'pl-tcell-main', esc(fmtFn(opts.actual))));
-  if (opts.pctBase && opts.actual != null) {
-    numCell.appendChild(el('div', 'pl-tcell-pct', ((opts.actual / opts.pctBase) * 100).toFixed(1) + '%'));
+  var valueRow = el('div', 'pl-stat-value-row');
+  var displayValue = opts.pctBase && opts.actual != null ? ((opts.actual / opts.pctBase) * 100).toFixed(1) + '%' : fmtFn(opts.actual);
+  valueRow.appendChild(el('span', 'pl-stat-value', esc(displayValue)));
+  if (opts.budget != null) {
+    var targetValue = opts.pctBase ? ((opts.budget / opts.pctBase) * 100).toFixed(1) + '%' : fmtFn(opts.budget);
+    valueRow.appendChild(el('span', 'pl-stat-target', 'target ' + esc(targetValue)));
   }
-  table.appendChild(numCell);
+  card.appendChild(valueRow);
 
-  table.appendChild(el('div', 'pl-tcell target' + rowCls, esc(opts.budget != null ? fmtFn(opts.budget) : '—')));
+  if (status) {
+    var pill = el('div', 'pl-stat-pill ' + status, (status === 'good' ? '↗ On track' : (status === 'amber' ? '↘ Slipping' : '↘ Behind')));
+    card.appendChild(pill);
+  }
+  /* $ actual-vs-target caption only on the %-of-revenue cost cards
+     (COGS/Wages/Opex, the ones with pctBase set) - matches the
+     reference image exactly: Revenue/Transactions/Avg spend/Profit show
+     just the big value + pill, no caption underneath. */
+  if (opts.pctBase && opts.actual != null) {
+    var caption = el('div', 'pl-stat-caption');
+    caption.innerHTML = plStatCaption(opts.actual, opts.budget, fmtFn, opts.goodDir || 'up');
+    card.appendChild(caption);
+  }
+  container.appendChild(card);
 }
 
 function renderPL(root) {
@@ -2259,47 +2283,49 @@ function renderPL(root) {
   var hasBudget = d.budget && d.budget.available;
   var revenue = d.revenue.actual;
 
-  var wrap = el('div', 'pl-table-wrap');
-  var table = el('div', 'pl-table');
-  table.appendChild(el('div', 'pl-tcell head label', 'Metric'));
-  table.appendChild(el('div', 'pl-tcell head num', 'Actual'));
-  table.appendChild(el('div', 'pl-tcell head target', 'Target'));
-
-  plTableRow(table, { label: 'Revenue', actual: revenue, fmt: 'money', goodDir: 'up', budget: hasBudget ? d.budget.revenue : null });
-
+  var topRow = el('div', 'pl-grid cols-3');
+  plStatCard(topRow, { label: 'Revenue', actual: revenue, fmt: 'money', goodDir: 'up', budget: hasBudget ? d.budget.revenue : null });
   var periodDays = Math.round((r.to.getTime() - r.from.getTime()) / 86400000) + 1;
   var txTarget = SETTINGS.transactionsTargetWeekly ? (SETTINGS.transactionsTargetWeekly / 7) * periodDays : null;
-  plTableRow(table, { label: 'Transactions', actual: d.transactions.actual, fmt: 'int', goodDir: 'up', budget: txTarget });
-
+  plStatCard(topRow, { label: 'Transactions', actual: d.transactions.actual, fmt: 'int', goodDir: 'up', budget: txTarget });
   var avgSpendActual = (d.transactions.actual && revenue != null) ? revenue / d.transactions.actual : null;
-  plTableRow(table, { label: 'Avg spend / transaction', actual: avgSpendActual, fmt: 'money', goodDir: 'up', budget: SETTINGS.avgSpendTarget || null });
+  plStatCard(topRow, { label: 'Avg spend / transaction', actual: avgSpendActual, fmt: 'money', goodDir: 'up', budget: SETTINGS.avgSpendTarget || null });
+  root.appendChild(topRow);
 
+  /* COGS/Wages shown as % of revenue with Total/FOH/BOH side by side -
+     BOH/FOH cards have no target of their own (Budget Manager has no
+     tracking-category split, a real, already-documented limitation
+     elsewhere in this app - not guessed at rather than shown honestly
+     without one), only the Total card is checked against a budget. */
   if (d.cogs) {
-    plTableRow(table, { label: 'COGS total', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.cogs : null, pctBase: revenue });
-    plTableRow(table, { label: 'BOH (food)', actual: d.cogs.boh, fmt: 'money', sub: true, pctBase: revenue });
-    plTableRow(table, { label: 'FOH (beverage)', actual: d.cogs.foh, fmt: 'money', sub: true, pctBase: revenue });
+    var cogsRow = el('div', 'pl-grid cols-3');
+    plStatCard(cogsRow, { label: 'Total COGS % (FOH + BOH)', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.cogs : null, pctBase: revenue });
+    plStatCard(cogsRow, { label: 'FOH cost %', actual: d.cogs.foh, fmt: 'money', pctBase: revenue });
+    plStatCard(cogsRow, { label: 'BOH cost %', actual: d.cogs.boh, fmt: 'money', pctBase: revenue });
+    root.appendChild(cogsRow);
   }
 
   if (d.wages) {
-    plTableRow(table, { label: 'Wages total', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.wages : null, pctBase: revenue });
+    var wagesRow = el('div', 'pl-grid cols-3');
+    plStatCard(wagesRow, { label: 'Total wages % (incl. super)', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.wages : null, pctBase: revenue });
     if (d.wages.splitAvailable) {
-      plTableRow(table, { label: 'BOH (kitchen)', actual: d.wages.kitchenBoh, fmt: 'money', sub: true, pctBase: revenue });
-      plTableRow(table, { label: 'FOH', actual: d.wages.foh, fmt: 'money', sub: true, pctBase: revenue });
+      plStatCard(wagesRow, { label: 'FOH wages % (incl. super)', actual: d.wages.foh, fmt: 'money', pctBase: revenue });
+      plStatCard(wagesRow, { label: 'BOH wages % (incl. super)', actual: d.wages.kitchenBoh, fmt: 'money', pctBase: revenue });
     } else {
-      plTableRow(table, { label: 'BOH/FOH split unavailable this time', actual: d.wages.unassigned, fmt: 'money', sub: true, pctBase: revenue });
+      plStatCard(wagesRow, { label: 'FOH/BOH split', actual: null, fmt: 'money' });
+      plStatCard(wagesRow, { label: 'unavailable this time', actual: null, fmt: 'money' });
     }
+    root.appendChild(wagesRow);
   }
 
+  var bottomRow = el('div', 'pl-grid cols-2');
   if (d.opex) {
-    plTableRow(table, { label: 'Opex', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.opex : null, pctBase: revenue });
+    plStatCard(bottomRow, { label: 'Opex', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.opex : null, pctBase: revenue });
   }
-
   if (d.netProfit) {
-    plTableRow(table, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: hasBudget ? d.budget.netProfit : null, pctBase: revenue });
+    plStatCard(bottomRow, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: hasBudget ? d.budget.netProfit : null });
   }
-
-  wrap.appendChild(table);
-  root.appendChild(wrap);
+  root.appendChild(bottomRow);
 
   /* Catch-up panel - only meaningful mid-period. */
   if (r.elapsedFraction < 1 && hasBudget) {
