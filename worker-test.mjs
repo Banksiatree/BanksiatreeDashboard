@@ -444,6 +444,33 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #10: What-If's baseline transaction count had the exact same
+  // POS-webhook-vs-History mismatch as P&L (BUG #9) - its Avg Spend
+  // baseline (Revenue / Transactions) would come out inflated whenever
+  // the old source undercounted.
+  // ================================================================
+  {
+    const env = {
+      TOKENS: xeroKv({
+        'xero:tenantId': 'tenant-1',
+        'history:week:2026-08-03': JSON.stringify({ week: '2026-08-03', weekEnding: '2026-08-09', source: 'live', covers: 700 }),
+        'history:week:2026-08-10': JSON.stringify({ week: '2026-08-10', weekEnding: '2026-08-16', source: 'live', covers: 663 }),
+        'history:week:2026-08-17': JSON.stringify({ week: '2026-08-17', weekEnding: '2026-08-23', source: 'live', covers: 743 }),
+        'history:week:2026-08-24': JSON.stringify({ week: '2026-08-24', weekEnding: '2026-08-30', source: 'live', covers: 684 })
+      }),
+      DASHBOARD_PASSCODE: PASSCODE
+    };
+    global.fetch = makeMockFetch([
+      { match: 'Reports/ProfitAndLoss', body: xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 22000, wages: 500, opex: 1000, ownerWages: 500 }) },
+      { match: 'TrackingCategories', body: { TrackingCategories: [] } }
+    ]);
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/whatif?from=2026-08-03&to=2026-08-30');
+    const json = await res.json();
+    assert(json.transactions === 700 + 663 + 743 + 684, 'What-If transactions = sum of History covers for the 4-week window, got ' + json.transactions);
+  }
+
+  // ================================================================
   // Baseline smoke coverage - pre-existing endpoints, so a future
   // change that breaks these fails loudly rather than silently.
   // ================================================================

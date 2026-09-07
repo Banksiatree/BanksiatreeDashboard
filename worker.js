@@ -2222,12 +2222,16 @@ async function apiWhatIf(env, url) {
     revenue = (await fetchXeroPLSplit(h, tenantId, revFrom, revTo)).revenue;
   } catch (err) { errors.revenue = plainError(err.status || 500); }
 
+  /* Same fix as P&L's transaction count (see sumHistoryCoversInRange's own
+     comment): read the exact figure History already has per week instead
+     of a second, separately-sourced POS-webhook count - the two used to
+     disagree for the same period, and What-If's Avg Spend baseline
+     (Revenue / Transactions) would come out inflated whenever the old
+     source undercounted. from/to here is already a real 4-week Mon-Sun
+     window, so every week's weekEnding lines up cleanly inside it. */
   let transactions = null;
   try {
-    const posAdapter = ADAPTERS.pos;
-    if (posAdapter && posAdapter.configured) {
-      transactions = (await posAdapter.fetchRange(env, h, { from, to })).count;
-    }
+    transactions = await sumHistoryCoversInRange(env, from, to);
   } catch (err) { errors.transactions = plainError(err.status || 500); }
 
   await noteSync(env, 'accounting');
