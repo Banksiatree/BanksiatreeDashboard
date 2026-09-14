@@ -1592,6 +1592,54 @@ async function apiOwnerInputNotes(env, request) {
   return json({ ok: true });
 }
 
+/* TEMPORARY, ONE-TIME BACKFILL - the retroactive half of the staff-hours/
+   notes propagation fix above. That fix only takes effect on saves made
+   from today forward; every week's hours/notes entered before it -
+   confirmed live: entered for every week this year, but only reaching
+   History for whichever single week happened to have a Xero pull run
+   after the hours were typed in - never got picked up, because the OLD
+   code only ever wrote ownerinput:staffhours:<week>/ownerinput:notes:
+   <week> and nothing else read those until saveHistorySnapshot next ran
+   for that exact week. Walks every such key that already exists and
+   merges each one straight into its matching history:week: record
+   (creating a partial one if it doesn't exist yet, same pattern OOLIO's
+   revenue and the fix above both use already) - pure KV to KV, no Xero
+   connection needed. Remove this endpoint once run once. */
+async function apiOwnerInputBackfillHistory(env) {
+  let hoursCount = 0, notesCount = 0;
+  let cursor;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix: 'ownerinput:staffhours:', cursor } : { prefix: 'ownerinput:staffhours:' });
+    const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+    for (let i = 0; i < page.keys.length; i++) {
+      const week = page.keys[i].name.slice('ownerinput:staffhours:'.length);
+      if (!WEEK_RE.test(week) || !raws[i]) continue;
+      let rec; try { rec = JSON.parse(raws[i]); } catch (e) { continue; }
+      if (typeof rec.staffHours !== 'number') continue;
+      await mergeHistoryWeek(env, week, { wages: { hours: rec.staffHours } });
+      hoursCount++;
+    }
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  cursor = undefined;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix: 'ownerinput:notes:', cursor } : { prefix: 'ownerinput:notes:' });
+    const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+    for (let i = 0; i < page.keys.length; i++) {
+      const week = page.keys[i].name.slice('ownerinput:notes:'.length);
+      if (!WEEK_RE.test(week) || !raws[i]) continue;
+      let rec; try { rec = JSON.parse(raws[i]); } catch (e) { continue; }
+      if (!rec.notes) continue;
+      await mergeHistoryWeek(env, week, { notes: rec.notes });
+      notesCount++;
+    }
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  return json({ ok: true, hoursBackfilled: hoursCount, notesBackfilled: notesCount });
+}
+
 /* POST /api/ownerinput/owner - body {name}. Grows the simple name picker;
    not a real login/auth system, so anyone with the dashboard link can add
    one - matches the whole dashboard's already-open, unlisted-URL model. */
@@ -3071,6 +3119,12 @@ export default {
     if (path === '/api/ownerinput/owner' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiOwnerInputAddOwner(env, request);
+    }
+    /* TEMPORARY, ONE-TIME - see apiOwnerInputBackfillHistory's comment.
+       Remove once run once. */
+    if (path === '/api/ownerinput/backfill-history' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiOwnerInputBackfillHistory(env);
     }
     if (path === '/api/ownerwages' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);

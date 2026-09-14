@@ -509,6 +509,43 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #11b: the one-time backfill must retroactively push EVERY
+  // already-entered ownerinput:staffhours/notes key into History, not
+  // just newly-saved ones - owner reported months of previously-entered
+  // hours missing from History entirely (only one stray week per month
+  // showing, wherever a Xero pull happened to run after hours were
+  // typed in).
+  // ================================================================
+  {
+    const env = {
+      TOKENS: makeKV({
+        'ownerinput:staffhours:2026-08-03': JSON.stringify({ staffHours: 240 }),
+        'ownerinput:staffhours:2026-08-10': JSON.stringify({ staffHours: 255 }),
+        'ownerinput:staffhours:2026-09-07': JSON.stringify({ staffHours: 231 }),
+        'ownerinput:notes:2026-08-03': JSON.stringify({ notes: 'busy long weekend' }),
+        // Already has real wages/cogs from a live Xero pull - backfill
+        // must add hours without disturbing them.
+        'history:week:2026-08-10': JSON.stringify({ week: '2026-08-10', weekEnding: '2026-08-16', source: 'live', wages: { kitchen: 4000, foh: 3000, total: 7000 } })
+      }),
+      DASHBOARD_PASSCODE: PASSCODE
+    };
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/ownerinput/backfill-history');
+    const json = await res.json();
+    assert(json.ok === true && json.hoursBackfilled === 3, 'backfill reports 3 weeks of hours pushed, got ' + JSON.stringify(json));
+    assert(json.notesBackfilled === 1, 'backfill reports 1 week of notes pushed, got ' + json.notesBackfilled);
+
+    const w1 = JSON.parse(env.TOKENS._store.get('history:week:2026-08-03'));
+    assert(w1.wages.hours === 240 && w1.notes === 'busy long weekend', 'a week with no prior History record gets both fields backfilled, got ' + JSON.stringify(w1));
+
+    const w2 = JSON.parse(env.TOKENS._store.get('history:week:2026-08-10'));
+    assert(w2.wages.hours === 255 && w2.wages.total === 7000, 'a week already live gets hours added without losing its real wages total, got ' + JSON.stringify(w2.wages));
+
+    const w3 = JSON.parse(env.TOKENS._store.get('history:week:2026-09-07'));
+    assert(w3.wages.hours === 231, 'a September week gets backfilled too, got ' + JSON.stringify(w3.wages));
+  }
+
+  // ================================================================
   // Baseline smoke coverage - pre-existing endpoints, so a future
   // change that breaks these fails loudly rather than silently.
   // ================================================================
