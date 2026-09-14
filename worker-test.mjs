@@ -337,6 +337,32 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #6b: widening GST to 4 quarters made Cash Split page through
+  // ~4x more BankTransactions/Payments every single load, tripping
+  // Xero's own rate limit live (confirmed: HTTP 429). A completed
+  // quarter's G1/1A/1B never changes once the quarter is over, so each
+  // quarter must be cached and a second load must not re-fetch any
+  // quarter it already has.
+  // ================================================================
+  {
+    const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+    let gstCallCount = 0;
+    global.fetch = makeMockFetch([
+      { match: 'BankTransactions', body: () => { gstCallCount++; return { BankTransactions: [] }; } },
+      { match: 'Payments', body: () => { gstCallCount++; return { Payments: [] }; } },
+      { match: 'Reports/ProfitAndLoss', body: xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: 500 }) }
+    ]);
+    const cookie = await login(env);
+    await authedFetch(env, cookie, '/api/cashsplit');
+    const firstLoadCalls = gstCallCount;
+    assert(firstLoadCalls === 16, 'cashsplit: first (cold-cache) load makes 4 Xero calls per quarter x 4 quarters = 16, got ' + firstLoadCalls);
+
+    gstCallCount = 0;
+    await authedFetch(env, cookie, '/api/cashsplit');
+    assert(gstCallCount === 0, 'cashsplit: second load re-fetches nothing - every quarter already cached, got ' + gstCallCount + ' calls');
+  }
+
+  // ================================================================
   // BUG #7: Cash Split Net Profit = Gross Profit + Other Income -
   // Operating Expenses, excluding ONLY "Distribution of profit" - not
   // Xero's own "Net Profit" line (which is always $0 for this business,

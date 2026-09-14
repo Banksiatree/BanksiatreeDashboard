@@ -1157,9 +1157,61 @@ async function fetchXeroCashBasisGst(h, tenantId, from, to) {
 
   return {
     g1: round2(g1), oneA: round2(oneA), oneB: round2(oneB),
-    gstPct: g1 !== 0 ? (oneA - oneB) / g1 : 0,
     counts: { bankReceive: bankReceive.length, bankSpend: bankSpend.length, invoicePayments: invoicePayments.length, billPayments: billPayments.length }
   };
+}
+
+/* Splits a date range into individual calendar quarters (assumes the
+   range is already quarter-aligned, which last4CompletedQuarters()
+   always produces). */
+function quarterStepsInRange(from, to) {
+  const out = [];
+  let cur = new Date(from + 'T00:00:00Z');
+  const end = new Date(to + 'T00:00:00Z');
+  while (cur.getTime() <= end.getTime()) {
+    const qFrom = cur.toISOString().slice(0, 10);
+    const qTo = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 3, 1) - 86400000);
+    out.push({ from: qFrom, to: qTo.toISOString().slice(0, 10) });
+    cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 3, 1));
+  }
+  return out;
+}
+
+/* CONFIRMED LIVE BUG (fixed here): widening GST to the last 4 completed
+   quarters (rolling year) meant paging through roughly 4x more
+   BankTransactions/Payments than before, every single time the Cash
+   Split tab loaded - Xero has no direct BAS API, so this only way to
+   get G1/1A/1B is summing every individual transaction, page by page.
+   That volume was tripping Xero's own rate limit (confirmed live:
+   HTTP 429). A completed quarter's figures never change once the
+   quarter is over, so each quarter's G1/1A/1B is cached in KV
+   indefinitely (no expiry) the first time it's computed - every later
+   Cash Split load only ever needs a fresh Xero pull for whichever
+   quarter (if any) hasn't been cached yet, not all four. Quarters are
+   fetched one at a time, not in parallel, so even a cold cache (the very
+   first load) spreads its Xero calls out instead of bursting all four
+   quarters' worth at once. */
+async function fetchXeroCashBasisGstCached(env, h, tenantId, qFrom, qTo) {
+  const cacheKey = 'xero:gst-quarter:' + qFrom;
+  if (env.TOKENS) {
+    const cached = await env.TOKENS.get(cacheKey);
+    if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+  }
+  const bas = await fetchXeroCashBasisGst(h, tenantId, qFrom, qTo);
+  if (env.TOKENS) { try { await env.TOKENS.put(cacheKey, JSON.stringify(bas)); } catch (e) {} }
+  return bas;
+}
+
+async function fetchXeroCashBasisGstOverRange(env, h, tenantId, from, to) {
+  const quarters = quarterStepsInRange(from, to);
+  let g1 = 0, oneA = 0, oneB = 0;
+  const counts = { bankReceive: 0, bankSpend: 0, invoicePayments: 0, billPayments: 0 };
+  for (const q of quarters) {
+    const bas = await fetchXeroCashBasisGstCached(env, h, tenantId, q.from, q.to);
+    g1 += bas.g1; oneA += bas.oneA; oneB += bas.oneB;
+    for (const k of Object.keys(counts)) counts[k] += (bas.counts && bas.counts[k]) || 0;
+  }
+  return { g1: round2(g1), oneA: round2(oneA), oneB: round2(oneB), gstPct: g1 !== 0 ? (oneA - oneB) / g1 : 0, counts };
 }
 
 /* ----------------------------------------------------------------------------
@@ -1193,7 +1245,7 @@ async function apiCashSplit(env) {
 
   let gst = null, gstError = null;
   try {
-    const bas = await fetchXeroCashBasisGst(h, tenantId, period.from, period.to);
+    const bas = await fetchXeroCashBasisGstOverRange(env, h, tenantId, period.from, period.to);
     gst = { pct: bas.gstPct, g1: bas.g1, oneA: bas.oneA, oneB: bas.oneB, counts: bas.counts };
   } catch (err) {
     /* TEMP: appending raw diagnostic detail after the friendly message while
