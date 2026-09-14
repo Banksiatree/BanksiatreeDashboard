@@ -471,6 +471,44 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #11: staff hours and notes must reach History immediately when
+  // saved from Owner Input, not only the next time a Xero pull happens
+  // to run for that week - owner reported hours "not saving", which was
+  // really "saved, but never propagated" since the two only used to sync
+  // at Run-the-Numbers time. Covers both a genuinely brand-new week (no
+  // history:week: record at all yet) and an existing live week (must not
+  // clobber its other fields).
+  // ================================================================
+  {
+    const env = { TOKENS: makeKV(), DASHBOARD_PASSCODE: PASSCODE };
+    const cookie = await login(env);
+    await authedFetch(env, cookie, '/api/ownerinput/staffhours', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: '2026-09-07', staffHours: 231 }) });
+    let rec = JSON.parse(env.TOKENS._store.get('history:week:2026-09-07'));
+    assert(rec && rec.wages && rec.wages.hours === 231, 'staff hours reach a brand-new week\'s History record immediately, got ' + JSON.stringify(rec));
+
+    await authedFetch(env, cookie, '/api/ownerinput/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: '2026-09-07', notes: 'quiet week' }) });
+    rec = JSON.parse(env.TOKENS._store.get('history:week:2026-09-07'));
+    assert(rec.notes === 'quiet week', 'notes reach History immediately too, got ' + rec.notes);
+    assert(rec.wages && rec.wages.hours === 231, 'saving notes afterward does not clobber the hours saved moments earlier, got ' + JSON.stringify(rec.wages));
+  }
+  {
+    // An existing live week with real wages/cogs already on it - staff
+    // hours saved afterward must land without disturbing anything else.
+    const env = {
+      TOKENS: makeKV({
+        'history:week:2026-08-31': JSON.stringify({ week: '2026-08-31', weekEnding: '2026-09-06', source: 'live', wages: { kitchen: 4000, foh: 3000, total: 7500 }, cogs: { food: 2000, bev: 800, retail: 0 } })
+      }),
+      DASHBOARD_PASSCODE: PASSCODE
+    };
+    const cookie = await login(env);
+    await authedFetch(env, cookie, '/api/ownerinput/staffhours', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: '2026-08-31', staffHours: 245.5 }) });
+    const rec = JSON.parse(env.TOKENS._store.get('history:week:2026-08-31'));
+    assert(rec.wages.hours === 245.5, 'staff hours land on an already-live week, got ' + rec.wages.hours);
+    assert(rec.wages.kitchen === 4000 && rec.wages.total === 7500, 'that week\'s existing wages figures are untouched, got ' + JSON.stringify(rec.wages));
+    assert(rec.cogs.food === 2000, 'that week\'s existing cogs is untouched too, got ' + JSON.stringify(rec.cogs));
+  }
+
+  // ================================================================
   // Baseline smoke coverage - pre-existing endpoints, so a future
   // change that breaks these fails loudly rather than silently.
   // ================================================================

@@ -1545,24 +1545,42 @@ async function apiOwnerInputEntry(env, request) {
 }
 
 /* POST /api/ownerinput/staffhours - body {week, staffHours}. Shared weekly
-   figure, not tied to a specific owner. */
+   figure, not tied to a specific owner.
+
+   CONFIRMED LIVE BUG (fixed here): this used to only write
+   ownerinput:staffhours:<week>, and History's wages.hours field only
+   ever picked that up the next time saveHistorySnapshot ran for that
+   week (a real Xero "Run the Numbers" pull). If staff hours were typed
+   in AFTER that week's live pull had already happened - a completely
+   normal sequence, since hours are often logged after the fact - the
+   entered figure never reached History at all, looking exactly like
+   "isn't saving" even though the value genuinely was saved (Owner Input
+   itself would show it correctly). Now also merges the figure straight
+   into that week's history:week: record immediately, via the same
+   mergeHistoryWeek every other partial contributor (OOLIO's revenue)
+   already uses - no Xero pull required to see it reflected in History. */
 async function apiOwnerInputStaffHours(env, request) {
   let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
   const week = body && body.week;
   if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad request' }, 400);
   const n = parseFloat(body.staffHours);
-  const record = { staffHours: isFinite(n) ? n : 0, updatedAt: new Date().toISOString() };
+  const staffHours = isFinite(n) ? n : 0;
+  const record = { staffHours, updatedAt: new Date().toISOString() };
   await env.TOKENS.put('ownerinput:staffhours:' + week, JSON.stringify(record));
+  await mergeHistoryWeek(env, week, { wages: { hours: staffHours } });
   return json({ ok: true });
 }
 
 /* POST /api/ownerinput/notes - body {week, notes}. Shared weekly free-text
    note (same "whoever saves last wins" shared-field pattern as staff
-   hours) - carried into that week's History record the next time Run the
-   Numbers runs for it (see saveHistorySnapshot), so this is genuinely the
-   one place to type a week's note, matching the owner's own request that
-   note-taking live "in the Input button" rather than as a separate
-   History-only field. */
+   hours), matching the owner's own request that note-taking live "in the
+   Input button" rather than as a separate History-only field.
+
+   Same fix as staff hours above, same reasoning: now merges straight
+   into that week's history:week: record immediately (mergeHistoryWeek),
+   instead of only reaching History the next time a Xero pull happened to
+   run for that week - a note typed after that week's pull already ran
+   used to never show up in History at all. */
 async function apiOwnerInputNotes(env, request) {
   let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
   const week = body && body.week;
@@ -1570,6 +1588,7 @@ async function apiOwnerInputNotes(env, request) {
   const notes = String((body && body.notes) || '').trim().slice(0, 2000);
   const record = { notes, updatedAt: new Date().toISOString() };
   await env.TOKENS.put('ownerinput:notes:' + week, JSON.stringify(record));
+  await mergeHistoryWeek(env, week, { notes });
   return json({ ok: true });
 }
 
