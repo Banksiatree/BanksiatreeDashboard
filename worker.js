@@ -1214,6 +1214,40 @@ async function fetchXeroCashBasisGstOverRange(env, h, tenantId, from, to) {
   return { g1: round2(g1), oneA: round2(oneA), oneB: round2(oneB), gstPct: g1 !== 0 ? (oneA - oneB) / g1 : 0, counts };
 }
 
+/* CONFIRMED LIVE BUG (fixed here): the Cash Split tab's COGS/Cash rate
+   section (below, in apiCashSplit) widened to the same last-4-completed-
+   quarters window as GST above, but never got the same per-quarter
+   caching - it was still calling fetchXeroPL fresh, uncached, on every
+   single Cash Split load. That's only one Xero report call per load (not
+   paginated like GST's BankTransactions/Payments sum), but "COGS/Cash
+   rate: HTTP 429" kept happening even after the GST fix shipped, which
+   is consistent with this second, still-uncached call also occasionally
+   landing during whatever cooldown window Xero was enforcing. Same fix,
+   same reasoning: a completed quarter's P&L never changes, so cache each
+   quarter's totals in KV indefinitely and only ever live-fetch whichever
+   quarter isn't cached yet. */
+async function fetchXeroPLCached(env, h, tenantId, qFrom, qTo) {
+  const cacheKey = 'xero:pl-quarter:' + qFrom;
+  if (env.TOKENS) {
+    const cached = await env.TOKENS.get(cacheKey);
+    if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+  }
+  const pl = await fetchXeroPL(h, tenantId, qFrom, qTo);
+  if (env.TOKENS) { try { await env.TOKENS.put(cacheKey, JSON.stringify(pl)); } catch (e) {} }
+  return pl;
+}
+
+async function fetchXeroPLOverRange(env, h, tenantId, from, to) {
+  const quarters = quarterStepsInRange(from, to);
+  let revenue = 0, cogs = 0, wagesSuper = 0, overheads = 0, netProfit = 0, netProfitKnown = true;
+  for (const q of quarters) {
+    const pl = await fetchXeroPLCached(env, h, tenantId, q.from, q.to);
+    revenue += pl.revenue; cogs += pl.cogs; wagesSuper += pl.wagesSuper; overheads += pl.overheads;
+    if (pl.netProfit == null) netProfitKnown = false; else netProfit += pl.netProfit;
+  }
+  return { revenue, cogs, wagesSuper, overheads, netProfit: netProfitKnown ? netProfit : null };
+}
+
 /* ----------------------------------------------------------------------------
    GET /api/cashsplit - powers the Cash Split tab. Live GST%/COGS%/Cash% for
    the most recent BAS period, so the owner only has to type in the one
@@ -1250,11 +1284,17 @@ async function apiCashSplit(env) {
   } catch (err) {
     /* TEMP: appending raw diagnostic detail after the friendly message while
        this is still being validated against the owner's real numbers -
-       trim back to plainError(...) alone once confirmed working. */
+       trim back to plainError(...) alone once confirmed working. On a 429
+       this now includes Xero's own Retry-After/X-Rate-Limit-Problem
+       headers (see fetchJson below) so a future rate-limit hit says
+       exactly which limit (minute/day/concurrent) was tripped, instead of
+       having to guess. */
     const debugBits = [];
     debugBits.push('status=' + (err && err.status));
     debugBits.push('msg=' + String((err && err.message) || err).slice(0, 150));
     if (err && err.body) debugBits.push('xeroBody=' + String(err.body).slice(0, 400));
+    if (err && err.retryAfter) debugBits.push('retryAfter=' + err.retryAfter);
+    if (err && err.rateLimitProblem) debugBits.push('rateLimitProblem=' + err.rateLimitProblem);
     if (err && err.debug) debugBits.push(err.debug);
     gstError = plainError(err.status || 500) + '  [DEBUG: ' + debugBits.join(' | ') + ']';
   }
@@ -1272,7 +1312,7 @@ async function apiCashSplit(env) {
        from the P&L tab's/History's own "True net profit", which pulls
        owner wages out as a separate line. cogsPct is unchanged (revenue
        and cogs totals, not disputed). */
-    const r = await fetchXeroPL(h, tenantId, period.from, period.to);
+    const r = await fetchXeroPLOverRange(env, h, tenantId, period.from, period.to);
     const netRevenue = r.revenue - r.cogs;
     const netProfit = r.netProfit;
     const cogsPct = r.revenue ? r.cogs / r.revenue : 0;
@@ -1283,7 +1323,19 @@ async function apiCashSplit(env) {
       cashPctRaw, cashPct: Math.max(cashPctRaw, 0.01), cashFloored: cashPctRaw < 0.01
     };
   } catch (err) {
-    plError = plainError(err.status || 500);
+    /* Same DEBUG-detail treatment as the GST block above, added because
+       "COGS/Cash rate: HTTP 429" was reported live with zero visibility
+       into which Xero limit it actually was - this fetch is now
+       per-quarter cached too (fetchXeroPLOverRange), but keep the
+       diagnostic detail so any future failure here is confirmed, not
+       guessed at. */
+    const debugBits = [];
+    debugBits.push('status=' + (err && err.status));
+    debugBits.push('msg=' + String((err && err.message) || err).slice(0, 150));
+    if (err && err.body) debugBits.push('xeroBody=' + String(err.body).slice(0, 400));
+    if (err && err.retryAfter) debugBits.push('retryAfter=' + err.retryAfter);
+    if (err && err.rateLimitProblem) debugBits.push('rateLimitProblem=' + err.rateLimitProblem);
+    plError = plainError(err.status || 500) + '  [DEBUG: ' + debugBits.join(' | ') + ']';
   }
 
   await noteSync(env, 'accounting');
@@ -2508,6 +2560,14 @@ function makeHelpers(env, source) {
         const e = new Error('HTTP ' + res.status);
         e.status = res.status;
         e.body = bodyText;
+        /* Xero reports which specific limit a 429 tripped via these
+           headers (per-minute vs daily vs concurrent) - captured so any
+           future rate-limit error is diagnosed from Xero's own answer,
+           not guessed at from symptom timing. */
+        if (res.status === 429) {
+          e.retryAfter = res.headers.get('Retry-After');
+          e.rateLimitProblem = res.headers.get('X-Rate-Limit-Problem');
+        }
         throw e;
       }
       return res.json();

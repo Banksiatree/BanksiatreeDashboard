@@ -234,6 +234,8 @@ body {
 .pl-stat-caption .under { color: var(--c-green); font-weight: 600; }
 
 /* Owner Input tab */
+.oi-pick-week { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 0.4rem; }
+.oi-pick-week input[type=date] { font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 5px 10px; border: 1px solid var(--border-med); border-radius: 8px; background: #fff; }
 .oi-owners { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 0.4rem; }
 .oi-owner-chip { padding: 8px 16px; border-radius: 20px; border: 1px solid var(--border-med); background: #fffdf9; font-size: 13.5px; font-weight: 500; color: var(--text); cursor: pointer; }
 .oi-owner-chip:hover { border-color: var(--accent); background: var(--accent-dim); }
@@ -2360,9 +2362,17 @@ function renderPL(root) {
    did I last pick on THIS device" bit is local, as a convenience.
 ============================================================ */
 function ownerInputWeekMonday(key) {
-  var ws = startOfWeek(tradingToday());
-  if (key === 'lastWeek') ws = addDays(ws, -7);
-  return ws;
+  if (key === 'lastWeek') return addDays(startOfWeek(tradingToday()), -7);
+  if (key === 'thisWeek' || !key) return startOfWeek(tradingToday());
+  /* A picked past week: state.ownerInput.week holds a raw ISO Monday
+     string (e.g. from the "pick a past week" date input, snapped to its
+     week's Monday) rather than one of the two named keys above - lets the
+     owner enter/edit staff hours or an owner's own entry for any past
+     week, not just this/last week. The save endpoints already accept any
+     Monday matching WEEK_RE server-side, so no backend change was needed
+     here - only this picker was ever limited to two weeks. */
+  var picked = new Date(key + 'T00:00:00Z');
+  return isNaN(picked.getTime()) ? startOfWeek(tradingToday()) : startOfWeek(picked);
 }
 function saveMyOwner(name) {
   state.ownerInput.myOwner = name;
@@ -2418,6 +2428,25 @@ function renderOwnerInput(root) {
   });
   root.appendChild(pbar);
   var mon = ownerInputWeekMonday(oi.week);
+
+  /* Pick any past week - so hours/notes that were never entered for a
+     specific week (or need correcting) can be typed in directly, rather
+     than only ever being able to log this/last week. Picking a date
+     snaps to that date's own Monday (ownerInputWeekMonday handles a raw
+     ISO date the same way as the two named chips above). */
+  var pickWrap = el('div', 'oi-pick-week');
+  pickWrap.appendChild(el('span', 'set-note', 'Or enter/edit a past week:'));
+  var pickInp = document.createElement('input');
+  pickInp.type = 'date';
+  pickInp.max = iso(tradingToday());
+  pickInp.style.marginLeft = '8px';
+  pickInp.onchange = function () {
+    if (!pickInp.value) return;
+    oi.week = pickInp.value; oi.data = null; oi.wages = null; render();
+  };
+  pickWrap.appendChild(pickInp);
+  root.appendChild(pickWrap);
+
   root.appendChild(el('div', 'set-note', fmtRange({ from: mon, to: addDays(mon, 6) })));
 
   if (oi.error) root.appendChild(el('div', 'banner banner-coral', esc(oi.error)));

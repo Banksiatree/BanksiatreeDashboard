@@ -325,12 +325,18 @@ async function main() {
     const json = await res.json();
     assert(json.available === true, 'cashsplit: call succeeds');
     assert(json.period && json.period.label && json.period.label.includes('4 completed quarters'), 'cashsplit: period label says "4 completed quarters", got ' + (json.period && json.period.label));
-    const plUrl = seenUrls.find((u) => u.includes('ProfitAndLoss')) || '';
-    const fromMatch = /fromDate=(\d{4}-\d{2}-\d{2})/.exec(plUrl);
-    const toMatch = /toDate=(\d{4}-\d{2}-\d{2})/.exec(plUrl);
+    // ProfitAndLoss is now fetched per-quarter (fetchXeroPLOverRange, cached
+    // the same way as GST below) rather than one 12-month call, so each
+    // individual call should span ~3 months, not ~12 - and there should be
+    // exactly 4 of them (one per quarter), covering the full rolling year
+    // between them.
+    const plUrls = seenUrls.filter((u) => u.includes('ProfitAndLoss'));
+    assert(plUrls.length === 4, 'cashsplit: ProfitAndLoss fetched once per quarter (4 calls), got ' + plUrls.length);
+    const fromMatch = /fromDate=(\d{4}-\d{2}-\d{2})/.exec(plUrls[0] || '');
+    const toMatch = /toDate=(\d{4}-\d{2}-\d{2})/.exec(plUrls[0] || '');
     if (fromMatch && toMatch) {
       const months = (new Date(toMatch[1]) - new Date(fromMatch[1])) / (1000 * 60 * 60 * 24 * 30);
-      assert(months > 10 && months < 13, 'cashsplit: date range spans ~12 months (4 quarters), got ' + fromMatch[1] + ' to ' + toMatch[1]);
+      assert(months > 2 && months < 4, 'cashsplit: each ProfitAndLoss call spans ~1 quarter (~3 months), got ' + fromMatch[1] + ' to ' + toMatch[1]);
     } else {
       assert(false, 'cashsplit: could not find a ProfitAndLoss date range to check');
     }
@@ -343,23 +349,31 @@ async function main() {
   // quarter's G1/1A/1B never changes once the quarter is over, so each
   // quarter must be cached and a second load must not re-fetch any
   // quarter it already has.
+  //
+  // BUG #6c: the COGS/Cash rate section (ProfitAndLoss) widened to the
+  // same 4-quarter window but never got the same caching - it was still
+  // fetching fresh, uncached, on every load ("COGS/Cash rate: HTTP 429"
+  // reported live even after the GST fix shipped). Same fix, same test
+  // shape: cold load = 1 ProfitAndLoss call per quarter, warm load = 0.
   // ================================================================
   {
     const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
-    let gstCallCount = 0;
+    let gstCallCount = 0, plCallCount = 0;
     global.fetch = makeMockFetch([
       { match: 'BankTransactions', body: () => { gstCallCount++; return { BankTransactions: [] }; } },
       { match: 'Payments', body: () => { gstCallCount++; return { Payments: [] }; } },
-      { match: 'Reports/ProfitAndLoss', body: xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: 500 }) }
+      { match: 'Reports/ProfitAndLoss', body: () => { plCallCount++; return xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: 500 }); } }
     ]);
     const cookie = await login(env);
     await authedFetch(env, cookie, '/api/cashsplit');
     const firstLoadCalls = gstCallCount;
     assert(firstLoadCalls === 16, 'cashsplit: first (cold-cache) load makes 4 Xero calls per quarter x 4 quarters = 16, got ' + firstLoadCalls);
+    assert(plCallCount === 4, 'cashsplit: first (cold-cache) load makes 1 ProfitAndLoss call per quarter x 4 quarters = 4, got ' + plCallCount);
 
-    gstCallCount = 0;
+    gstCallCount = 0; plCallCount = 0;
     await authedFetch(env, cookie, '/api/cashsplit');
     assert(gstCallCount === 0, 'cashsplit: second load re-fetches nothing - every quarter already cached, got ' + gstCallCount + ' calls');
+    assert(plCallCount === 0, 'cashsplit: second load re-fetches no ProfitAndLoss either - every quarter already cached, got ' + plCallCount + ' calls');
   }
 
   // ================================================================
@@ -372,26 +386,32 @@ async function main() {
   // ================================================================
   {
     const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
-    // Real numbers from the owner's actual report, reconstructed exactly.
-    const realReport = {
+    // Real numbers from the owner's actual (annual) report, divided by 4:
+    // apiCashSplit now fetches ProfitAndLoss per-quarter and sums the 4
+    // calls (fetchXeroPLOverRange, cached the same way as GST), and this
+    // mock returns the same body for every quarter regardless of its
+    // date range - so each "quarter" here carries exactly a quarter's
+    // share of the real annual figures, and the 4 identical quarters sum
+    // back to the real annual totals asserted below.
+    const quarterReport = {
       Reports: [{ Rows: [
         { RowType: 'Section', Title: 'Income', Rows: [
-          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Income' }, { Value: '1238479.41' }] }
+          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Income' }, { Value: '309619.8525' }] }
         ]},
         { RowType: 'Section', Title: 'Less Cost of Sales', Rows: [
-          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Cost of Sales' }, { Value: '289954.76' }] }
+          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Cost of Sales' }, { Value: '72488.69' }] }
         ]},
         { RowType: 'Section', Title: null, Rows: [
-          { RowType: 'Row', Cells: [{ Value: 'Gross Profit' }, { Value: '948524.65' }] }
+          { RowType: 'Row', Cells: [{ Value: 'Gross Profit' }, { Value: '237131.1625' }] }
         ]},
         { RowType: 'Section', Title: 'Plus Other Income', Rows: [
-          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Other Income' }, { Value: '13304.72' }] }
+          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Other Income' }, { Value: '3326.18' }] }
         ]},
         { RowType: 'Section', Title: 'Less Operating Expenses', Rows: [
-          { RowType: 'Row', Cells: [{ Value: 'Distribution of profit' }, { Value: '101439.59' }] },
-          { RowType: 'Row', Cells: [{ Value: 'Our Wages' }, { Value: '143781.94' }] },
-          { RowType: 'Row', Cells: [{ Value: 'Everything else' }, { Value: '716607.84' }] },
-          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Operating Expenses' }, { Value: '961829.37' }] }
+          { RowType: 'Row', Cells: [{ Value: 'Distribution of profit' }, { Value: '25359.8975' }] },
+          { RowType: 'Row', Cells: [{ Value: 'Our Wages' }, { Value: '35945.485' }] },
+          { RowType: 'Row', Cells: [{ Value: 'Everything else' }, { Value: '179151.96' }] },
+          { RowType: 'SummaryRow', Cells: [{ Value: 'Total Operating Expenses' }, { Value: '240457.3425' }] }
         ]},
         { RowType: 'Section', Title: null, Rows: [
           { RowType: 'Row', Cells: [{ Value: 'Net Profit' }, { Value: '0.00' }] }
@@ -401,7 +421,7 @@ async function main() {
     global.fetch = makeMockFetch([
       { match: 'BankTransactions', body: { BankTransactions: [] } },
       { match: 'Payments', body: { Payments: [] } },
-      { match: 'Reports/ProfitAndLoss', body: realReport }
+      { match: 'Reports/ProfitAndLoss', body: quarterReport }
     ]);
     const cookie = await login(env);
     const res = await authedFetch(env, cookie, '/api/cashsplit');
