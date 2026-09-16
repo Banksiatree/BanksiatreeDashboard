@@ -684,6 +684,7 @@ var state = {
     importError: null,
     showImportPanel: false,     /* the opt-in "replace the import" panel, once weeks already exist */
     budget: { loading: false, data: null, error: null, year: null },   /* last /api/budget payload, for the "vs Budget" comparison */
+    opexBreakdownOpen: false,   /* "See opex breakdown" toggle under the vs Budget table's Opex row */
     recompute: { loading: false, result: null, error: null },   /* POST /api/history/recompute-live outcome */
     pullWeek: { loadingWeek: null, error: null }   /* POST /api/history/pull-week - which single week (if any) is mid-pull */
   },
@@ -2989,10 +2990,22 @@ function historyAvgSale(rec) { return (rec.bankFeeds != null && rec.covers) ? re
    monthly-math path that could drift out of sync with the per-week one.
    A field stays null (not a fabricated 0) when NONE of the weeks being
    summed had it, so a month with a genuine gap still reads as a gap. */
+/* Sums any number of {label,value} line arrays into one, combining
+   matching labels (e.g. History's per-week opexLines, or Budget's
+   per-month opexLines) - shared by the vs-Budget opex breakdown below,
+   whether it's summing several weeks' worth or several months' worth. */
+function sumLinesByLabel(lineArrays) {
+  var map = {};
+  (lineArrays || []).forEach(function (lines) {
+    (lines || []).forEach(function (l) { map[l.label] = (map[l.label] || 0) + (l.value || 0); });
+  });
+  return Object.keys(map).map(function (k) { return { label: k, value: map[k] }; }).sort(function (a, b) { return b.value - a.value; });
+}
+
 function historyAggregate(weeksArr) {
   var out = {
     revenue: { food: null, bev: null, uber: null, event: null, retail: null, uncategorised: null },
-    bankFeeds: null, cogs: null, wages: null, ownerWages: null, covers: null, opex: null,
+    bankFeeds: null, cogs: null, wages: null, ownerWages: null, covers: null, opex: null, opexLines: [],
     weekCount: weeksArr.length, opexWeekCount: 0
   };
   /* Sums a leaf field ONLY across the weeks that actually had it, leaving
@@ -3030,6 +3043,7 @@ function historyAggregate(weeksArr) {
   if (!hasOwnerWages) out.ownerWages = null;
   if (!hasCovers) out.covers = null;
   if (!hasOpex) out.opex = null;
+  out.opexLines = sumLinesByLabel(weeksArr.map(function (w) { return w.opexLines; }));
   return out;
 }
 
@@ -3386,6 +3400,66 @@ function renderHistoryBudgetComparison(root, months, yearAgg) {
   wrap.appendChild(table);
   card.appendChild(wrap);
   card.appendChild(el('div', 'set-note', 'Green means the right side of budget (revenue/profit at or above target, costs at or below); red means the wrong side. % is actual vs Budget Manager’s target for that month.'));
+
+  /* "See inside" the Opex box: which individual accounts actually make it
+     up vs what each was budgeted, not just the one lump total above.
+     Scoped to whichever month is currently expanded via the "See weeks"
+     chips below (or the full year if none is) - reuses that same
+     month selection rather than adding a second one. Opex line-item
+     detail (opexLines) is only ever captured on a LIVE week going
+     forward (see saveHistorySnapshot in worker.js) - an imported or
+     older week before this existed just won't have it yet. */
+  var toggleBtn = el('button', 'btn-plain', h.opexBreakdownOpen ? '▴ Hide opex breakdown' : '▾ See inside Opex (by account)');
+  toggleBtn.style.marginTop = '8px';
+  toggleBtn.onclick = function () { h.opexBreakdownOpen = !h.opexBreakdownOpen; render(); };
+  card.appendChild(toggleBtn);
+
+  if (h.opexBreakdownOpen) {
+    var expandedMo = h.expandedMonth ? months.filter(function (mo) { return mo.key === h.expandedMonth; })[0] : null;
+    var scopeLabel, actualLines, budgetLines;
+    if (expandedMo) {
+      scopeLabel = expandedMo.name + ' ' + h.year;
+      actualLines = expandedMo.weeksList ? historyAggregate(expandedMo.weeksList).opexLines : [];
+      budgetLines = (budgetByMonth[expandedMo.key] && budgetByMonth[expandedMo.key].opexLines) || [];
+    } else {
+      scopeLabel = 'Full year ' + h.year;
+      actualLines = yearAgg.opexLines || [];
+      budgetLines = anyYearBudget ? sumLinesByLabel((hb.data.months || []).map(function (m) { return m.opexLines; })) : [];
+    }
+    var bdCard = el('div');
+    bdCard.style.marginTop = '10px';
+    bdCard.appendChild(el('div', 'set-note', 'Opex by account · ' + scopeLabel + ' (pick a month below with "See weeks" to change scope, or collapse it for the full year)'));
+    if (!actualLines.length && !budgetLines.length) {
+      bdCard.appendChild(el('div', 'set-note', 'No opex line-item detail yet for ' + scopeLabel + ' - itemised Opex only started being captured from when this breakdown was added, so it fills in as new weeks are pulled going forward.'));
+    } else {
+      var labelSet = {};
+      actualLines.forEach(function (l) { labelSet[l.label] = true; });
+      budgetLines.forEach(function (l) { labelSet[l.label] = true; });
+      var labels = Object.keys(labelSet).sort();
+      var bWrap = el('div', 'budget-table-wrap');
+      var bTable = el('div', 'budget-table hist');
+      bTable.style.gridTemplateColumns = '220px 110px 110px 80px';
+      bTable.style.minWidth = '520px';
+      bTable.appendChild(el('div', 'budget-cell head rowlabel', 'Account'));
+      bTable.appendChild(el('div', 'budget-cell head', 'Actual'));
+      bTable.appendChild(el('div', 'budget-cell head', 'Budget'));
+      bTable.appendChild(el('div', 'budget-cell head', 'vs'));
+      labels.forEach(function (label) {
+        var a = actualLines.filter(function (l) { return l.label === label; })[0];
+        var b = budgetLines.filter(function (l) { return l.label === label; })[0];
+        var actualVal = a ? a.value : null, budgetVal = b ? b.value : null;
+        var cell = historyVsBudgetCell(actualVal, budgetVal, 'down');
+        bTable.appendChild(el('div', 'budget-cell rowlabel sub', esc(label)));
+        bTable.appendChild(el('div', 'budget-cell val sub', esc(fmtMoneyOrDash(actualVal))));
+        bTable.appendChild(el('div', 'budget-cell val sub', esc(fmtMoneyOrDash(budgetVal))));
+        bTable.appendChild(el('div', 'budget-cell val sub' + (cell.cls ? ' ' + cell.cls : ''), esc(cell.text)));
+      });
+      bWrap.appendChild(bTable);
+      bdCard.appendChild(bWrap);
+    }
+    card.appendChild(bdCard);
+  }
+
   root.appendChild(card);
 }
 

@@ -293,6 +293,8 @@ async function main() {
     await authedFetch(env, cookie, '/api/ownerwages?from=2026-08-17&to=2026-08-23');
     let rec = JSON.parse(env.TOKENS._store.get('history:week:2026-08-17'));
     assert(rec.cogs.food === 4544.95 && rec.cogs.retail === 250, 'null-merge: first pull writes real cogs values, got ' + JSON.stringify(rec.cogs));
+    assert(Array.isArray(rec.opexLines) && rec.opexLines.length === 1 && rec.opexLines[0].label === 'Rent' && rec.opexLines[0].value === 3642.39,
+      'opex breakdown: a live pull captures itemised opexLines (Rent), not just the total, got ' + JSON.stringify(rec.opexLines));
 
     // Second pull: COGS report now shows retail with no matching account at
     // all this time (retail: 0) - food/bev should update, and the merge

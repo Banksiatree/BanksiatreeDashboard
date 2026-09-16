@@ -1897,6 +1897,16 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
     ownerWages: split.opex.ownerWages,
     covers,
     opex: split.opex.opexTotal,
+    /* Owner request: see inside the Opex box on the History-vs-Budget
+       comparison, not just the lump total - Xero's Budget Manager
+       already budgets Opex per individual account (the Budget tab's
+       own opexLines), so History needs to start capturing the same
+       per-account actuals to compare against, going forward. Reuses
+       split.opex.opexLines directly - already computed by
+       walkXeroOpexDetail for the P&L tab, not a new fetch. A week
+       pulled before this existed (or an imported week) just won't
+       have this field yet. */
+    opexLines: split.opex.opexLines,
     notes
   });
 }
