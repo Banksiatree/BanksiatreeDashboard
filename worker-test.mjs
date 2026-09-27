@@ -6,15 +6,17 @@
 // during that live-debugging session, plus a baseline smoke pass over the
 // pre-existing endpoints (Owner Input, Budget, What-If, POS aggregation).
 //
-// KNOWN GAP: the Gmail/OOLIO PDF pipeline (fetchGmailOolioReport) isn't
-// covered end-to-end here - it needs real PDF bytes decoded via the unpdf
-// package, which isn't practical to fake convincingly in a unit test. Its
-// pure text-processing pieces (oolioRevenueFromReportingGroups,
-// parseOolioSalesSummaryCount, oolioReportWeekFromText) aren't
-// independently testable either, since worker.js doesn't export internal
-// functions - only the HTTP router is reachable from outside. If this
-// pipeline breaks again, it'll need the same live-debugging approach used
-// to build it (real captured PDF text, /api/debug/oolio-email inspection).
+// UPDATE: the Gmail/OOLIO PDF pipeline (fetchGmailOolioReport) IS now
+// covered end-to-end (see the "oolio backlog" test below) - unpdf is a
+// real installed dependency here, not mocked, so a small hand-built PDF
+// (makeSimplePdf) round-trips through the actual getDocumentProxy/
+// extractText call exactly like a real emailed report would. Only the
+// mocked layer is Gmail's own HTTP API (messages.list/get, attachments.get)
+// and the PDF content itself (synthetic numbers, not a captured real
+// report) - the parsing/merge code underneath is exercised for real.
+// worker.js still doesn't export internal functions, so this all runs
+// through the real HTTP router (/api/gmail/check, worker.scheduled()),
+// same as everything else in this file.
 //
 // HOW TO RUN: worker.js has a top-level `import dashboardHtml from
 // './dashboard.html'` that plain Node can't resolve on its own (Cloudflare's
@@ -36,6 +38,86 @@ function xeroKv(extra) {
     'tokens:accounting': JSON.stringify({ access_token: 'fake-token', expires_at: Date.now() + 3600000 }),
     ...(extra || {})
   });
+}
+
+// Same idea as xeroKv, for Gmail's own OAuth token.
+function gmailKv(extra) {
+  return makeKV({
+    'tokens:gmail': JSON.stringify({ access_token: 'fake-gmail-token', expires_at: Date.now() + 3600000 }),
+    ...(extra || {})
+  });
+}
+
+function ddmmyyyy(iso) {
+  const [y, m, d] = iso.split('-');
+  return d + '/' + m + '/' + y;
+}
+
+function bytesToBase64Url(bytes) {
+  return Buffer.from(bytes).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Hand-built minimal one-page PDF (uncompressed content stream, one row of
+// Tj calls) - a real PDF unpdf's getDocumentProxy/extractText can actually
+// decode, not a fake byte blob. Verified standalone that extractText round-
+// trips these lines back out in order, one per '\n'.
+function makeSimplePdf(lines) {
+  const fontSize = 10, lineHeight = 12, top = 700;
+  let content = 'BT /F1 ' + fontSize + ' Tf\n';
+  lines.forEach((line, i) => {
+    const y = top - i * lineHeight;
+    const esc = String(line).replace(/([()\\])/g, '\\$1');
+    content += '1 0 0 1 50 ' + y + ' Tm (' + esc + ') Tj\n';
+  });
+  content += 'ET';
+  const objs = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n',
+    '4 0 obj\n<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream\nendobj\n',
+    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const o of objs) { offsets.push(pdf.length); pdf += o; }
+  const xrefStart = pdf.length;
+  pdf += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n';
+  for (let i = 1; i <= objs.length; i++) pdf += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  pdf += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xrefStart + '\n%%EOF';
+  return new Uint8Array(Buffer.from(pdf, 'latin1'));
+}
+
+// Matches the real "Reporting Groups.pdf" layout parseOolioReportingGroupsPdf
+// expects: a "From:"/"To:" header (Australian date order) and a header row
+// containing both "Reporting Group" and "Quantity", then one data row per
+// group with its 6 trailing money columns.
+function oolioReportingGroupsPdf(fromIso, toIso, rows) {
+  const lines = [
+    'Reporting Groups',
+    'From: ' + ddmmyyyy(fromIso) + ' 00:00',
+    'To: ' + ddmmyyyy(toIso) + ' 23:59',
+    'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax'
+  ];
+  rows.forEach((r) => {
+    lines.push(r.name + ' ' + r.qty + ' $' + r.gross.toFixed(2) + ' $' + r.discount.toFixed(2) + ' $' + r.surcharge.toFixed(2) + ' $' + r.net.toFixed(2) + ' $' + r.tax.toFixed(2) + ' $' + r.netExTax.toFixed(2));
+  });
+  lines.push('Created By: test');
+  return makeSimplePdf(lines);
+}
+
+// Matches "Sales Summary.pdf": the literal "Sales Summary" header, then the
+// first integer-followed-by-$amount pair anywhere after it is the count.
+function oolioSalesSummaryPdf(count) {
+  return makeSimplePdf(['Sales Summary', 'The Banksia Tree Cafe', count + ' $1000.00 $0.00 $0.00 $1000.00 $0.00 $1000.00']);
+}
+
+function gmailMessageFull(from, subject, attachments) {
+  return {
+    payload: {
+      headers: [{ name: 'From', value: from }, { name: 'Subject', value: subject }],
+      parts: attachments.map((a) => ({ filename: a.filename, body: { attachmentId: a.attachmentId } }))
+    }
+  };
 }
 
 function makeKV(seed) {
@@ -632,6 +714,58 @@ async function main() {
     const res = await authedFetch(env, cookie, '/api/whatif?from=2026-08-01&to=2026-08-28');
     const json = await res.json();
     assert(json.available === true, 'whatif: call succeeds with mocked Xero, got ' + JSON.stringify(json).slice(0, 200));
+  }
+
+  // ================================================================
+  // BUG #8: fetchGmailOolioReport used to only ever look at the single
+  // newest labelled email and stop there - if even one week's check was
+  // skipped, an older unprocessed week's report was ignored permanently,
+  // even though it was sitting right there in Gmail under the same label
+  // (confirmed live: real report emails existed the whole time, "Check
+  // for OOLIO report now" just never looked at them). Now scans the
+  // whole search window and merges every not-yet-processed week found,
+  // oldest first. Runs the REAL PDF parse path (unpdf, not mocked) -
+  // only Gmail's own HTTP API and the PDF content are faked.
+  // ================================================================
+  {
+    const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+    const rgPdfA = oolioReportingGroupsPdf('2026-08-03', '2026-08-09', [
+      { name: 'Food', qty: 500, gross: 10000, discount: 200, surcharge: 0, net: 9800, tax: 890, netExTax: 8910 },
+      { name: 'Drink', qty: 300, gross: 4000, discount: 100, surcharge: 0, net: 3900, tax: 354, netExTax: 3546 }
+    ]);
+    const ssPdfA = oolioSalesSummaryPdf(612);
+    const rgPdfB = oolioReportingGroupsPdf('2026-08-17', '2026-08-23', [
+      { name: 'Food', qty: 707, gross: 16766.72, discount: 788.26, surcharge: 0.58, net: 15979.04, tax: 1453.02, netExTax: 14526.02 },
+      { name: 'Drink', qty: 1151, gross: 8736.40, discount: 419.00, surcharge: 0, net: 8317.40, tax: 743.51, netExTax: 7573.89 }
+    ]);
+    const ssPdfB = oolioSalesSummaryPdf(684);
+
+    let attachmentFetches = 0;
+    global.fetch = makeMockFetch([
+      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-b' }, { id: 'gm-noise' }, { id: 'gm-a' }] } },
+      { match: '/messages/gm-b?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 23/08/26: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-rg-b' }, { filename: 'Sales Summary.pdf', attachmentId: 'att-ss-b' }]) },
+      { match: '/messages/gm-a?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 09/08/26: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-rg-a' }, { filename: 'Sales Summary.pdf', attachmentId: 'att-ss-a' }]) },
+      { match: '/messages/gm-noise?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 23/08/26: Dashboard sales', [{ filename: 'Dashboard.pdf', attachmentId: 'att-dash' }]) },
+      { match: '/attachments/att-rg-b', body: () => { attachmentFetches++; return { data: bytesToBase64Url(rgPdfB) }; } },
+      { match: '/attachments/att-ss-b', body: () => { attachmentFetches++; return { data: bytesToBase64Url(ssPdfB) }; } },
+      { match: '/attachments/att-rg-a', body: () => { attachmentFetches++; return { data: bytesToBase64Url(rgPdfA) }; } },
+      { match: '/attachments/att-ss-a', body: () => { attachmentFetches++; return { data: bytesToBase64Url(ssPdfA) }; } }
+    ]);
+
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' });
+    const json = await res.json();
+    assert(json.merged === true && json.weeks && json.weeks.length === 2, 'oolio backlog: one check catches up BOTH skipped weeks, not just the newest, got ' + JSON.stringify(json.weeks && json.weeks.map((w) => w.week)));
+    assert(json.weeks[0] && json.weeks[0].week === '2026-08-03' && json.weeks[1] && json.weeks[1].week === '2026-08-17', 'oolio backlog: weeks land in chronological order, got ' + JSON.stringify((json.weeks || []).map((w) => w.week)));
+
+    const recA = JSON.parse(env.TOKENS._store.get('history:week:2026-08-03'));
+    const recB = JSON.parse(env.TOKENS._store.get('history:week:2026-08-17'));
+    assert(recA.revenue.food === 8910 && recA.covers === 612, 'oolio backlog: older skipped week (Aug 3) actually merged with real parsed figures, got ' + JSON.stringify(recA.revenue) + ' covers=' + recA.covers);
+    assert(recB.revenue.food === 14526.02 && recB.covers === 684, 'oolio backlog: newer week (Aug 17) also merged correctly, got ' + JSON.stringify(recB.revenue) + ' covers=' + recB.covers);
+
+    const callsAfterFirstCheck = attachmentFetches;
+    await worker.scheduled({}, env, {});
+    assert(attachmentFetches === callsAfterFirstCheck, 'oolio backlog: the next (unforced) poll does not re-download/re-merge already-processed weeks, got ' + (attachmentFetches - callsAfterFirstCheck) + ' extra attachment fetches');
   }
 
   console.log('\n' + passes + ' passed, ' + failures + ' failed');

@@ -2098,9 +2098,20 @@ async function apiHistoryPullWeek(env, request) {
    part of revenue-by-channel any more (a prior Xero-based Uber refresh
    was removed along with the rest of that classification) - Uber simply
    has no live source right now and stays whatever it already is until
-   one exists. gmail:lastProcessedId stops the same email being
+   one exists. gmail:oolio:processedIds stops the same emails being
    re-downloaded and re-parsed on every poll. */
 const GMAIL_OOLIO_LABEL = 'oolio-reports';
+/* CONFIRMED LIVE BUG (fixed below): this used to search just the 5 most
+   recent labelled emails and, even among those, stop at the FIRST one
+   with a Reporting Groups PDF - so a skipped week's check meant that
+   week's report was never looked at again, ever, once a newer week's
+   report existed (OOLIO sends ~4 separate emails per week under this
+   label, so a handful of skipped weeks is enough to push an
+   unprocessed week's email out of a 5-message window entirely, or just
+   get walked past). Widened so a real backlog can be scanned and
+   caught up in one go - still nowhere near Gmail's own per-page limit,
+   just generous enough to cover several missed weeks at once. */
+const GMAIL_OOLIO_SEARCH_LIMIT = 50;
 
 function base64UrlToBytes(b64url) {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
@@ -2261,16 +2272,16 @@ function oolioRevenueFromReportingGroups(rows) {
 }
 
 /* force:true (the dashboard's own "Check for OOLIO report now" button)
-   always re-examines the newest labelled email, even if a previous
-   attempt already marked it processed - the daily background poll
-   (scheduled() below, force left false) is what actually needs the
-   gmail:lastProcessedId guard, to avoid redoing the same work every day.
-   Without this split, a genuine code fix (e.g. teaching this to read a
-   PDF it couldn't read before) could never be retried against an email
-   already marked processed from a failed earlier attempt. */
+   re-examines every candidate found in this scan, even ones already
+   marked processed - the daily background poll (scheduled() below,
+   force left false) is what actually needs the processed-id guard, to
+   avoid redoing the same work every day. Without this split, a genuine
+   code fix (e.g. teaching this to read a PDF it couldn't read before)
+   could never be retried against emails already marked processed from
+   a failed earlier attempt. */
 async function fetchGmailOolioReport(env, h, force) {
   const searchUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' +
-    encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=5';
+    encodeURIComponent('label:' + GMAIL_OOLIO_LABEL + ' has:attachment') + '&maxResults=' + GMAIL_OOLIO_SEARCH_LIMIT;
   const search = await h.fetchJson(searchUrl);
   const messages = search.messages || [];
   if (!messages.length) return { checked: true, found: false, reason: 'no messages under label:' + GMAIL_OOLIO_LABEL };
@@ -2283,15 +2294,7 @@ async function fetchGmailOolioReport(env, h, force) {
      category, already used), "Sales by Channel.pdf", and "Sales
      Summary.pdf" (a single clean weekly transaction count, e.g. "684" -
      confirmed matching the sum of Sales by Channel's per-channel counts
-     exactly). Which email Gmail returns as literally newest varies week
-     to week, so checking only messages[0] and giving up if THAT ONE
-     lacked the Reporting Groups PDF was unreliable - a week where the
-     right email arrived a few seconds before an unrelated one meant the
-     check silently gave up every time. Scans the most recent few
-     messages (still newest-first) and uses the first one that actually
-     has Reporting Groups, instead of assuming the newest message overall
-     is it - then reads Sales Summary straight off that SAME message
-     (no extra search needed, it's a sibling attachment). */
+     exactly). */
   function findPdfPart(part, nameRe) {
     if (!part) return null;
     if (part.filename && nameRe.test(part.filename) && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) return part;
@@ -2302,72 +2305,111 @@ async function fetchGmailOolioReport(env, h, force) {
     return null;
   }
 
-  const lastProcessedId = await env.TOKENS.get('gmail:lastProcessedId');
-  let full = null, pdfPart = null, msgId = null;
+  /* CONFIRMED LIVE BUG (fixed here): this used to check only messages[0]
+     (or the first of a small handful) and give up entirely if it lacked
+     a Reporting Groups PDF, and process at most that ONE match before
+     stopping - so any older, still-unprocessed week sitting right there
+     under the same label was never looked at again, permanently, once a
+     newer week's email existed. Now scans every message in the search
+     window and collects every one that has a Reporting Groups PDF,
+     rather than stopping at the first. */
+  const candidates = [];
   for (const msg of messages) {
     const candidate = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
     const found = findPdfPart(candidate.payload, /report.*group/i);
-    if (found) { full = candidate; pdfPart = found; msgId = msg.id; break; }
+    if (found) candidates.push({ msgId: msg.id, full: candidate, pdfPart: found });
   }
-  if (!pdfPart) {
+  if (!candidates.length) {
     return { checked: true, found: false, reason: 'none of the ' + messages.length + ' most recent labelled emails had a Reporting Groups PDF attachment' };
   }
-  if (!force && lastProcessedId === msgId) return { checked: true, found: false, reason: 'already processed' };
 
-  const headers = (full.payload && full.payload.headers) || [];
-  const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
+  const processedRaw = await env.TOKENS.get('gmail:oolio:processedIds');
+  let processed = [];
+  if (processedRaw) { try { processed = JSON.parse(processedRaw); } catch (e) {} }
+  const processedSet = new Set(processed);
 
-  const attachment = await h.fetchJson(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + pdfPart.body.attachmentId
-  );
-  const pdfBytes = base64UrlToBytes(attachment.data);
-  const { getDocumentProxy, extractText } = await import('unpdf');
-  const pdf = await getDocumentProxy(pdfBytes);
-  const { text } = await extractText(pdf, { mergePages: true });
+  /* Gmail returns newest-first; process oldest-first instead so weeks
+     land in History in chronological order and a genuine multi-week
+     backlog reads sensibly in the merged list below. */
+  candidates.reverse();
 
-  const week = oolioReportWeekFromText(text);
-  const rows = parseOolioReportingGroupsPdf(text);
+  const merged = [], skipped = [];
+  let lastDebugRecord = null;
+  for (const { msgId, full, pdfPart } of candidates) {
+    if (!force && processedSet.has(msgId)) continue;
 
-  /* Sales Summary is a sibling attachment on this same message - best
-     effort, missing/unparsable doesn't block the revenue merge above. */
-  let transactions = null;
-  try {
-    const salesSummaryPart = findPdfPart(full.payload, /^sales summary\.pdf$/i);
-    if (salesSummaryPart) {
-      const ssAttachment = await h.fetchJson(
-        'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + salesSummaryPart.body.attachmentId
-      );
-      const ssPdf = await getDocumentProxy(base64UrlToBytes(ssAttachment.data));
-      const { text: ssText } = await extractText(ssPdf, { mergePages: true });
-      transactions = parseOolioSalesSummaryCount(ssText);
+    const headers = (full.payload && full.payload.headers) || [];
+    const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
+
+    const attachment = await h.fetchJson(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + pdfPart.body.attachmentId
+    );
+    const pdfBytes = base64UrlToBytes(attachment.data);
+    const { getDocumentProxy, extractText } = await import('unpdf');
+    const pdf = await getDocumentProxy(pdfBytes);
+    const { text } = await extractText(pdf, { mergePages: true });
+
+    const week = oolioReportWeekFromText(text);
+    const rows = parseOolioReportingGroupsPdf(text);
+
+    /* Sales Summary is a sibling attachment on this same message - best
+       effort, missing/unparsable doesn't block the revenue merge below. */
+    let transactions = null;
+    try {
+      const salesSummaryPart = findPdfPart(full.payload, /^sales summary\.pdf$/i);
+      if (salesSummaryPart) {
+        const ssAttachment = await h.fetchJson(
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + salesSummaryPart.body.attachmentId
+        );
+        const ssPdf = await getDocumentProxy(base64UrlToBytes(ssAttachment.data));
+        const { text: ssText } = await extractText(ssPdf, { mergePages: true });
+        transactions = parseOolioSalesSummaryCount(ssText);
+      }
+    } catch (e) { /* revenue merge still proceeds without a transaction count */ }
+
+    lastDebugRecord = {
+      from: headerVal('From'),
+      to: 'gmail:' + GMAIL_OOLIO_LABEL,
+      subject: headerVal('Subject'),
+      receivedAt: new Date().toISOString(),
+      attachmentNames: [pdfPart.filename],
+      csvFilename: pdfPart.filename,
+      csvText: text,
+      parsedWeek: week,
+      parsedRows: rows,
+      transactions
+    };
+    processedSet.add(msgId);
+
+    if (!week || !rows.length) {
+      skipped.push({ subject: headerVal('Subject'), filename: pdfPart.filename, reason: !week ? 'could not read a Mon-Sun week from the report' : 'no data rows parsed' });
+      continue;
     }
-  } catch (e) { /* revenue merge still proceeds without a transaction count */ }
 
-  const debugRecord = {
-    from: headerVal('From'),
-    to: 'gmail:' + GMAIL_OOLIO_LABEL,
-    subject: headerVal('Subject'),
-    receivedAt: new Date().toISOString(),
-    attachmentNames: [pdfPart.filename],
-    csvFilename: pdfPart.filename,
-    csvText: text,
-    parsedWeek: week,
-    parsedRows: rows,
-    transactions
-  };
-  await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(debugRecord));
-  await env.TOKENS.put('gmail:lastProcessedId', msgId);
-
-  if (!week || !rows.length) {
-    return { checked: true, found: true, merged: false, subject: debugRecord.subject, filename: pdfPart.filename, reason: !week ? 'could not read a Mon-Sun week from the report' : 'no data rows parsed' };
+    const revenue = oolioRevenueFromReportingGroups(rows);
+    const patch = { revenue, revenueSource: 'oolio' };
+    if (transactions != null) patch.covers = transactions;
+    await mergeHistoryWeek(env, week, patch);
+    merged.push({ week, subject: headerVal('Subject'), filename: pdfPart.filename, revenue, transactions });
   }
 
-  const revenue = oolioRevenueFromReportingGroups(rows);
-  const patch = { revenue, revenueSource: 'oolio' };
-  if (transactions != null) patch.covers = transactions;
-  await mergeHistoryWeek(env, week, patch);
+  if (lastDebugRecord) await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(lastDebugRecord));
+  /* Capped, not left to grow forever - this only ever needs to remember
+     enough ids to cover the search window above (real cadence is ~4
+     labelled emails/week, so 200 covers roughly a year even generously). */
+  await env.TOKENS.put('gmail:oolio:processedIds', JSON.stringify(Array.from(processedSet).slice(-200)));
 
-  return { checked: true, found: true, merged: true, week, subject: debugRecord.subject, filename: pdfPart.filename, revenue, transactions };
+  if (!merged.length && !skipped.length) {
+    return { checked: true, found: true, merged: false, reason: 'already processed' };
+  }
+  return {
+    checked: true, found: true,
+    merged: merged.length > 0,
+    weeks: merged,
+    skipped,
+    subject: lastDebugRecord && lastDebugRecord.subject,
+    filename: lastDebugRecord && lastDebugRecord.csvFilename
+  };
 }
 
 /* GET /api/whatif?from=&to= - the "last 4 completed weeks" baseline for the

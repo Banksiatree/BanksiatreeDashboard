@@ -1544,10 +1544,26 @@ function renderGmailCard(root) {
   card.appendChild(act);
 
   if (g.checkResult) {
-    var msg = g.checkResult.found ? ('Found: "' + g.checkResult.subject + '" (' + g.checkResult.filename + ').')
-      : g.checkResult.checked ? ('Nothing new (' + (g.checkResult.reason || 'no match') + ').')
-      : ('Check failed: ' + (g.checkResult.error || 'unknown error'));
-    card.appendChild(el('div', 'conn-line', msg));
+    var cr = g.checkResult;
+    var lines = [];
+    /* CONFIRMED LIVE BUG (fixed here): a real report backlog in Gmail
+       used to be invisible - the old check only ever surfaced the
+       single newest email, so several skipped weeks looked identical
+       to "nothing new" even though real, unprocessed reports were
+       sitting right there. Now every week actually merged (or found
+       but not merged) this run is listed explicitly. */
+    if (cr.weeks && cr.weeks.length) {
+      lines.push((cr.weeks.length === 1 ? '1 week' : cr.weeks.length + ' weeks') + ' merged into History: ' + cr.weeks.map(function (w) { return w.week; }).join(', ') + '.');
+    }
+    if (cr.skipped && cr.skipped.length) {
+      lines.push(cr.skipped.length + ' email(s) found but not merged - ' + cr.skipped.map(function (s) { return s.reason; }).join('; ') + '.');
+    }
+    if (!lines.length) {
+      lines.push(cr.found ? ('Nothing new (' + (cr.reason || 'already processed') + ').')
+        : cr.checked ? ('Nothing new (' + (cr.reason || 'no match') + ').')
+        : ('Check failed: ' + (cr.error || 'unknown error')));
+    }
+    lines.forEach(function (l) { card.appendChild(el('div', 'conn-line', l)); });
   }
 
   var cb = el('div', 'cb-url');
