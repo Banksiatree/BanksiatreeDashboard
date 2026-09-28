@@ -863,6 +863,51 @@ async function main() {
     assert(rec2 && rec2.week === '2026-07-27' && rec2.revenue.food === 15443.30, 'wide OOLIO template: second report merges under the SUBJECT-line week (2026-07-27), not the PDF\'s own wrong "From:" date, got week=' + (rec2 && rec2.week) + ' revenue=' + JSON.stringify(rec2 && rec2.revenue));
   }
 
+  // ================================================================
+  // BUG #14: OOLIO can genuinely fail to send a week's report at all
+  // (confirmed live, repeatedly - their own developers acknowledged it
+  // for one week; two more weeks showed the identical pattern the same
+  // day) - nothing for Gmail-based fetchGmailOolioReport to find or
+  // parse in that case, since nothing was ever sent. New
+  // /api/history/manual-revenue lets the owner type the same Reporting
+  // Groups figures straight from OOLIO's own dashboard for that one
+  // week, tagged revenueSource:'manual' so it stays distinguishable from
+  // a real OOLIO-sourced week later.
+  // ================================================================
+  {
+    const env = { TOKENS: makeKV(), DASHBOARD_PASSCODE: PASSCODE };
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/history/manual-revenue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: '2026-09-14', food: 13314.81, bev: 7272.13, retail: 544.88, event: 371.00, uncategorised: 0, covers: '' })
+    });
+    assert(res.status === 200, 'manual revenue: call succeeds');
+    const rec = JSON.parse(env.TOKENS._store.get('history:week:2026-09-14'));
+    assert(rec.revenue.food === 13314.81 && rec.revenue.bev === 7272.13 && rec.revenue.retail === 544.88 && rec.revenue.event === 371, 'manual revenue: figures land in History exactly as typed, got ' + JSON.stringify(rec.revenue));
+    assert(rec.revenueSource === 'manual', 'manual revenue: tagged revenueSource:manual, not oolio, got ' + rec.revenueSource);
+    assert(rec.covers === undefined, 'manual revenue: an empty covers field is left alone rather than written as 0/NaN, got ' + rec.covers);
+  }
+  {
+    // A week with a real transaction count too, and where a live pull had
+    // already set unrelated fields (cogs/wages) - manual revenue must not
+    // disturb those, same null-merge contract as every other partial
+    // contributor to history:week:.
+    const env = {
+      TOKENS: makeKV({
+        'history:week:2026-09-21': JSON.stringify({ week: '2026-09-21', weekEnding: '2026-09-27', source: 'live', cogs: { food: 3000, bev: 900, retail: 0 } })
+      }),
+      DASHBOARD_PASSCODE: PASSCODE
+    };
+    const cookie = await login(env);
+    await authedFetch(env, cookie, '/api/history/manual-revenue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: '2026-09-21', food: 14472.51, bev: 7453.51, retail: 708.60, event: 258.00, uncategorised: -46.35, covers: 672 })
+    });
+    const rec = JSON.parse(env.TOKENS._store.get('history:week:2026-09-21'));
+    assert(rec.revenue.uncategorised === -46.35 && rec.covers === 672, 'manual revenue: a negative uncategorised figure and real covers both land correctly, got ' + JSON.stringify({ revenue: rec.revenue, covers: rec.covers }));
+    assert(rec.cogs && rec.cogs.food === 3000, 'manual revenue: an existing live week\'s cogs is left untouched, got ' + JSON.stringify(rec.cogs));
+  }
+
   console.log('\n' + passes + ' passed, ' + failures + ' failed');
   if (failures > 0) process.exitCode = 1;
 }

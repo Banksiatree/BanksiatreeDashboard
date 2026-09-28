@@ -2582,6 +2582,63 @@ function renderOwnerInput(root) {
   staffCard.appendChild(staffBtn);
   root.appendChild(staffCard);
 
+  /* Manual revenue entry - ONLY for a week OOLIO genuinely never sent a
+     report for at all (confirmed live, repeatedly: their own send simply
+     didn't happen that week - nothing for the Gmail check to find,
+     because nothing exists). Every other week's revenue-by-channel still
+     comes ONLY from OOLIO's own Reporting Groups report, per the
+     explicit rule elsewhere in this app - this is a deliberate, narrow
+     exception for the one situation nothing else can cover, not a second
+     way to enter a normal week. Same 5 buckets and Net Sales ex Tax
+     figures the OOLIO parser itself produces, so the owner can read them
+     straight off OOLIO's own dashboard export for that week. */
+  var revCard = el('div', 'oi-card');
+  revCard.appendChild(el('div', 'oi-card-title', 'Manual revenue entry'));
+  revCard.appendChild(el('div', 'set-note', 'Only use this if OOLIO genuinely never emailed a report for the week selected above - type in the Reporting Groups export\'s Net Sales ex Tax figures from OOLIO\'s own dashboard. Every other week should come in automatically; this is just for when nothing was ever sent.'));
+  var revGrid = el('div', 'set-grid');
+  revGrid.style.marginTop = '10px';
+  var revFields = [
+    { key: 'food', label: 'Food' },
+    { key: 'bev', label: 'Drink' },
+    { key: 'retail', label: 'Retail' },
+    { key: 'event', label: 'Catering/Event' },
+    { key: 'uncategorised', label: 'Other/uncategorised' },
+    { key: 'covers', label: 'Transactions' }
+  ];
+  var revInputs = {};
+  revFields.forEach(function (f) {
+    var cell = el('div', 'set-cell');
+    cell.appendChild(el('div', 'set-label', f.label));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
+    revInputs[f.key] = inp;
+    cell.appendChild(inp);
+    revGrid.appendChild(cell);
+  });
+  revCard.appendChild(revGrid);
+  var revBtn = el('button', 'btn-plain', 'Save manual revenue for this week');
+  revBtn.style.marginTop = '10px';
+  revBtn.onclick = function () {
+    revBtn.disabled = true;
+    var origText = revBtn.textContent;
+    fetch('/api/history/manual-revenue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        week: iso(mon),
+        food: revInputs.food.value, bev: revInputs.bev.value, retail: revInputs.retail.value,
+        event: revInputs.event.value, uncategorised: revInputs.uncategorised.value, covers: revInputs.covers.value
+      })
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      revBtn.disabled = false; revBtn.textContent = 'Saved.';
+      setTimeout(function () { revBtn.textContent = origText; }, 2500);
+    }).catch(function () {
+      revBtn.disabled = false; revBtn.textContent = 'Could not save - try again';
+      setTimeout(function () { revBtn.textContent = origText; }, 2500);
+    });
+  };
+  revCard.appendChild(revBtn);
+  root.appendChild(revCard);
+
   /* Shared weekly note - free text, same "whoever saves last wins" shared
      field as staff hours. Carried into this week's History record the
      next time Run the Numbers runs for it (see worker.js's

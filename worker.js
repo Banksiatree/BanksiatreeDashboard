@@ -1696,6 +1696,35 @@ async function apiOwnerInputNotes(env, request) {
   return json({ ok: true });
 }
 
+/* POST /api/history/manual-revenue - body {week, food, bev, event, retail,
+   uncategorised, covers}. For when OOLIO genuinely never sends a week's
+   report at all - confirmed live, more than once now, a real recurring
+   failure on OOLIO's own side (their own developers confirmed it for one
+   week; a second and third week showed the exact same pattern - the
+   labelled Gmail send simply never happened, nothing for the app to find
+   or parse). Not fixable by anything on this app's side, since there is
+   genuinely no email to read. Lets the owner type the same Reporting
+   Groups figures OOLIO's own dashboard still shows (Net Sales ex Tax per
+   group) straight in for that one week - same shape and same
+   mergeHistoryWeek path oolioRevenueFromReportingGroups already uses,
+   just revenueSource:'manual' instead of 'oolio' so a week entered this
+   way stays distinguishable later. */
+async function apiHistoryManualRevenue(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const week = body && body.week;
+  if (!week || !WEEK_RE.test(week)) return json({ ok: false, error: 'bad request' }, 400);
+  const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const revenue = {
+    food: num(body.food), bev: num(body.bev), event: num(body.event),
+    retail: num(body.retail), uncategorised: num(body.uncategorised)
+  };
+  const patch = { revenue, revenueSource: 'manual' };
+  const coversNum = parseFloat(body.covers);
+  if (isFinite(coversNum)) patch.covers = coversNum;
+  const merged = await mergeHistoryWeek(env, week, patch);
+  return json({ ok: true, week, merged });
+}
+
 /* TEMPORARY, ONE-TIME BACKFILL - the retroactive half of the staff-hours/
    notes propagation fix above. That fix only takes effect on saves made
    from today forward; every week's hours/notes entered before it -
@@ -3355,6 +3384,10 @@ export default {
     if (path === '/api/ownerinput/notes' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiOwnerInputNotes(env, request);
+    }
+    if (path === '/api/history/manual-revenue' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiHistoryManualRevenue(env, request);
     }
     if (path === '/api/ownerinput/owner' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
