@@ -2157,36 +2157,76 @@ async function mergeHistoryWeek(env, week, patch) {
   return merged;
 }
 
-/* Parses the Reporting Groups PDF's extracted text (see the block comment
-   above - verified against a real report, not guessed) into one row per
-   reporting group. Tokenises each data line and reads the trailing 6
-   tokens as the money columns (Gross Sales, Discount, Surcharges, Net
-   Sales, Taxes, Net Sales ex Tax) - always present - then, if the token
-   just before those looks like a plain integer, treats it as Quantity;
-   otherwise Quantity is left null (the real report's "Others" row has no
-   Quantity at all, confirmed in the sample). Whatever's left is the
-   group's name, joined back with spaces so multi-word group names work
-   too. */
+/* Parses the Reporting Groups PDF's extracted text into one row per
+   reporting group.
+
+   CONFIRMED LIVE BUG (fixed here): OOLIO sends (at least) two different
+   template widths under the exact same report name. The original,
+   simple one - Quantity + 6 money columns (Gross Sales, Discount,
+   Surcharges, Net Sales, Taxes, Net Sales ex Tax), nothing else - is
+   what every previously-working week actually had. But two real weeks
+   turned up a WIDER template with extra trailing columns (Refund count,
+   Refund amount, Sales %, Cost, Profit, Profit %, plus unfilled weather
+   columns) - confirmed via /api/debug/oolio-email-skipped against the
+   owner's actual reports. This broke parsing two separate ways:
+     1. The header phrase "Reporting Group"/"Quantity" gets wrapped onto
+        SEPARATE lines by the wider table's column widths, so a same-line
+        substring check for both words never found it (real live symptom:
+        "no data rows parsed" even though real rows were right there).
+     2. "Take the trailing 6 tokens as the money block" only works when
+        nothing follows Net Sales ex Tax - the wider template puts up to
+        7 more tokens after it, so the trailing 6 were the WRONG columns
+        entirely.
+   Neither the header search nor the row search hard-codes a single
+   template width any more:
+     - The header, however many lines it wraps across, never itself
+       contains a real $ amount - so the first REAL data row is simply
+       the first line that has one, however far past the nominal header
+       line that is.
+     - Each row's 6 money columns are found as the FIRST run of 6
+       consecutive $-shaped tokens after the group name/quantity - always
+       Gross/Discount/Surcharges/Net/Taxes/NetExTax in that fixed order,
+       in both template widths - and everything after that run (the
+       newer template's extra columns) is simply not needed and ignored,
+       rather than assumed to be exactly 6 tokens from the end.
+   Refund columns are ALSO conditionally omitted per-row (present only
+   when that group actually had a refund that week) - confirmed live,
+   another reason a fixed trailing-column-count assumption doesn't hold.
+   A row whose group name failed to extract as text at all (confirmed
+   live: one row came through as bare numbers, no name - almost
+   certainly a delivery-platform logo rendered as an image rather than
+   text) still parses correctly with an empty name, which
+   oolioRevenueFromReportingGroups already buckets into 'uncategorised'
+   rather than dropping - the same visible-catch-all rule as everywhere
+   else revenue gets classified in this file. */
 function parseOolioReportingGroupsPdf(text) {
   const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
-  const headerIdx = lines.findIndex((l) => l.includes('Reporting Group') && l.includes('Quantity'));
-  if (headerIdx < 0) return [];
   const moneyRe = /^-?\$[\d,]+\.\d{2}$/;
+  const qtyRe = /^-?[\d,]+$/;
+
+  const firstDataIdx = lines.findIndex((l) => l.split(/\s+/).some((t) => moneyRe.test(t)));
+  if (firstDataIdx < 0) return [];
+
   const rows = [];
-  for (let i = headerIdx + 1; i < lines.length; i++) {
+  for (let i = firstDataIdx; i < lines.length; i++) {
     const line = lines[i];
     if (/^Reporting Groups\s*-/.test(line) || /^Created By:/.test(line)) break;
     const tokens = line.split(/\s+/);
-    if (tokens.length < 7) continue;
-    const moneyTokens = tokens.slice(-6);
-    if (!moneyTokens.every((t) => moneyRe.test(t))) continue;
-    const rest = tokens.slice(0, -6);
-    let quantity = null, nameTokens = rest;
-    const last = rest[rest.length - 1];
-    if (last && /^-?[\d,]+$/.test(last)) {
-      quantity = parseInt(last.replace(/,/g, ''), 10);
-      nameTokens = rest.slice(0, -1);
+
+    let moneyStart = -1;
+    for (let j = 0; j + 6 <= tokens.length; j++) {
+      if (tokens.slice(j, j + 6).every((t) => moneyRe.test(t))) { moneyStart = j; break; }
     }
+    if (moneyStart < 0) continue;
+
+    const before = tokens.slice(0, moneyStart);
+    let quantity = null, nameTokens = before;
+    const last = before[before.length - 1];
+    if (last && qtyRe.test(last)) {
+      quantity = parseInt(last.replace(/,/g, ''), 10);
+      nameTokens = before.slice(0, -1);
+    }
+    const moneyTokens = tokens.slice(moneyStart, moneyStart + 6);
     const money = (s) => parseFloat(s.replace(/[$,]/g, ''));
     rows.push({
       name: nameTokens.join(' '),
@@ -2230,6 +2270,28 @@ function oolioReportWeekFromText(text) {
   const m = /From:\s*(\d{2})\/(\d{2})\/(\d{4})/.exec(String(text || ''));
   if (!m) return null;
   const iso = m[3] + '-' + m[2] + '-' + m[1];
+  const d = new Date(iso + 'T00:00:00Z');
+  if (isNaN(d.getTime()) || d.getUTCDay() !== 1) return null;
+  return iso;
+}
+
+/* CONFIRMED LIVE GAP (fixed here): a real week's "From:" field can itself
+   be wrong - one real report read "From: 26/07/2026 16:00" (a Sunday
+   afternoon, not a Monday midnight) while its own email subject said
+   "Mon 27/07/26 - Sun 02/08/26" - a one-day, several-hour discrepancy in
+   the PDF's own internal timestamp (likely the same POS-side issue the
+   owner flagged for that week), not anything wrong with this app's
+   parsing. oolioReportWeekFromText's Monday guard correctly refused to
+   guess rather than misfile the week - but the email's own subject line
+   is a second, independent source for the same date and, being short
+   plain text rather than a PDF-rendered value, isn't subject to the same
+   failure mode. Used only as a fallback when the PDF's own date doesn't
+   check out; still refuses (returns null) rather than misfile if the
+   subject doesn't parse to a real Monday either. */
+function oolioReportWeekFromSubject(subject) {
+  const m = /Mon\s+(\d{2})\/(\d{2})\/(\d{2})/.exec(String(subject || ''));
+  if (!m) return null;
+  const iso = '20' + m[3] + '-' + m[2] + '-' + m[1];
   const d = new Date(iso + 'T00:00:00Z');
   if (isNaN(d.getTime()) || d.getUTCDay() !== 1) return null;
   return iso;
@@ -2349,7 +2411,7 @@ async function fetchGmailOolioReport(env, h, force) {
     const pdf = await getDocumentProxy(pdfBytes);
     const { text } = await extractText(pdf, { mergePages: true });
 
-    const week = oolioReportWeekFromText(text);
+    const week = oolioReportWeekFromText(text) || oolioReportWeekFromSubject(headerVal('Subject'));
     const rows = parseOolioReportingGroupsPdf(text);
 
     /* Sales Summary is a sibling attachment on this same message - best

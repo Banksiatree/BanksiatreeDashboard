@@ -794,6 +794,75 @@ async function main() {
     assert(attachmentFetches === callsAfterFirstCheck, 'oolio backlog: the next (unforced) poll does not re-download/re-merge already-processed weeks, got ' + (attachmentFetches - callsAfterFirstCheck) + ' extra attachment fetches');
   }
 
+  // ================================================================
+  // BUG #13: two REAL captured OOLIO reports (pulled by the owner via
+  // /api/debug/oolio-email-skipped after these two specific weeks kept
+  // showing as skipped) turned up a second, WIDER Reporting Groups
+  // template - extra Refund/Cost/Profit/weather columns the original
+  // simple template never had. Broke parsing two separate ways: the
+  // header phrase wraps across several lines instead of one, and "the
+  // money block is the trailing 6 tokens" grabs the wrong columns once
+  // real trailing columns exist after it. One of the two reports'
+  // internal "From:" date was also a day and 16 hours off a real Monday
+  // (the owner suspects the same POS issue that week) while its own
+  // subject line correctly said "Mon 27/07/26" - now a fallback source.
+  // Text below is the REAL extracted text pasted back by the owner,
+  // verbatim - round-tripped through a real PDF via unpdf again, not a
+  // synthetic approximation of the format.
+  // ================================================================
+  {
+    const wideReportWrappedHeader = [
+      'From: 29/06/2026 00:00', 'To: 05/07/2026 23:59', 'Reporting Groups', 'Reporting',
+      'Group Quantity Gross', 'Sales Discount Surcharges Net Sales Taxes Net Sales', 'ex Tax Refund',
+      'count Refund', 'amount Sales (%) Cost Profit Profit (%) Precipitation Min', 'Temperature Max', 'Temperature',
+      'Drink 1,389 $10,546.66 $569.45 $7.64 $9,984.85 $899.48 $9,085.37 2 -$6.60 3,152.2% $0.00 $9,085.37 3,156.76%',
+      'Food 897 $20,675.73 $1,038.15 $34.02 $19,671.60 $1,788.87 $17,882.73 6,210.29% $15.20 $17,867.53 6,208.17%',
+      '59 $1,382.50 $1.65 $3.59 $1,384.44 $125.88 $1,258.56 437.06% $0.00 $1,258.56 437.29%',
+      'Retail 28 $359.95 $0.00 $0.00 $359.95 $32.72 $327.23 113.64% $8.00 $319.23 110.92%',
+      'Instructions 11 $0.00 $0.00 $0.00 $0.00 $0.00 $0.00 0% $0.00 $0.00 0%',
+      'catering 1 $275.00 $0.00 $0.00 $275.00 $25.00 $250.00 86.82% $0.00 $250.00 86.86%',
+      'Reporting Groups - The Banksia Tree Cafe', 'Created By: Oolio Insights Generated on 7/5/2026 Page 1 of 1'
+    ];
+    const wideReportBadDate = [
+      'From: 26/07/2026 16:00', 'To: 02/08/2026 15:59', 'Reporting Groups', 'Reporting', 'Group',
+      'Quantity Gross', 'Sales', 'Discount Surcharges Net Sales Taxes Net Sales', 'ex Tax', 'Refund',
+      'count', 'Refund', 'amount', 'Sales', '(%)', 'Cost Profit Profit', '(%)', 'Precipitation Min',
+      'Temperature', 'Max', 'Temperature',
+      'Food 875 $18,059.64 $1,074.50 $3.06 $16,988.20 $1,544.90 $15,443.30 58.2% $16.00 $15,427.30 58.14%',
+      'Drink 1,295 $10,134.72 $521.23 $4.25 $9,617.74 $858.17 $8,759.57 1 -$5.50 32.95% $0.00 $8,759.57 33.01%',
+      'Others 29 $2,001.00 $0.00 $0.00 $2,001.00 $181.90 $1,819.10 6.86% $0.00 $1,819.10 6.86%',
+      'Retail 28 $372.50 $0.00 $0.00 $372.50 $33.87 $338.63 1.28% $0.00 $338.63 1.28%',
+      'catering 1 $209.00 $0.00 $0.00 $209.00 $19.00 $190.00 0.72% $0.00 $190.00 0.72%',
+      'Instructions 28 $0.00 $0.00 $0.00 $0.00 $0.00 $0.00 0% $0.00 $0.00 0%',
+      'Reporting Groups - The Banksia Tree Cafe', 'Created By: Oolio Insights Generated on 8/2/2026 Page 1 of 1'
+    ];
+
+    const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+    const pdfWide1 = makeSimplePdf(wideReportWrappedHeader);
+    const pdfWide2 = makeSimplePdf(wideReportBadDate);
+
+    global.fetch = makeMockFetch([
+      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-w2' }, { id: 'gm-w1' }] } },
+      { match: '/messages/gm-w1?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Mon 29/06/26 - Sun 05/07/26: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-w1' }]) },
+      { match: '/messages/gm-w2?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Mon 27/07/26 - Sun 02/08/26: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-w2' }]) },
+      { match: '/attachments/att-w1', body: { data: bytesToBase64Url(pdfWide1) } },
+      { match: '/attachments/att-w2', body: { data: bytesToBase64Url(pdfWide2) } }
+    ]);
+
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' });
+    const json = await res.json();
+    assert(json.merged === true && json.weeks && json.weeks.length === 2, 'wide OOLIO template: both real reports now parse and merge instead of being skipped, got ' + JSON.stringify(json));
+
+    const rec1 = JSON.parse(env.TOKENS._store.get('history:week:2026-06-29'));
+    assert(rec1 && rec1.revenue.food === 17882.73, 'wide OOLIO template: wrapped-header week reads Food net-sales-ex-tax correctly (no refund columns present for Food that week), got ' + JSON.stringify(rec1 && rec1.revenue));
+    assert(rec1 && rec1.revenue.bev === 9085.37, 'wide OOLIO template: Drink (DOES have a refund that week, extra columns present) still reads correctly, got ' + JSON.stringify(rec1 && rec1.revenue));
+    assert(rec1 && rec1.revenue.uncategorised === 1258.56, 'wide OOLIO template: the nameless orphan row (likely a delivery-platform logo, not text) lands in uncategorised rather than being silently dropped, got ' + JSON.stringify(rec1 && rec1.revenue));
+
+    const rec2 = JSON.parse(env.TOKENS._store.get('history:week:2026-07-27'));
+    assert(rec2 && rec2.week === '2026-07-27' && rec2.revenue.food === 15443.30, 'wide OOLIO template: second report merges under the SUBJECT-line week (2026-07-27), not the PDF\'s own wrong "From:" date, got week=' + (rec2 && rec2.week) + ' revenue=' + JSON.stringify(rec2 && rec2.revenue));
+  }
+
   console.log('\n' + passes + ' passed, ' + failures + ' failed');
   if (failures > 0) process.exitCode = 1;
 }
