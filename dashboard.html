@@ -2630,6 +2630,14 @@ function renderOwnerInput(root) {
     }).then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       revBtn.disabled = false; revBtn.textContent = 'Saved.';
+      /* CONFIRMED LIVE GAP (fixed here): History only ever fetches once
+         per page load (see fetchHistory's own guard) - saving here did
+         nothing to tell an already-open History tab its cached weeks
+         are stale, so a week saved here could sit invisible until a full
+         page reload. Clearing it here means the next time History is
+         opened (same session, no reload needed) it fetches fresh data
+         that includes what was just saved. */
+      state.history.weeks = null;
       setTimeout(function () { revBtn.textContent = origText; }, 2500);
     }).catch(function () {
       revBtn.disabled = false; revBtn.textContent = 'Could not save - try again';
@@ -3719,6 +3727,21 @@ function renderHistory(root) {
   var h = state.history;
   if (h.weeks == null && !h.loading) fetchHistory();
   if (h.error) root.appendChild(el('div', 'banner banner-coral', esc(h.error)));
+
+  /* CONFIRMED LIVE GAP: History only ever fetches once per page load
+     (the guard right above) - anything saved elsewhere (Owner Input's
+     staff hours/notes/manual revenue, a live pull finishing) doesn't
+     tell an already-open History tab its cached weeks are stale. A
+     plain refresh here just re-fetches what's already in KV - unlike
+     "Recompute all live weeks" below, which re-pulls every live week
+     from Xero, real API calls this doesn't need just to see data that's
+     already saved. */
+  var refreshBtn = el('button', 'btn-plain', h.loading ? 'Refreshing…' : 'Refresh');
+  refreshBtn.style.margin = '0 0 0.6rem';
+  refreshBtn.disabled = h.loading;
+  refreshBtn.onclick = function () { h.weeks = null; fetchHistory(); };
+  root.appendChild(refreshBtn);
+
   if (h.loading || h.weeks == null) {
     root.appendChild(el('div', 'pl-empty', 'Loading…'));
     return;
