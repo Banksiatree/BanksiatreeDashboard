@@ -1556,7 +1556,7 @@ function renderGmailCard(root) {
       lines.push((cr.weeks.length === 1 ? '1 week' : cr.weeks.length + ' weeks') + ' merged into History: ' + cr.weeks.map(function (w) { return w.week; }).join(', ') + '.');
     }
     if (cr.skipped && cr.skipped.length) {
-      lines.push(cr.skipped.length + ' email(s) found but not merged - ' + cr.skipped.map(function (s) { return s.reason; }).join('; ') + '.');
+      lines.push(cr.skipped.length + ' email(s) found but not merged:');
     }
     if (!lines.length) {
       lines.push(cr.found ? ('Nothing new (' + (cr.reason || 'already processed') + ').')
@@ -1564,6 +1564,26 @@ function renderGmailCard(root) {
         : ('Check failed: ' + (cr.error || 'unknown error')));
     }
     lines.forEach(function (l) { card.appendChild(el('div', 'conn-line', l)); });
+    /* Each skip's own extracted text is shown right here - previously
+       only the single LAST email processed this run survived anywhere
+       (debug:oolio-email:latest), so a failure could be silently
+       overwritten by a later success before anyone saw why it failed. */
+    if (cr.skipped && cr.skipped.length) {
+      cr.skipped.forEach(function (s) {
+        var box = el('div', 'set-note');
+        box.style.cssText = 'margin:6px 0 4px;padding:8px 10px;background:#fff;border:1px solid var(--border-med);border-radius:8px;';
+        var head = el('div', null, esc(s.subject || '(no subject)') + ' — ' + esc(s.reason));
+        head.style.fontWeight = '600';
+        box.appendChild(head);
+        if (s.textSnippet) {
+          var pre = document.createElement('pre');
+          pre.style.cssText = 'white-space:pre-wrap;font-size:11.5px;margin:6px 0 0;color:var(--text-dim,#666);max-height:160px;overflow:auto;';
+          pre.textContent = s.textSnippet;
+          box.appendChild(pre);
+        }
+        card.appendChild(box);
+      });
+    }
   }
 
   var cb = el('div', 'cb-url');

@@ -2333,7 +2333,7 @@ async function fetchGmailOolioReport(env, h, force) {
      backlog reads sensibly in the merged list below. */
   candidates.reverse();
 
-  const merged = [], skipped = [];
+  const merged = [], skipped = [], skippedDebugRecords = [];
   let lastDebugRecord = null;
   for (const { msgId, full, pdfPart } of candidates) {
     if (!force && processedSet.has(msgId)) continue;
@@ -2382,7 +2382,20 @@ async function fetchGmailOolioReport(env, h, force) {
     processedSet.add(msgId);
 
     if (!week || !rows.length) {
-      skipped.push({ subject: headerVal('Subject'), filename: pdfPart.filename, reason: !week ? 'could not read a Mon-Sun week from the report' : 'no data rows parsed' });
+      /* CONFIRMED LIVE GAP (fixed here): a skip's own full debugRecord used
+         to only ever survive if it happened to be the LAST candidate this
+         run - a later success overwrote debug:oolio-email:latest, silently
+         erasing the one detail actually needed to diagnose why THIS one
+         failed. Every skip's full text now survives under its own key,
+         and the response includes a snippet directly so a failure can be
+         diagnosed from the check result alone, no separate debug lookup
+         needed. */
+      skippedDebugRecords.push(lastDebugRecord);
+      skipped.push({
+        subject: headerVal('Subject'), filename: pdfPart.filename,
+        reason: !week ? 'could not read a Mon-Sun week from the report' : 'no data rows parsed',
+        textSnippet: text.slice(0, 500)
+      });
       continue;
     }
 
@@ -2394,6 +2407,7 @@ async function fetchGmailOolioReport(env, h, force) {
   }
 
   if (lastDebugRecord) await env.TOKENS.put('debug:oolio-email:latest', JSON.stringify(lastDebugRecord));
+  if (skippedDebugRecords.length) await env.TOKENS.put('debug:oolio-email:skipped', JSON.stringify(skippedDebugRecords));
   /* Capped, not left to grow forever - this only ever needs to remember
      enough ids to cover the search window above (real cadence is ~4
      labelled emails/week, so 200 covers roughly a year even generously). */
@@ -3326,6 +3340,16 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const raw = await env.TOKENS.get('debug:oolio-email:latest');
       return json(raw ? JSON.parse(raw) : { found: false });
+    }
+    /* Companion to the above: full raw detail (including extracted PDF
+       text) for every email a check found but could NOT merge, from the
+       most recent run - unlike debug:oolio-email:latest (only the last
+       candidate processed, which a later success can overwrite), every
+       skip's own record survives here regardless of processing order. */
+    if (path === '/api/debug/oolio-email-skipped' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const raw = await env.TOKENS.get('debug:oolio-email:skipped');
+      return json({ skipped: raw ? JSON.parse(raw) : [] });
     }
     /* Manual trigger for testing - the real check runs on the cron
        schedule (scheduled() below), this just lets it be fired on demand

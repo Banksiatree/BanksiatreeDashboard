@@ -717,7 +717,7 @@ async function main() {
   }
 
   // ================================================================
-  // BUG #8: fetchGmailOolioReport used to only ever look at the single
+  // BUG #12: fetchGmailOolioReport used to only ever look at the single
   // newest labelled email and stop there - if even one week's check was
   // skipped, an older unprocessed week's report was ignored permanently,
   // even though it was sitting right there in Gmail under the same label
@@ -726,9 +726,24 @@ async function main() {
   // whole search window and merges every not-yet-processed week found,
   // oldest first. Runs the REAL PDF parse path (unpdf, not mocked) -
   // only Gmail's own HTTP API and the PDF content are faked.
+  //
+  // Also covers BUG #12b, found immediately after #12 shipped live: a
+  // skip's own full detail used to only survive in debug:oolio-email:
+  // latest if it happened to be the LAST candidate processed - a later
+  // SUCCESS in the same run silently overwrote it, so the one email that
+  // actually needed diagnosing was invisible while a fine one sat in its
+  // place. Oldest-of-all "gm-x" here is deliberately unparsable and
+  // gets processed FIRST (oldest-first order), with two real successes
+  // processed after it in the same run.
   // ================================================================
   {
     const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+    const badPdf = makeSimplePdf([
+      'Reporting Groups',
+      'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax',
+      'Food 10 $100.00 $0.00 $0.00 $100.00 $9.09 $90.91',
+      'Created By: test'
+    ]); // no From:/To: line at all -> oolioReportWeekFromText can't read a week
     const rgPdfA = oolioReportingGroupsPdf('2026-08-03', '2026-08-09', [
       { name: 'Food', qty: 500, gross: 10000, discount: 200, surcharge: 0, net: 9800, tax: 890, netExTax: 8910 },
       { name: 'Drink', qty: 300, gross: 4000, discount: 100, surcharge: 0, net: 3900, tax: 354, netExTax: 3546 }
@@ -742,14 +757,17 @@ async function main() {
 
     let attachmentFetches = 0;
     global.fetch = makeMockFetch([
-      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-b' }, { id: 'gm-noise' }, { id: 'gm-a' }] } },
+      // Newest-first, as Gmail returns it: gm-b (newest), gm-noise, gm-a, gm-x (oldest).
+      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-b' }, { id: 'gm-noise' }, { id: 'gm-a' }, { id: 'gm-x' }] } },
       { match: '/messages/gm-b?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 23/08/26: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-rg-b' }, { filename: 'Sales Summary.pdf', attachmentId: 'att-ss-b' }]) },
       { match: '/messages/gm-a?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 09/08/26: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-rg-a' }, { filename: 'Sales Summary.pdf', attachmentId: 'att-ss-a' }]) },
       { match: '/messages/gm-noise?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 23/08/26: Dashboard sales', [{ filename: 'Dashboard.pdf', attachmentId: 'att-dash' }]) },
+      { match: '/messages/gm-x?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Weird one-off: Weekly Sales summary', [{ filename: 'Reporting Groups.pdf', attachmentId: 'att-rg-x' }]) },
       { match: '/attachments/att-rg-b', body: () => { attachmentFetches++; return { data: bytesToBase64Url(rgPdfB) }; } },
       { match: '/attachments/att-ss-b', body: () => { attachmentFetches++; return { data: bytesToBase64Url(ssPdfB) }; } },
       { match: '/attachments/att-rg-a', body: () => { attachmentFetches++; return { data: bytesToBase64Url(rgPdfA) }; } },
-      { match: '/attachments/att-ss-a', body: () => { attachmentFetches++; return { data: bytesToBase64Url(ssPdfA) }; } }
+      { match: '/attachments/att-ss-a', body: () => { attachmentFetches++; return { data: bytesToBase64Url(ssPdfA) }; } },
+      { match: '/attachments/att-rg-x', body: () => { attachmentFetches++; return { data: bytesToBase64Url(badPdf) }; } }
     ]);
 
     const cookie = await login(env);
@@ -762,6 +780,14 @@ async function main() {
     const recB = JSON.parse(env.TOKENS._store.get('history:week:2026-08-17'));
     assert(recA.revenue.food === 8910 && recA.covers === 612, 'oolio backlog: older skipped week (Aug 3) actually merged with real parsed figures, got ' + JSON.stringify(recA.revenue) + ' covers=' + recA.covers);
     assert(recB.revenue.food === 14526.02 && recB.covers === 684, 'oolio backlog: newer week (Aug 17) also merged correctly, got ' + JSON.stringify(recB.revenue) + ' covers=' + recB.covers);
+
+    assert(json.skipped && json.skipped.length === 1 && json.skipped[0].reason === 'could not read a Mon-Sun week from the report', 'oolio backlog: the unparsable one is reported as skipped with the right reason, got ' + JSON.stringify(json.skipped));
+    assert(json.skipped[0].textSnippet && json.skipped[0].textSnippet.includes('Reporting Group'), 'oolio backlog: the skip includes its own raw text right in the response, got ' + JSON.stringify(json.skipped[0].textSnippet));
+
+    const skippedRecords = JSON.parse(env.TOKENS._store.get('debug:oolio-email:skipped'));
+    assert(skippedRecords.length === 1 && skippedRecords[0].parsedWeek === null, 'oolio backlog: the skip\'s FULL debug record survives even though two real successes were processed after it in the same run, got ' + JSON.stringify(skippedRecords));
+    const latestRecord = JSON.parse(env.TOKENS._store.get('debug:oolio-email:latest'));
+    assert(latestRecord.parsedWeek === '2026-08-17', 'oolio backlog: debug:oolio-email:latest still reflects the true last-processed (successful) candidate, got ' + latestRecord.parsedWeek);
 
     const callsAfterFirstCheck = attachmentFetches;
     await worker.scheduled({}, env, {});
