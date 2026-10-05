@@ -864,6 +864,69 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #15: from the week ending 4 Oct 2026 OOLIO sent ONE combined
+  // email (subject "Sun 04/10/26: Weekly sales summary, categories and
+  // sales feed for dashboard") with four PDFs named "Weekly
+  // Reconciliation.pdf", "Sales feed for dashboard.pdf", "Categories.pdf"
+  // and "Weekly sales summary D.pdf" - no "Reporting Groups.pdf" at all.
+  // Verified directly against the owner's Gmail (labelled oolio-reports,
+  // in the inbox, nothing wrong with the label). The app matched the
+  // report by filename only, so it found nothing. Detection is now by
+  // each PDF's own content, and the week falls back to the "Sun DD/MM/YY"
+  // subject (the report text here deliberately has no From: line).
+  // ================================================================
+  {
+    const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+    const pdfRecon = makeSimplePdf(['Weekly Reconciliation', 'Shifts Summary', 'Gross Sales $19,681.09 $2,341.58']);
+    const pdfFeed = makeSimplePdf(['Sales feed for dashboard', 'Total $1.00']);
+    const pdfCats = makeSimplePdf(['Categories', 'Category Total', 'Coffee $100.00']);
+    const pdfSummary = makeSimplePdf([
+      'Reporting Groups',
+      'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax',
+      'Food 700 $16,000.00 $700.00 $0.00 $15,300.00 $1,390.00 $13,910.00',
+      'Drink 1,200 $8,800.00 $300.00 $0.00 $8,500.00 $770.00 $7,730.00',
+      'Retail 30 $600.00 $0.00 $0.00 $600.00 $45.00 $555.00',
+      'catering 2 $400.00 $0.00 $0.00 $400.00 $36.00 $364.00',
+      'Instructions 5 $0.00 $0.00 $0.00 $0.00 $0.00 $0.00',
+      'Reporting Groups - The Banksia Tree Cafe',
+      'Created By: Oolio Insights Page 1 of 1'
+    ]);
+    global.fetch = makeMockFetch([
+      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-c' }] } },
+      { match: '/messages/gm-c?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 04/10/26: Weekly sales summary, categories and sales feed for dashboard', [
+        { filename: 'Weekly Reconciliation.pdf', attachmentId: 'att-c-recon' },
+        { filename: 'Sales feed for dashboard.pdf', attachmentId: 'att-c-feed' },
+        { filename: 'Categories.pdf', attachmentId: 'att-c-cat' },
+        { filename: 'Weekly sales summary D.pdf', attachmentId: 'att-c-sum' }
+      ]) },
+      { match: '/attachments/att-c-recon', body: { data: bytesToBase64Url(pdfRecon) } },
+      { match: '/attachments/att-c-feed', body: { data: bytesToBase64Url(pdfFeed) } },
+      { match: '/attachments/att-c-cat', body: { data: bytesToBase64Url(pdfCats) } },
+      { match: '/attachments/att-c-sum', body: { data: bytesToBase64Url(pdfSummary) } }
+    ]);
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' });
+    const json = await res.json();
+    assert(json.merged === true && json.weeks && json.weeks.length === 1 && json.weeks[0].week === '2026-09-28', 'combined OOLIO email: the renamed-attachment report is found by content and filed under the Monday before the "Sun 04/10/26" subject, got ' + JSON.stringify(json).slice(0, 300));
+    const rec = JSON.parse(env.TOKENS._store.get('history:week:2026-09-28'));
+    assert(rec && rec.revenue.food === 13910 && rec.revenue.bev === 7730 && rec.revenue.retail === 555 && rec.revenue.event === 364, 'combined OOLIO email: revenue read from "Weekly sales summary D.pdf" correctly, got ' + JSON.stringify(rec && rec.revenue));
+  }
+  {
+    // Nothing in the email looks like a Reporting Groups table -> must say
+    // so plainly and name what WAS attached, not a vague "nothing found".
+    const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+    global.fetch = makeMockFetch([
+      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-d' }] } },
+      { match: '/messages/gm-d?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 11/10/26: Weekly sales summary and more', [{ filename: 'Mystery.pdf', attachmentId: 'att-d' }]) },
+      { match: '/attachments/att-d', body: { data: bytesToBase64Url(makeSimplePdf(['Something else entirely'])) } }
+    ]);
+    const cookie = await login(env);
+    const res = await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' });
+    const json = await res.json();
+    assert(json.found === false && /Mystery\.pdf/.test(json.reason || ''), 'combined OOLIO email: when nothing matches, the message names the attachments it saw, got ' + (json.reason || JSON.stringify(json)));
+  }
+
+  // ================================================================
   // BUG #14: OOLIO can genuinely fail to send a week's report at all
   // (confirmed live, repeatedly - their own developers acknowledged it
   // for one week; two more weeks showed the identical pattern the same

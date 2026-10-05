@@ -2318,12 +2318,22 @@ function oolioReportWeekFromText(text) {
    check out; still refuses (returns null) rather than misfile if the
    subject doesn't parse to a real Monday either. */
 function oolioReportWeekFromSubject(subject) {
-  const m = /Mon\s+(\d{2})\/(\d{2})\/(\d{2})/.exec(String(subject || ''));
-  if (!m) return null;
-  const iso = '20' + m[3] + '-' + m[2] + '-' + m[1];
-  const d = new Date(iso + 'T00:00:00Z');
-  if (isNaN(d.getTime()) || d.getUTCDay() !== 1) return null;
-  return iso;
+  const s = String(subject || '');
+  const m = /Mon\s+(\d{2})\/(\d{2})\/(\d{2})/.exec(s);
+  if (m) {
+    const iso = '20' + m[3] + '-' + m[2] + '-' + m[1];
+    const d = new Date(iso + 'T00:00:00Z');
+    if (!isNaN(d.getTime()) && d.getUTCDay() === 1) return iso;
+    return null;
+  }
+  /* The combined email OOLIO started sending for the week ending 4 Oct
+     2026 is subjected "Sun 04/10/26: ..." - just the Sunday the week
+     ended, no Monday - so the week starts 6 days before it. */
+  const sun = /Sun\s+(\d{2})\/(\d{2})\/(\d{2})/.exec(s);
+  if (!sun) return null;
+  const end = new Date('20' + sun[3] + '-' + sun[2] + '-' + sun[1] + 'T00:00:00Z');
+  if (isNaN(end.getTime()) || end.getUTCDay() !== 0) return null;
+  return new Date(end.getTime() - 6 * 86400000).toISOString().slice(0, 10);
 }
 
 /* Keyword match on the group's own name (same "classify by keyword, keep
@@ -2404,20 +2414,67 @@ async function fetchGmailOolioReport(env, h, force) {
      newer week's email existed. Now scans every message in the search
      window and collects every one that has a Reporting Groups PDF,
      rather than stopping at the first. */
-  const candidates = [];
-  for (const msg of messages) {
-    const candidate = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
-    const found = findPdfPart(candidate.payload, /report.*group/i);
-    if (found) candidates.push({ msgId: msg.id, full: candidate, pdfPart: found });
-  }
-  if (!candidates.length) {
-    return { checked: true, found: false, reason: 'none of the ' + messages.length + ' most recent labelled emails had a Reporting Groups PDF attachment' };
-  }
-
   const processedRaw = await env.TOKENS.get('gmail:oolio:processedIds');
   let processed = [];
   if (processedRaw) { try { processed = JSON.parse(processedRaw); } catch (e) {} }
   const processedSet = new Set(processed);
+
+  function listPdfParts(part, out) {
+    out = out || [];
+    if (!part) return out;
+    if (part.filename && /\.pdf$/i.test(part.filename) && part.body && part.body.attachmentId) out.push(part);
+    for (const child of part.parts || []) listPdfParts(child, out);
+    return out;
+  }
+  const { getDocumentProxy, extractText } = await import('unpdf');
+  async function pdfTextOf(msgId, part) {
+    const att = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + part.body.attachmentId);
+    const doc = await getDocumentProxy(base64UrlToBytes(att.data));
+    const { text } = await extractText(doc, { mergePages: true });
+    return text;
+  }
+
+  /* CONFIRMED LIVE BREAK (fixed here): from the week ending 4 Oct 2026 OOLIO
+     stopped sending separate emails and sent ONE combined email instead
+     ("Weekly sales summary, categories and sales feed for dashboard") whose
+     attachments are named "Weekly Reconciliation.pdf", "Sales feed for
+     dashboard.pdf", "Categories.pdf" and "Weekly sales summary D.pdf" -
+     there is no "Reporting Groups.pdf" or "Sales Summary.pdf" any more,
+     so a filename match found nothing even though the email was labelled
+     and sitting right there (verified directly against the owner's Gmail,
+     not guessed). Filename is no longer trusted: when no attachment is
+     NAMED like the Reporting Groups report, every PDF on a sales-summary
+     email is opened and the one whose own text carries the "Reporting
+     Group" table heading is used - content, not name, decides. */
+  const candidates = [];
+  const newestSeen = [];
+  for (const msg of messages) {
+    const candidate = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
+    const found = findPdfPart(candidate.payload, /report.*group/i);
+    const hdrs = (candidate.payload && candidate.payload.headers) || [];
+    const subjHdr = hdrs.find((x) => x.name.toLowerCase() === 'subject');
+    const subject = subjHdr ? subjHdr.value : '';
+    const pdfParts = listPdfParts(candidate.payload);
+    if (newestSeen.length < 3) newestSeen.push('"' + subject + '" [' + pdfParts.map((p) => p.filename).join(', ') + ']');
+    if (found) { candidates.push({ msgId: msg.id, full: candidate, pdfPart: found }); continue; }
+    if (!/sales summary/i.test(subject)) continue;
+    if (!force && processedSet.has(msg.id)) continue;
+    const scanned = [];
+    for (const part of pdfParts) {
+      let text = '';
+      try { text = await pdfTextOf(msg.id, part); } catch (e) { continue; }
+      scanned.push({ part, text });
+    }
+    const rg = scanned.find((s) => /Reporting Group/i.test(s.text) && parseOolioReportingGroupsPdf(s.text).length > 0)
+      || scanned.find((s) => /Reporting Group/i.test(s.text));
+    if (rg) {
+      const ss = scanned.find((s) => s !== rg && /Sales Summary/i.test(s.text) && parseOolioSalesSummaryCount(s.text) != null);
+      candidates.push({ msgId: msg.id, full: candidate, pdfPart: rg.part, text: rg.text, salesSummaryText: ss ? ss.text : null });
+    }
+  }
+  if (!candidates.length) {
+    return { checked: true, found: false, reason: 'none of the ' + messages.length + ' most recent labelled emails had a PDF containing a Reporting Groups table. Newest emails seen: ' + newestSeen.join(' | ') };
+  }
 
   /* Gmail returns newest-first; process oldest-first instead so weeks
      land in History in chronological order and a genuine multi-week
@@ -2426,19 +2483,13 @@ async function fetchGmailOolioReport(env, h, force) {
 
   const merged = [], skipped = [], skippedDebugRecords = [];
   let lastDebugRecord = null;
-  for (const { msgId, full, pdfPart } of candidates) {
+  for (const { msgId, full, pdfPart, text: preText, salesSummaryText } of candidates) {
     if (!force && processedSet.has(msgId)) continue;
 
     const headers = (full.payload && full.payload.headers) || [];
     const headerVal = (name) => { const hh = headers.find((x) => x.name.toLowerCase() === name.toLowerCase()); return hh ? hh.value : null; };
 
-    const attachment = await h.fetchJson(
-      'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + pdfPart.body.attachmentId
-    );
-    const pdfBytes = base64UrlToBytes(attachment.data);
-    const { getDocumentProxy, extractText } = await import('unpdf');
-    const pdf = await getDocumentProxy(pdfBytes);
-    const { text } = await extractText(pdf, { mergePages: true });
+    const text = preText != null ? preText : await pdfTextOf(msgId, pdfPart);
 
     const week = oolioReportWeekFromText(text) || oolioReportWeekFromSubject(headerVal('Subject'));
     const rows = parseOolioReportingGroupsPdf(text);
@@ -2447,14 +2498,11 @@ async function fetchGmailOolioReport(env, h, force) {
        effort, missing/unparsable doesn't block the revenue merge below. */
     let transactions = null;
     try {
-      const salesSummaryPart = findPdfPart(full.payload, /^sales summary\.pdf$/i);
-      if (salesSummaryPart) {
-        const ssAttachment = await h.fetchJson(
-          'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgId + '/attachments/' + salesSummaryPart.body.attachmentId
-        );
-        const ssPdf = await getDocumentProxy(base64UrlToBytes(ssAttachment.data));
-        const { text: ssText } = await extractText(ssPdf, { mergePages: true });
-        transactions = parseOolioSalesSummaryCount(ssText);
+      if (salesSummaryText) {
+        transactions = parseOolioSalesSummaryCount(salesSummaryText);
+      } else {
+        const salesSummaryPart = findPdfPart(full.payload, /^sales summary\.pdf$/i);
+        if (salesSummaryPart) transactions = parseOolioSalesSummaryCount(await pdfTextOf(msgId, salesSummaryPart));
       }
     } catch (e) { /* revenue merge still proceeds without a transaction count */ }
 
