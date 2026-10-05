@@ -927,6 +927,55 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #16: the first content-based fix for #15 picked Categories.pdf
+  // (it has its own Reporting Group table, over a long period starting
+  // 25 May) before the real weekly PDF and merged it into the single
+  // week 2026-05-25 - live data corruption, seen on the owner's screen.
+  // A PDF whose From/To span is longer than a week must never be filed
+  // as a week, and the real weekly one must win when both are present.
+  // ================================================================
+  {
+    const longRange = (extra) => makeSimplePdf([
+      'From: 25/05/2026 00:00', 'To: 04/10/2026 23:59', 'Reporting Groups',
+      'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax',
+      'Food 9000 $200000.00 $0.00 $0.00 $200000.00 $18000.00 $182000.00',
+      'Reporting Groups - The Banksia Tree Cafe'
+    ]);
+    const weekly = makeSimplePdf([
+      'From: 28/09/2026 00:00', 'To: 04/10/2026 23:59', 'Reporting Groups',
+      'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax',
+      'Food 700 $16,000.00 $700.00 $0.00 $15,300.00 $1,390.00 $13,910.00',
+      'Reporting Groups - The Banksia Tree Cafe'
+    ]);
+    const mk = (parts, pdfs) => {
+      global.fetch = makeMockFetch([
+        { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-e' }] } },
+        { match: '/messages/gm-e?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', 'Sun 04/10/26: Weekly sales summary, categories and sales feed for dashboard', parts) },
+        ...Object.keys(pdfs).map((id) => ({ match: '/attachments/' + id, body: { data: bytesToBase64Url(pdfs[id]) } }))
+      ]);
+    };
+    {
+      const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+      mk([{ filename: 'Categories.pdf', attachmentId: 'att-e1' }, { filename: 'Weekly sales summary D.pdf', attachmentId: 'att-e2' }], { 'att-e1': longRange(), 'att-e2': weekly });
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' })).json();
+      assert(json.weeks && json.weeks.length === 1 && json.weeks[0].week === '2026-09-28', 'long-range PDF listed first: the real weekly PDF still wins, got ' + JSON.stringify((json.weeks || []).map((w) => w.week)));
+      assert(!env.TOKENS._store.has('history:week:2026-05-25'), 'long-range PDF listed first: nothing is written to the 2026-05-25 week');
+      assert(JSON.parse(env.TOKENS._store.get('history:week:2026-09-28')).revenue.food === 13910, 'long-range PDF listed first: weekly figures are the ones merged');
+    }
+    {
+      const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+      mk([{ filename: 'Categories.pdf', attachmentId: 'att-e1' }], { 'att-e1': longRange() });
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' })).json();
+      assert(!env.TOKENS._store.has('history:week:2026-05-25'), 'long-range PDF only: nothing is written to History at all');
+      assert(json.skipped && json.skipped.length === 1 && /not a single week/.test(json.skipped[0].reason), 'long-range PDF only: reported as skipped with a plain reason, got ' + JSON.stringify(json.skipped));
+      const ids = JSON.parse(env.TOKENS._store.get('gmail:oolio:processedIds') || '[]');
+      assert(!ids.includes('gm-e'), 'long-range PDF only: email is NOT marked processed, so a corrected pick can still run later');
+    }
+  }
+
+  // ================================================================
   // BUG #14: OOLIO can genuinely fail to send a week's report at all
   // (confirmed live, repeatedly - their own developers acknowledged it
   // for one week; two more weeks showed the identical pattern the same

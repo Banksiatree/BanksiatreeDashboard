@@ -2304,6 +2304,26 @@ function oolioReportWeekFromText(text) {
   return iso;
 }
 
+/* How many days the report's own "From: ... To: ..." header covers
+   (inclusive), or null if either date can't be read. CONFIRMED LIVE
+   MISTAKE (fixed here): the content-based PDF detection first shipped
+   without any check on this, picked the combined email's Categories.pdf
+   (which also has a Reporting Group table, over a much longer period
+   starting 25 May) and merged it into the single week of 2026-05-25,
+   overwriting that week's revenue with a multi-month total. A weekly
+   report is 7 days (8 at most, allowing for the one real report whose
+   From: was a day early); anything longer is not a week and must never
+   be filed as one. */
+function oolioReportSpanDays(text) {
+  const f = /From:\s*(\d{2})\/(\d{2})\/(\d{4})/.exec(String(text || ''));
+  const t = /To:\s*(\d{2})\/(\d{2})\/(\d{4})/.exec(String(text || ''));
+  if (!f || !t) return null;
+  const a = new Date(f[3] + '-' + f[2] + '-' + f[1] + 'T00:00:00Z');
+  const b = new Date(t[3] + '-' + t[2] + '-' + t[1] + 'T00:00:00Z');
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return null;
+  return Math.round((b.getTime() - a.getTime()) / 86400000) + 1;
+}
+
 /* CONFIRMED LIVE GAP (fixed here): a real week's "From:" field can itself
    be wrong - one real report read "From: 26/07/2026 16:00" (a Sunday
    afternoon, not a Monday midnight) while its own email subject said
@@ -2465,7 +2485,10 @@ async function fetchGmailOolioReport(env, h, force) {
       try { text = await pdfTextOf(msg.id, part); } catch (e) { continue; }
       scanned.push({ part, text });
     }
-    const rg = scanned.find((s) => /Reporting Group/i.test(s.text) && parseOolioReportingGroupsPdf(s.text).length > 0)
+    const hasTable = (s) => /Reporting Group/i.test(s.text) && parseOolioReportingGroupsPdf(s.text).length > 0;
+    const isWeekly = (s) => { const d = oolioReportSpanDays(s.text); return d == null || d <= 8; };
+    const rg = scanned.find((s) => hasTable(s) && isWeekly(s))
+      || scanned.find(hasTable)
       || scanned.find((s) => /Reporting Group/i.test(s.text));
     if (rg) {
       const ss = scanned.find((s) => s !== rg && /Sales Summary/i.test(s.text) && parseOolioSalesSummaryCount(s.text) != null);
@@ -2518,6 +2541,18 @@ async function fetchGmailOolioReport(env, h, force) {
       parsedRows: rows,
       transactions
     };
+    const spanDays = oolioReportSpanDays(text);
+    if (spanDays != null && spanDays > 8) {
+      /* Deliberately NOT marked processed - a later, corrected pick of the
+         right PDF on this same email must still be able to run. */
+      skippedDebugRecords.push(lastDebugRecord);
+      skipped.push({
+        subject: headerVal('Subject'), filename: pdfPart.filename,
+        reason: 'this PDF covers ' + spanDays + ' days, not a single week - not merged',
+        textSnippet: text.slice(0, 500)
+      });
+      continue;
+    }
     processedSet.add(msgId);
 
     if (!week || !rows.length) {
