@@ -975,6 +975,48 @@ async function main() {
     }
   }
 
+  // BUG #17: the span guard above did NOT stop the owner's real case - the
+  // Categories PDF was merged into 2026-05-25 again. Its dates look like
+  // an ordinary single week, just the WRONG one (25-31 May) on an email
+  // whose subject says the week ending 4 Oct. A PDF may only be filed as
+  // the week its own email says it is.
+  {
+    const wrongWeek = makeSimplePdf([
+      'From: 25/05/2026 00:00', 'To: 31/05/2026 23:59', 'Reporting Groups',
+      'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax',
+      'Food 100 $1000.00 $0.00 $0.00 $1000.00 $90.00 $910.00',
+      'Reporting Groups - The Banksia Tree Cafe'
+    ]);
+    const rightWeekPdf = makeSimplePdf([
+      'From: 28/09/2026 00:00', 'To: 04/10/2026 23:59', 'Reporting Groups',
+      'Reporting Group Quantity Gross Sales Discount Surcharges Net Sales Taxes Net Sales ex Tax',
+      'Food 700 $16,000.00 $700.00 $0.00 $15,300.00 $1,390.00 $13,910.00',
+      'Reporting Groups - The Banksia Tree Cafe'
+    ]);
+    const subj = 'Sun 04/10/26: Weekly sales summary, categories and sales feed for dashboard';
+    const route = (parts, pdfs) => makeMockFetch([
+      { match: '/gmail/v1/users/me/messages?', body: { messages: [{ id: 'gm-f' }] } },
+      { match: '/messages/gm-f?format=full', body: gmailMessageFull('Oolio Reports <reports@oolio.com>', subj, parts) },
+      ...Object.keys(pdfs).map((id) => ({ match: '/attachments/' + id, body: { data: bytesToBase64Url(pdfs[id]) } }))
+    ]);
+    {
+      const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+      global.fetch = route([{ filename: 'Categories.pdf', attachmentId: 'att-f1' }, { filename: 'Weekly sales summary D.pdf', attachmentId: 'att-f2' }], { 'att-f1': wrongWeek, 'att-f2': rightWeekPdf });
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' })).json();
+      assert(json.weeks && json.weeks.length === 1 && json.weeks[0].week === '2026-09-28', 'wrong-week PDF listed first: the PDF matching the email\'s own week wins, got ' + JSON.stringify((json.weeks || []).map((w) => w.week)));
+      assert(!env.TOKENS._store.has('history:week:2026-05-25'), 'wrong-week PDF listed first: nothing is written to 2026-05-25');
+    }
+    {
+      const env = { TOKENS: gmailKv(), DASHBOARD_PASSCODE: PASSCODE };
+      global.fetch = route([{ filename: 'Categories.pdf', attachmentId: 'att-f1' }], { 'att-f1': wrongWeek });
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' })).json();
+      assert(!env.TOKENS._store.has('history:week:2026-05-25'), 'wrong-week PDF only: nothing is written to History');
+      assert(json.skipped && json.skipped.length === 1 && /week of 2026-05-25 but the email is for the week of 2026-09-28/.test(json.skipped[0].reason), 'wrong-week PDF only: skipped with a plain reason naming both weeks, got ' + JSON.stringify(json.skipped));
+    }
+  }
+
   // ================================================================
   // BUG #14: OOLIO can genuinely fail to send a week's report at all
   // (confirmed live, repeatedly - their own developers acknowledged it

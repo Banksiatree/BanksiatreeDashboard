@@ -2304,6 +2304,20 @@ function oolioReportWeekFromText(text) {
   return iso;
 }
 
+/* True when the week a PDF says it is for and the week its email's
+   subject says are the same week (within one day, to allow for the one
+   real report whose From: was a day early). Unknown on either side counts
+   as agreeing - this only refuses a PDF that positively contradicts its
+   own email. CONFIRMED LIVE MISTAKE: Categories.pdf on the 4 Oct email
+   was dated the week of 2026-05-25 and was merged into that week even
+   though the email said it was for the week ending 4 Oct. */
+function oolioWeekAgrees(expectedIso, actualIso) {
+  if (!expectedIso || !actualIso) return true;
+  const a = new Date(expectedIso + 'T00:00:00Z').getTime();
+  const b = new Date(actualIso + 'T00:00:00Z').getTime();
+  return Math.abs(a - b) <= 86400000;
+}
+
 /* How many days the report's own "From: ... To: ..." header covers
    (inclusive), or null if either date can't be read. CONFIRMED LIVE
    MISTAKE (fixed here): the content-based PDF detection first shipped
@@ -2468,6 +2482,7 @@ async function fetchGmailOolioReport(env, h, force) {
      Group" table heading is used - content, not name, decides. */
   const candidates = [];
   const newestSeen = [];
+  const scanSummary = [];
   for (const msg of messages) {
     const candidate = await h.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msg.id + '?format=full');
     const found = findPdfPart(candidate.payload, /report.*group/i);
@@ -2487,7 +2502,11 @@ async function fetchGmailOolioReport(env, h, force) {
     }
     const hasTable = (s) => /Reporting Group/i.test(s.text) && parseOolioReportingGroupsPdf(s.text).length > 0;
     const isWeekly = (s) => { const d = oolioReportSpanDays(s.text); return d == null || d <= 8; };
-    const rg = scanned.find((s) => hasTable(s) && isWeekly(s))
+    const expectedWeek = oolioReportWeekFromSubject(subject);
+    const rightWeek = (s) => oolioWeekAgrees(expectedWeek, oolioReportWeekFromText(s.text));
+    scanSummary.push('"' + subject + '" PDFs: ' + scanned.map((s) => s.part.filename + ' (' + (oolioReportWeekFromText(s.text) || 'no week') + ', ' + (/Reporting Group/i.test(s.text) ? 'has Reporting Group table' : 'no Reporting Group table') + ')').join('; '));
+    const rg = scanned.find((s) => hasTable(s) && isWeekly(s) && rightWeek(s))
+      || scanned.find((s) => hasTable(s) && rightWeek(s))
       || scanned.find(hasTable)
       || scanned.find((s) => /Reporting Group/i.test(s.text));
     if (rg) {
@@ -2496,7 +2515,7 @@ async function fetchGmailOolioReport(env, h, force) {
     }
   }
   if (!candidates.length) {
-    return { checked: true, found: false, reason: 'none of the ' + messages.length + ' most recent labelled emails had a PDF containing a Reporting Groups table. Newest emails seen: ' + newestSeen.join(' | ') };
+    return { checked: true, found: false, reason: 'none of the ' + messages.length + ' most recent labelled emails had a PDF containing a Reporting Groups table. Newest emails seen: ' + newestSeen.join(' | ') + (scanSummary.length ? ' || Opened: ' + scanSummary.slice(0, 3).join(' | ') : '') };
   }
 
   /* Gmail returns newest-first; process oldest-first instead so weeks
@@ -2542,13 +2561,18 @@ async function fetchGmailOolioReport(env, h, force) {
       transactions
     };
     const spanDays = oolioReportSpanDays(text);
-    if (spanDays != null && spanDays > 8) {
+    const subjWeek = oolioReportWeekFromSubject(headerVal('Subject'));
+    const pdfWeek = oolioReportWeekFromText(text);
+    let refuse = null;
+    if (spanDays != null && spanDays > 8) refuse = 'this PDF covers ' + spanDays + ' days, not a single week - not merged';
+    else if (!oolioWeekAgrees(subjWeek, pdfWeek)) refuse = 'this PDF is dated for the week of ' + pdfWeek + ' but the email is for the week of ' + subjWeek + ' - not merged';
+    if (refuse) {
       /* Deliberately NOT marked processed - a later, corrected pick of the
          right PDF on this same email must still be able to run. */
       skippedDebugRecords.push(lastDebugRecord);
       skipped.push({
         subject: headerVal('Subject'), filename: pdfPart.filename,
-        reason: 'this PDF covers ' + spanDays + ' days, not a single week - not merged',
+        reason: refuse,
         textSnippet: text.slice(0, 500)
       });
       continue;
