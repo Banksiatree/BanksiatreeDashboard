@@ -2793,6 +2793,27 @@ async function getValidAccessToken(env, source) {
   }
 }
 
+/* Xero allows only about 5 requests in flight at once per organisation and
+   rejects the rest with an immediate 429. The Dashboard fans out far past
+   that (this period + previous + year-ago at two P&L calls each, then a
+   12-month trend at two calls per month, all in parallel), and
+   fetchSlot/fetchMonthly swallow any failure - so a single rejected call
+   quietly turned a whole period's money figures into dashes while
+   transactions (a different source) still showed. Every Xero request now
+   passes through this gate (3 at a time, leaving headroom), and a 429 is
+   retried after Xero's own Retry-After when that's short. */
+const XERO_MAX_CONCURRENT = 3;
+const _xeroGate = { active: 0, waiting: [] };
+async function withXeroSlot(fn) {
+  if (_xeroGate.active >= XERO_MAX_CONCURRENT) await new Promise((resolve) => _xeroGate.waiting.push(resolve));
+  _xeroGate.active++;
+  try { return await fn(); } finally {
+    _xeroGate.active--;
+    const next = _xeroGate.waiting.shift();
+    if (next) next();
+  }
+}
+
 /* Helpers handed to every adapter call */
 function makeHelpers(env, source) {
   return {
@@ -2811,9 +2832,20 @@ function makeHelpers(env, source) {
         if (useAuth && ADAPTERS[source].auth === 'oauth') {
           headers.set('Authorization', 'Bearer ' + await getValidAccessToken(env, source));
         }
-        return fetch(url, { ...(init || {}), headers });
+        return source === 'accounting'
+          ? withXeroSlot(() => fetch(url, { ...(init || {}), headers }))
+          : fetch(url, { ...(init || {}), headers });
       };
       let res = await doFetch();
+      if (res.status === 429 && source === 'accounting') {
+        for (let attempt = 0; attempt < 2 && res.status === 429; attempt++) {
+          const ra = parseFloat(res.headers && res.headers.get ? res.headers.get('Retry-After') : '');
+          const waitMs = isFinite(ra) ? ra * 1000 : 2000;
+          if (waitMs > 10000) break;
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          res = await doFetch();
+        }
+      }
       if (res.status === 401 && useAuth && ADAPTERS[source].auth === 'oauth') {
         const t = await getTokens(env, source);
         if (t) { t.expires_at = 0; await saveTokens(env, source, t); } /* force refresh */
@@ -2828,7 +2860,7 @@ function makeHelpers(env, source) {
            headers (per-minute vs daily vs concurrent) - captured so any
            future rate-limit error is diagnosed from Xero's own answer,
            not guessed at from symptom timing. */
-        if (res.status === 429) {
+        if (res.status === 429 && res.headers && res.headers.get) {
           e.retryAfter = res.headers.get('Retry-After');
           e.rateLimitProblem = res.headers.get('X-Rate-Limit-Problem');
         }
@@ -3332,6 +3364,11 @@ async function fetchSlot(env, q) {
       await noteSync(env, source);
     } catch (err) {
       out[source] = null; /* per-source failure never breaks the whole payload */
+      /* ...but the REASON used to be thrown away, so a Xero failure just
+         showed as dashes with no way to tell a rate limit from an expired
+         connection. Kept alongside the data; the Dashboard shows it. */
+      out._errors = out._errors || {};
+      out._errors[source] = plainError(err.status || 500);
     }
   }
   return out;
@@ -3399,7 +3436,11 @@ async function apiMetrics(env, url) {
       }
     }
     data = { generatedAt: new Date().toISOString(), periods: periods, trend: trendOut };
-    if (env.TOKENS) {
+    /* A result with a failed source is never cached - otherwise one
+       rejected Xero call stayed visible for the full cache window even
+       after the owner pressed refresh moments later. */
+    const hadFailure = [curOut, prevOut, yoyOut].some((s) => s && s._errors);
+    if (env.TOKENS && !hadFailure) {
       try { await env.TOKENS.put(cacheKey, JSON.stringify(data), { expirationTtl: METRICS_CACHE_TTL }); } catch (e) {}
     }
   }

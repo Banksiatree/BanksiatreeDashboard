@@ -1114,6 +1114,17 @@ function renderDashboard(root) {
     root.appendChild(mb);
   }
 
+  /* CONFIRMED LIVE GAP: when the money source fails for the period, the
+     worker used to drop revenue/cost/wages/profit and keep transactions
+     (a different source), so a failure just looked like dashes with no
+     explanation. The worker now says why; show it. */
+  var curSlotErrors = state.data && state.data.periods && state.data.periods.cur && state.data.periods.cur._errors;
+  if (!isManual() && !state.loading && curSlotErrors && curSlotErrors.accounting) {
+    var eb2 = el('div', 'banner banner-amber');
+    eb2.innerHTML = '<b>The money figures for this period didn’t load.</b> ' + esc(curSlotErrors.accounting) + ' Press Refresh above to try again.';
+    root.appendChild(eb2);
+  }
+
   /* Cards */
   var grid = el('div', 'cards');
   var cur = periodValues('cur'), prev = periodValues('prev'), yoy = periodValues('yoy');

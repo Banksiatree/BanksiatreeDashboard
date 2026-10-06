@@ -149,9 +149,11 @@ function makeMockFetch(routes) {
     for (const r of routes) {
       if (u.includes(r.match)) {
         const body = typeof r.body === 'function' ? r.body(u, init) : r.body;
+        const status = (typeof r.status === 'function' ? r.status(u, init) : r.status) || 200;
         return {
-          ok: r.status ? r.status < 400 : true,
-          status: r.status || 200,
+          ok: status < 400,
+          status,
+          headers: { get: (n) => (r.headers && r.headers[n]) || null },
           json: async () => body,
           text: async () => JSON.stringify(body)
         };
@@ -1014,6 +1016,62 @@ async function main() {
       const json = await (await authedFetch(env, cookie, '/api/gmail/check', { method: 'POST' })).json();
       assert(!env.TOKENS._store.has('history:week:2026-05-25'), 'wrong-week PDF only: nothing is written to History');
       assert(json.skipped && json.skipped.length === 1 && /week of 2026-05-25 but the email is for the week of 2026-09-28/.test(json.skipped[0].reason), 'wrong-week PDF only: skipped with a plain reason naming both weeks, got ' + JSON.stringify(json.skipped));
+    }
+  }
+
+  // ================================================================
+  // BUG #18: viewing the Dashboard for last month showed dashes for every
+  // money figure but still showed transactions. The Dashboard fans out
+  // many Xero calls at once (this period + previous + year-ago, two P&L
+  // calls each, plus a monthly trend), Xero rejects anything past ~5 in
+  // flight with a 429, and fetchSlot swallowed the failure - dropping the
+  // whole accounting source for the period with no reason given.
+  // ================================================================
+  {
+    const plBody = xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: 500 });
+    const metricsUrl = '/api/metrics?cur=2026-09-01_2026-09-30';
+    const conns = { match: 'api.xero.com/connections', body: [{ tenantId: 'tenant-1', tenantName: 'Test Cafe' }] };
+    {
+      // one-off 429 is retried after Xero's own Retry-After
+      const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+      let plCalls = 0;
+      global.fetch = makeMockFetch([
+        conns,
+        { match: 'Reports/ProfitAndLoss', body: () => { plCalls++; return plBody; }, status: () => (plCalls === 1 ? 429 : 200), headers: { 'Retry-After': '0' } }
+      ]);
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, metricsUrl)).json();
+      assert(json.periods.cur.accounting && json.periods.cur.accounting.revenue === 10000, 'dashboard: a one-off Xero 429 is retried and the money figures still arrive, got ' + JSON.stringify(json.periods.cur));
+    }
+    {
+      // persistent 429: reason is reported, and the failure is not cached
+      const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+      global.fetch = makeMockFetch([
+        conns,
+        { match: 'Reports/ProfitAndLoss', body: {}, status: 429, headers: { 'Retry-After': '0' } }
+      ]);
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, metricsUrl)).json();
+      assert(json.periods.cur.accounting === null && /slow down/i.test((json.periods.cur._errors || {}).accounting || ''), 'dashboard: a failed Xero call reports WHY instead of silent dashes, got ' + JSON.stringify(json.periods.cur));
+      assert(![...env.TOKENS._store.keys()].some((k) => k.startsWith('metricscache:')), 'dashboard: a failed result is not cached');
+      global.fetch = makeMockFetch([conns, { match: 'Reports/ProfitAndLoss', body: plBody }]);
+      const again = await (await authedFetch(env, cookie, metricsUrl)).json();
+      assert(again.periods.cur.accounting && again.periods.cur.accounting.revenue === 10000, 'dashboard: the very next load recovers - no stale failure served');
+    }
+    {
+      // the fan-out never has more than 3 Xero requests in flight
+      const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+      const inner = makeMockFetch([conns, { match: 'Reports/ProfitAndLoss', body: plBody }]);
+      let inflight = 0, maxInflight = 0;
+      global.fetch = async (url, init) => {
+        inflight++; maxInflight = Math.max(maxInflight, inflight);
+        await new Promise((r) => setTimeout(r, 15));
+        try { return await inner(url, init); } finally { inflight--; }
+      };
+      const cookie = await login(env);
+      const json = await (await authedFetch(env, cookie, '/api/metrics?cur=2026-09-01_2026-09-30&prev=2026-08-01_2026-08-31&yoy=2025-09-01_2025-09-30')).json();
+      assert(maxInflight <= 3 && maxInflight >= 1, 'dashboard: never more than 3 Xero requests in flight at once, saw ' + maxInflight);
+      assert(json.periods.cur.accounting && json.periods.prev.accounting && json.periods.yoy.accounting, 'dashboard: all three periods still get their money figures under the cap');
     }
   }
 
