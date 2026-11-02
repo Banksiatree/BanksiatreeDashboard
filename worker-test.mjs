@@ -29,6 +29,7 @@
 //   rm .worker-under-test.mjs .worker-test-run.mjs
 
 import worker from './worker.js';
+import fs from 'node:fs';
 
 // Every test that mocks Xero calls needs a valid-looking OAuth token in KV
 // first - getValidAccessToken throws (401) before fetch is ever called
@@ -264,7 +265,8 @@ async function main() {
   {
     const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
     global.fetch = makeMockFetch([
-      { match: 'Reports/ProfitAndLoss?fromDate=2026-08-24&toDate=2026-08-30&trackingCategoryID', body: {
+      // the wage split is pulled on the PAYROLL window (period + 3 days: 27 Aug - 2 Sep), same as History
+      { match: 'Reports/ProfitAndLoss?fromDate=2026-08-27&toDate=2026-09-02&trackingCategoryID', body: {
         Reports: [{ Rows: [
           { RowType: 'Header', Cells: [{ Value: '' }, { Value: 'Admin' }, { Value: 'BOH' }, { Value: 'FOH' }] },
           { RowType: 'Section', Title: 'Less Operating Expenses', Rows: [
@@ -1115,6 +1117,64 @@ async function main() {
     assert(rec.ownerWages === null, 'open pay window: owner wages stored as unknown (null), not $0, got ' + rec.ownerWages);
     assert(rec.wages.total === undefined || rec.wages.total === null, 'open pay window: staff wages total is not stored as $0, got ' + JSON.stringify(rec.wages));
     assert(json.available === true && json.actual === null && !!json.pendingUntil, 'open pay window: Owner Input says "not posted yet" rather than $0 drawn, got ' + JSON.stringify(json));
+  }
+
+  // ================================================================
+  // P&L on 13 four-week periods (owner instruction) with wages from the
+  // payroll window. The period/budget maths lives in dashboard.html, so
+  // this lifts those exact functions out of the real file and runs them
+  // (nothing re-implemented here) with a fixed "today".
+  // ================================================================
+  {
+    const html = fs.readFileSync(new URL('./dashboard.html', import.meta.url), 'utf8');
+    const line = (m) => { const i = html.indexOf(m); return html.slice(i, html.indexOf('\n', i)); };
+    const src = [line('function stamp('), line('function addDays('), line('function iso('),
+      html.slice(html.indexOf('var PL_ANCHOR = stamp'), html.indexOf('/* Cache key includes the period'))].join('\n');
+    const WIM = [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5];
+    const load = (y, m, d) => new Function('tradingToday', 'weeksInMonthSetting',
+      src + '\nreturn { plPeriodByIndex, resolvePLPeriod, plPeriodBudget, plPeriodName, iso, stamp };')(() => new Date(Date.UTC(y, m - 1, d, 12)), (i) => WIM[i]);
+
+    const a = load(2026, 11, 2);
+    const p1 = a.plPeriodByIndex(0), p13 = a.plPeriodByIndex(12), p14 = a.plPeriodByIndex(13);
+    assert(a.iso(p1.from) === '2025-12-29' && a.iso(p1.end) === '2026-01-25' && a.plPeriodName(p1) === 'Period 1 2026', 'periods: Period 1 2026 is 29 Dec 2025 - 25 Jan 2026, got ' + a.iso(p1.from) + ' to ' + a.iso(p1.end));
+    assert(a.iso(p13.from) === '2026-11-30' && a.iso(p13.end) === '2026-12-27' && a.plPeriodName(p13) === 'Period 13 2026', 'periods: Period 13 2026 ends 27 Dec 2026, got ' + a.iso(p13.end));
+    assert(a.iso(p14.from) === '2026-12-28' && a.plPeriodName(p14) === 'Period 1 2027', 'periods: the next year starts on 28 Dec 2026 as Period 1 2027, got ' + a.plPeriodName(p14));
+
+    const cur = a.resolvePLPeriod('thisPeriod'), last = a.resolvePLPeriod('lastPeriod'), ytd = a.resolvePLPeriod('ytd');
+    assert(a.iso(cur.from) === '2026-11-02' && a.iso(cur.periodTo) === '2026-11-29' && a.plPeriodName(a.plPeriodByIndex(11)) === 'Period 12 2026' && Math.abs(cur.elapsedFraction - 1 / 28) < 1e-9, 'periods: on 2 Nov this period is Period 12 (2-29 Nov), 1/28 elapsed, got ' + a.iso(cur.from) + ' ' + cur.elapsedFraction);
+    assert(a.iso(last.from) === '2026-10-05' && a.iso(last.to) === '2026-11-01' && last.elapsedFraction === 1, 'periods: last period is 5 Oct - 1 Nov, got ' + a.iso(last.from) + ' to ' + a.iso(last.to));
+    assert(a.iso(ytd.from) === '2025-12-29' && a.iso(ytd.to) === '2026-11-01' && !ytd.empty, 'periods: completed periods this year run 29 Dec - 1 Nov, got ' + a.iso(ytd.to));
+    assert(load(2026, 1, 10).resolvePLPeriod('ytd').empty === true, 'periods: nothing completed yet during Period 1 -> empty');
+    const picked = a.resolvePLPeriod('p:3');
+    assert(a.iso(picked.from) === '2026-03-23' && a.iso(picked.to) === '2026-04-19', 'periods: a picked period (P4) is 23 Mar - 19 Apr, got ' + a.iso(picked.from) + ' to ' + a.iso(picked.to));
+
+    // budget: each month's budget becomes weeks (month / weeks-in-month), a week
+    // belongs to the month it ENDS in; last period 5 Oct-1 Nov = 3 Oct weeks + 1 Nov week
+    const byMonth = { '2026-10': { revenue: 400, cogs: 100, wages: 200, opex: 40 }, '2026-11': { revenue: 500, cogs: 120, wages: 240, opex: 60 } };
+    const b = a.plPeriodBudget(last, byMonth);
+    assert(b.revenue === 3 * (400 / 4) + 500 / 4 && b.wages === 3 * (200 / 4) + 240 / 4, 'period budget: 3 October weeks + 1 November week, got ' + JSON.stringify(b));
+    assert(b.netProfit === b.revenue - b.cogs - b.wages - b.opex, 'period budget: net profit target = revenue - cogs - wages - opex');
+    const nb = a.plPeriodBudget(last, { '2026-10': byMonth['2026-10'] });
+    assert(nb.revenue === null && nb.netProfit === null, 'period budget: a week in a month with no budget gives null, never a part-total, got ' + JSON.stringify(nb));
+  }
+  {
+    // /api/pl wages and owner wages come from the payroll window (period + 3 days)
+    const pl = (wages, owner) => xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages, opex: 1000, ownerWages: owner });
+    const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+    global.fetch = makeMockFetch([
+      { match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2026-08-06&toDate=2026-09-02') ? pl(1000, 400) : pl(111, 11)) },
+      { match: 'TrackingCategories', body: { TrackingCategories: [] } }
+    ]);
+    const cookie = await login(env);
+    const d = await (await authedFetch(env, cookie, '/api/pl?from=2026-08-03&to=2026-08-30')).json();
+    assert(d.wages && d.wages.total === 1000 && d.ownerWages && d.ownerWages.actual === 400, 'P&L: wages (1000) and owner wages (400) come from the payroll window, not the plain period (111/11), got ' + JSON.stringify({ w: d.wages && d.wages.total, o: d.ownerWages && d.ownerWages.actual }));
+    assert(d.payroll && d.payroll.from === '2026-08-06' && d.payroll.to === '2026-09-02' && d.payroll.pendingUntil === null, 'P&L: a finished period reports its payroll window and nothing pending, got ' + JSON.stringify(d.payroll));
+    assert(d.opex && d.opex.total === 1000 && d.cogs, 'P&L: COGS/Opex still come from the plain period');
+    // period still in progress: pay runs may be on their way
+    const today = new Date(); const from = new Date(today.getTime() - 10 * 86400000).toISOString().slice(0, 10); const to = today.toISOString().slice(0, 10);
+    global.fetch = makeMockFetch([{ match: 'Reports/ProfitAndLoss', body: pl(500, 200) }, { match: 'TrackingCategories', body: { TrackingCategories: [] } }]);
+    const live = await (await authedFetch(env, cookie, '/api/pl?from=' + from + '&to=' + to)).json();
+    assert(live.payroll && !!live.payroll.pendingUntil, 'P&L: a period still in progress says its last pay run is pending, got ' + JSON.stringify(live.payroll));
   }
 
   // ================================================================

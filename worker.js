@@ -796,14 +796,19 @@ async function fetchXeroBudget(h, tenantId, from, to, bucketMap, nameMap) {
   const byMonth = bucketBudgetLinesByMonth(lines, bucketMap, nameMap);
   const fromMonth = from.slice(0, 7), toMonth = to.slice(0, 7);
   const totals = { revenue: 0, cogs: 0, wages: 0, opex: 0, ownerPay: 0 };
+  const monthly = {};
   let matchedLines = 0;
   for (const [month, vals] of Object.entries(byMonth)) {
     if (month < fromMonth || month > toMonth) continue;
     for (const b of ['revenue', 'cogs', 'wages', 'opex', 'ownerPay']) { totals[b] += vals[b] || 0; }
     matchedLines += vals.matched;
+    /* The P&L tab runs on 4-week periods that straddle calendar months, so
+       it needs each month's budget on its own (to turn into weeks), not
+       only the sum across the range. */
+    monthly[month] = { revenue: vals.revenue, cogs: vals.cogs, wages: vals.wages, opex: vals.opex, ownerPay: vals.ownerPay };
   }
   totals.netProfit = totals.revenue - totals.cogs - totals.wages - totals.opex;
-  return { totals, matchedLines, totalLines: lines.length };
+  return { totals, byMonth: monthly, matchedLines, totalLines: lines.length };
 }
 
 /* GET /api/pl - powers the P&L tab. Every section is fetched independently
@@ -879,10 +884,27 @@ async function apiPL(env, url) {
     revenueOnly = (await fetchXeroPLSplit(h, tenantId, revFrom, revTo)).revenue;
   } catch (err) { errors.revenue = plainError(err.status || 500); }
 
+  /* Wages and owner wages come from the PAYROLL window, not the plain
+     from/to: a week's work is processed on the Monday after and posted the
+     Wednesday after that, so the pay run recorded inside a week is the
+     PREVIOUS week's work. Same rule History uses (owner instruction:
+     "the P&L should run the exact same way"), so the two tabs agree.
+     Shifting the whole period by 3 days takes the first week's run to the
+     Thursday-start and the last week's run to the Wednesday after the
+     period ends. Anything past today isn't posted yet - reported as
+     payroll.pendingUntil, never silently shown as a finished figure. */
+  const wagesFrom = shiftIsoDate(from, 3);
+  const wagesTo = shiftIsoDate(to, 3);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  let wagesFlat = null;
+  try {
+    wagesFlat = await fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo);
+  } catch (err) { errors.wages = plainError(err.status || 500); }
+
   let wagesSplit = null;
   try {
     const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, 'labour');
-    if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, from, to, trackingCategoryId);
+    if (trackingCategoryId) wagesSplit = await fetchXeroWagesSplit(h, tenantId, wagesFrom, wagesTo, trackingCategoryId);
   } catch (err) { errors.wages = plainError(err.status || 500); }
 
   let transactions = null;
@@ -895,8 +917,11 @@ async function apiPL(env, url) {
     try {
       const accounts = await fetchXeroAccounts(env, h, tenantId);
       const { bucketMap, nameMap } = buildAccountBucketMap(accounts);
-      const b = await fetchXeroBudget(h, tenantId, from, to, bucketMap, nameMap);
-      budget = { available: b.matchedLines > 0, ...b.totals, matchedLines: b.matchedLines, totalLines: b.totalLines };
+      /* Reaches past `to`: for the period still in progress `to` is today,
+         but its later weeks can end in NEXT month, whose budget the page
+         needs to build the full-period target. */
+      const b = await fetchXeroBudget(h, tenantId, from, shiftIsoDate(to, 34), bucketMap, nameMap);
+      budget = { available: b.matchedLines > 0, ...b.totals, byMonth: b.byMonth, matchedLines: b.matchedLines, totalLines: b.totalLines };
     } catch (err) { errors.budget = plainError(err.status || 500); }
   }
 
@@ -907,18 +932,19 @@ async function apiPL(env, url) {
     revenue: { actual: revenueOnly },
     transactions: { actual: transactions },
     cogs: split ? { ...split.cogs.buckets, total: split.cogs.buckets.foh + split.cogs.buckets.boh + split.cogs.buckets.retail + split.cogs.buckets.uncategorised, lines: split.cogs.lines } : null,
-    wages: split ? {
+    wages: (split && wagesFlat) ? {
       splitAvailable: !!wagesSplit,
       kitchenBoh: wagesSplit ? wagesSplit.kitchenBoh : null,
       foh: wagesSplit ? wagesSplit.foh : null,
       owner: wagesSplit ? wagesSplit.owner : null,
       other: wagesSplit ? wagesSplit.other : null,
-      unassigned: wagesSplit ? null : split.opex.wagesSuperExclOwner,
-      total: split.opex.wagesSuperExclOwner
+      unassigned: wagesSplit ? null : wagesFlat.opex.wagesSuperExclOwner,
+      total: wagesFlat.opex.wagesSuperExclOwner
     } : null,
     opex: split ? { lines: split.opex.opexLines, total: split.opex.opexTotal } : null,
-    ownerWages: split ? { actual: split.opex.ownerWages, lines: split.opex.ownerWagesLines } : null,
-    netProfit: split ? { actual: (revenueOnly || 0) - split.cogs.buckets.foh - split.cogs.buckets.boh - split.cogs.buckets.retail - split.cogs.buckets.uncategorised - split.opex.wagesSuperExclOwner - split.opex.opexTotal - split.opex.ownerWages } : null,
+    ownerWages: (split && wagesFlat) ? { actual: wagesFlat.opex.ownerWages, lines: wagesFlat.opex.ownerWagesLines } : null,
+    netProfit: (split && wagesFlat) ? { actual: (revenueOnly || 0) - split.cogs.buckets.foh - split.cogs.buckets.boh - split.cogs.buckets.retail - split.cogs.buckets.uncategorised - wagesFlat.opex.wagesSuperExclOwner - split.opex.opexTotal - wagesFlat.opex.ownerWages } : null,
+    payroll: { from: wagesFrom, to: wagesTo, pendingUntil: wagesTo >= todayIso ? wagesTo : null },
     budget,
     errors
   });

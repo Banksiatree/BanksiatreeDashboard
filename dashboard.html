@@ -643,7 +643,7 @@ var state = {
     gstOverride: null, cogsOverride: null, cashOverride: null  /* null = use the live figure */
   },
   pl: {
-    period: 'thisMonth',       /* thisMonth | lastMonth | ytd */
+    period: 'thisPeriod',      /* thisPeriod | lastPeriod | ytd | p:<index> (any single 4-week period) */
     loading: false,
     data: null,                /* last /api/pl payload - restorePLCache() below fills this in on boot if a matching cached pull exists */
     fetchedAt: null,           /* when that data was actually pulled (may be from a past visit, not this page load) */
@@ -2113,32 +2113,86 @@ function fmtInt(v) {
    already relies on. elapsedFraction only differs from 1 for 'thisMonth'
    (the only period that's ever still in progress) - it drives the catch-up
    panel's "prorated to today" maths. */
+/* The P&L tab runs on 13 FOUR-WEEK periods a year (owner instruction),
+   not calendar months. Period 1 of 2026 starts Monday 29 Dec 2025 - week 1
+   of the owner's own KPI tracker - and the periods simply keep going every
+   28 days from there (13 x 4 = 52 weeks a year). Confirmed with the owner.
+   Note for later: a fixed 28-day chain drifts from a "first Sunday of the
+   year" week 1 about every 5-6 years, when a 53-week year would need one
+   extra week - nothing to do until then. */
+var PL_ANCHOR = stamp(2025, 12, 29);
+var PL_ANCHOR_YEAR = 2026;
+function plPeriodByIndex(k) {
+  var from = addDays(PL_ANCHOR, k * 28);
+  return { k: k, from: from, end: addDays(from, 27), year: PL_ANCHOR_YEAR + Math.floor(k / 13), n: ((k % 13) + 13) % 13 + 1 };
+}
+function plPeriodIndexOf(date) {
+  return Math.floor(Math.round((date.getTime() - PL_ANCHOR.getTime()) / 86400000) / 28);
+}
+function plPeriodName(p) { return 'Period ' + p.n + ' ' + p.year; }
+
+/* Resolves the P&L tab's period choices to a concrete date range:
+   'thisPeriod' (in progress), 'lastPeriod', 'ytd' (every completed period
+   so far this period-year), or 'p:<index>' for any single period picked
+   from the list. to = the last day actually pulled (today for the period
+   in progress); periodTo = the period's full last day, used for working
+   out its budget. elapsedFraction only differs from 1 for the period still
+   in progress - it drives the catch-up panel's "prorated to today" maths. */
 function resolvePLPeriod(key) {
   var today = tradingToday();
-  var from, to, label;
-  if (key === 'lastMonth') {
-    var base = addMonths(stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), -1);
-    from = stamp(base.getUTCFullYear(), base.getUTCMonth() + 1, 1);
-    to = addDays(addMonths(from, 1), -1);
-    label = 'Last month';
+  var cur = plPeriodByIndex(plPeriodIndexOf(today));
+  var from, to, periodTo, label;
+  if (key === 'lastPeriod') {
+    var lp = plPeriodByIndex(cur.k - 1);
+    from = lp.from; to = lp.end; periodTo = lp.end; label = 'Last period (' + plPeriodName(lp) + ')';
   } else if (key === 'ytd') {
-    from = stamp(today.getUTCFullYear(), 1, 1);
-    to = addDays(stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1), -1); /* end of the month before this one */
-    label = 'All completed months this year';
+    var firstK = (cur.year - PL_ANCHOR_YEAR) * 13;
+    from = plPeriodByIndex(firstK).from;
+    to = addDays(cur.from, -1); periodTo = to;   /* end of the last COMPLETED period */
+    label = 'Completed periods so far in ' + cur.year;
+  } else if (/^p:-?\d+$/.test(key)) {
+    var pk = plPeriodByIndex(parseInt(key.slice(2), 10));
+    from = pk.from; periodTo = pk.end; to = pk.end.getTime() > today.getTime() ? today : pk.end; label = plPeriodName(pk);
   } else {
-    from = stamp(today.getUTCFullYear(), today.getUTCMonth() + 1, 1);
-    to = today;
-    label = 'This month';
+    from = cur.from; to = today; periodTo = cur.end; label = 'This period (' + plPeriodName(cur) + ')';
   }
-  var empty = to.getTime() < from.getTime(); /* e.g. "ytd" in January - no completed month yet */
+  var empty = to.getTime() < from.getTime(); /* e.g. "ytd" during period 1 - nothing completed yet */
   var elapsedFraction = 1;
-  if (key === 'thisMonth' && !empty) {
-    var daysInMonth = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0)).getUTCDate();
+  if (!empty && to.getTime() < periodTo.getTime()) {
     var elapsedDays = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
-    elapsedFraction = Math.min(1, elapsedDays / daysInMonth);
+    var totalDays = Math.round((periodTo.getTime() - from.getTime()) / 86400000) + 1;
+    elapsedFraction = Math.min(1, elapsedDays / totalDays);
   }
-  return { from: from, to: to, label: label, key: key, elapsedFraction: elapsedFraction, empty: empty };
+  return { from: from, to: to, periodTo: periodTo, label: label, key: key, elapsedFraction: elapsedFraction, empty: empty };
 }
+
+/* Budget for a period. Xero's Budget Manager is monthly, but a four-week
+   period straddles months - so each month's budget becomes a weekly figure
+   (month total / that month's "weeks in month" from Settings, the same
+   trading-calendar numbers the Budget tab uses), and the period's budget is
+   the sum of its weeks. A week belongs to the month it ENDS in, the same
+   rule History uses. Returns null for a figure when any week's month has no
+   budget - never a partial total. */
+function plPeriodBudget(r, byMonth) {
+  if (!byMonth) return null;
+  var out = { revenue: 0, cogs: 0, wages: 0, opex: 0 }, ok = { revenue: true, cogs: true, wages: true, opex: true };
+  for (var wk = r.from; wk.getTime() <= r.periodTo.getTime(); wk = addDays(wk, 7)) {
+    var mk = iso(addDays(wk, 6)).slice(0, 7);
+    var m = byMonth[mk];
+    var wim = weeksInMonthSetting(+mk.slice(5, 7) - 1);
+    Object.keys(out).forEach(function (b) {
+      if (!m || m[b] == null || !wim) { ok[b] = false; return; }
+      out[b] += m[b] / wim;
+    });
+  }
+  Object.keys(out).forEach(function (b) { if (!ok[b]) out[b] = null; });
+  out.netProfit = (out.revenue != null && out.cogs != null && out.wages != null && out.opex != null) ? out.revenue - out.cogs - out.wages - out.opex : null;
+  return out;
+}
+
+/* Cache key includes the period's real start date so "This period" /
+   "Last period" never show a stale pull after the period rolls over. */
+function plCacheKey(periodKey) { return periodKey + '_' + iso(resolvePLPeriod(periodKey).from); }
 
 /* Survives a tab switch, a page reload, even closing and reopening the
    browser - keyed by period, so switching from "This month" to "Last
@@ -2166,12 +2220,13 @@ function fetchPL() {
   if (r.empty) { pl.data = { available: false, reason: 'no_completed_period' }; render(); return; }
   pl.loading = true; pl.error = null;
   render();
+  var cacheKey = plCacheKey(pl.period);
   fetch('/api/pl?from=' + iso(r.from) + '&to=' + iso(r.to)).then(function (res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   }).then(function (json) {
     pl.data = json; pl.loading = false; pl.fetchedAt = new Date().toISOString();
-    if (json && json.available) savePLCache(pl.period, json);
+    if (json && json.available) savePLCache(cacheKey, json);
     render();
   }).catch(function () {
     pl.loading = false; pl.error = 'Could not reach the dashboard just now. Try again.'; render();
@@ -2268,22 +2323,37 @@ function renderPL(root) {
 
   var pbar = el('div', 'period-bar');
   pbar.appendChild(el('span', 'period-label', 'Period'));
-  [ { key: 'thisMonth', label: 'This month' }, { key: 'lastMonth', label: 'Last month' }, { key: 'ytd', label: 'All completed months this year' } ].forEach(function (p) {
+  function pickPLPeriod(key) {
+    pl.period = key; pl.error = null;
+    var cached = loadPLCache(plCacheKey(key));
+    pl.data = cached ? cached.data : null;
+    pl.fetchedAt = cached ? cached.fetchedAt : null;
+    render();
+  }
+  [ { key: 'thisPeriod', label: 'This period' }, { key: 'lastPeriod', label: 'Last period' }, { key: 'ytd', label: 'Completed periods this year' } ].forEach(function (p) {
     var chip = el('button', 'pchip' + (pl.period === p.key ? ' on' : ''), p.label);
-    chip.onclick = function () {
-      pl.period = p.key; pl.error = null;
-      var cached = loadPLCache(p.key);
-      pl.data = cached ? cached.data : null;
-      pl.fetchedAt = cached ? cached.fetchedAt : null;
-      render();
-    };
+    chip.onclick = function () { pickPLPeriod(p.key); };
     pbar.appendChild(chip);
   });
+  /* Any single 4-week period (this period-year and last) from a list. */
+  var pickSel = document.createElement('select');
+  pickSel.style.cssText = 'font-family:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--border-med);border-radius:20px;background:#fff;';
+  var optNow = document.createElement('option'); optNow.value = ''; optNow.textContent = 'Pick a period…'; pickSel.appendChild(optNow);
+  var curIdx = plPeriodIndexOf(tradingToday());
+  for (var pk = curIdx; pk >= (Math.floor(curIdx / 13) - 1) * 13; pk--) {
+    var pp = plPeriodByIndex(pk);
+    var o = document.createElement('option'); o.value = 'p:' + pk;
+    o.textContent = plPeriodName(pp) + ' (' + fmtRange({ from: pp.from, to: pp.end }) + ')';
+    pickSel.appendChild(o);
+  }
+  if (/^p:/.test(pl.period)) pickSel.value = pl.period;
+  pickSel.onchange = function () { if (pickSel.value) pickPLPeriod(pickSel.value); };
+  pbar.appendChild(pickSel);
   root.appendChild(pbar);
-  if (!r.empty) root.appendChild(el('div', 'set-note', fmtRange(r)));
+  if (!r.empty) root.appendChild(el('div', 'set-note', r.label + ' · ' + fmtRange(r)));
 
   if (r.empty) {
-    root.appendChild(el('div', 'pl-empty', 'No completed month yet this year — check back once January has finished.'));
+    root.appendChild(el('div', 'pl-empty', 'No completed period yet this year — check back once Period 1 has finished.'));
     return;
   }
 
@@ -2297,7 +2367,7 @@ function renderPL(root) {
      but not the cache underneath it - restore from there rather than
      forcing a whole fresh pull just because the in-memory copy is gone. */
   if (!pl.data && !pl.loading) {
-    var restored = loadPLCache(pl.period);
+    var restored = loadPLCache(plCacheKey(pl.period));
     if (restored) { pl.data = restored.data; pl.fetchedAt = restored.fetchedAt; }
   }
 
@@ -2331,10 +2401,19 @@ function renderPL(root) {
   }
 
   var hasBudget = d.budget && d.budget.available;
+  /* Budget for THIS period: Xero's monthly budget turned into weeks and added up (plPeriodBudget). */
+  var pb = hasBudget ? plPeriodBudget(r, d.budget.byMonth) : null;
   var revenue = d.revenue.actual;
 
+  /* Pay runs post on a delay, so wages for the latest weeks of a period can
+     still be on their way - say so rather than quietly showing a profit that
+     is too high. */
+  if (d.payroll && d.payroll.pendingUntil) {
+    root.appendChild(el('div', 'banner banner-amber', 'Wages and owner wages only include pay runs posted so far - the last pay run for this period posts by ' + esc(d.payroll.pendingUntil) + '. Wages look lower, and profit higher, than they will once it lands.'));
+  }
+
   var topRow = el('div', 'pl-grid cols-3');
-  plStatCard(topRow, { label: 'Revenue', actual: revenue, fmt: 'money', goodDir: 'up', budget: hasBudget ? d.budget.revenue : null });
+  plStatCard(topRow, { label: 'Revenue', actual: revenue, fmt: 'money', goodDir: 'up', budget: pb ? pb.revenue : null });
   var periodDays = Math.round((r.to.getTime() - r.from.getTime()) / 86400000) + 1;
   var txTarget = SETTINGS.transactionsTargetWeekly ? (SETTINGS.transactionsTargetWeekly / 7) * periodDays : null;
   plStatCard(topRow, { label: 'Transactions', actual: d.transactions.actual, fmt: 'int', goodDir: 'up', budget: txTarget });
@@ -2349,7 +2428,7 @@ function renderPL(root) {
      without one), only the Total card is checked against a budget. */
   if (d.cogs) {
     var cogsRow = el('div', 'pl-grid cols-3');
-    plStatCard(cogsRow, { label: 'Total COGS % (FOH + BOH)', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.cogs : null, pctBase: revenue });
+    plStatCard(cogsRow, { label: 'Total COGS % (FOH + BOH)', actual: d.cogs.total, fmt: 'money', goodDir: 'down', budget: pb ? pb.cogs : null, pctBase: revenue });
     plStatCard(cogsRow, { label: 'FOH cost %', actual: d.cogs.foh, fmt: 'money', pctBase: revenue });
     plStatCard(cogsRow, { label: 'BOH cost %', actual: d.cogs.boh, fmt: 'money', pctBase: revenue });
     root.appendChild(cogsRow);
@@ -2357,7 +2436,7 @@ function renderPL(root) {
 
   if (d.wages) {
     var wagesRow = el('div', 'pl-grid cols-3');
-    plStatCard(wagesRow, { label: 'Total wages % (incl. super)', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.wages : null, pctBase: revenue });
+    plStatCard(wagesRow, { label: 'Total wages % (incl. super)', actual: d.wages.total, fmt: 'money', goodDir: 'down', budget: pb ? pb.wages : null, pctBase: revenue });
     if (d.wages.splitAvailable) {
       plStatCard(wagesRow, { label: 'FOH wages % (incl. super)', actual: d.wages.foh, fmt: 'money', pctBase: revenue });
       plStatCard(wagesRow, { label: 'BOH wages % (incl. super)', actual: d.wages.kitchenBoh, fmt: 'money', pctBase: revenue });
@@ -2370,31 +2449,31 @@ function renderPL(root) {
 
   var bottomRow = el('div', 'pl-grid cols-2');
   if (d.opex) {
-    plStatCard(bottomRow, { label: 'Opex', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: hasBudget ? d.budget.opex : null, pctBase: revenue });
+    plStatCard(bottomRow, { label: 'Opex', actual: d.opex.total, fmt: 'money', goodDir: 'down', budget: pb ? pb.opex : null, pctBase: revenue });
   }
   if (d.netProfit) {
-    plStatCard(bottomRow, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: hasBudget ? d.budget.netProfit : null });
+    plStatCard(bottomRow, { label: 'True net profit', actual: d.netProfit.actual, fmt: 'money', goodDir: 'up', total: true, budget: pb ? pb.netProfit : null });
   }
   root.appendChild(bottomRow);
 
   /* Catch-up panel - only meaningful mid-period. */
-  if (r.elapsedFraction < 1 && hasBudget) {
+  if (r.elapsedFraction < 1 && pb) {
     var lines = [];
-    var revGap = plCatchUpGap(d.revenue.actual, d.budget.revenue, r.elapsedFraction, 'up');
+    var revGap = plCatchUpGap(d.revenue.actual, pb.revenue, r.elapsedFraction, 'up');
     if (revGap) {
-      lines.push('$' + fmtInt(revGap) + ' more revenue needed to get back on pace this month.');
-      if (SETTINGS.avgSpendTarget) lines.push(fmtInt(Math.ceil(revGap / SETTINGS.avgSpendTarget)) + ' extra transactions needed this month to get back on pace, at your average spend target.');
+      lines.push('$' + fmtInt(revGap) + ' more revenue needed to get back on pace this period.');
+      if (SETTINGS.avgSpendTarget) lines.push(fmtInt(Math.ceil(revGap / SETTINGS.avgSpendTarget)) + ' extra transactions needed this period to get back on pace, at your average spend target.');
     }
     if (d.cogs) {
-      var cogsGap = plCatchUpGap(d.cogs.total, d.budget.cogs, r.elapsedFraction, 'down');
+      var cogsGap = plCatchUpGap(d.cogs.total, pb.cogs, r.elapsedFraction, 'down');
       if (cogsGap && d.revenue.actual) lines.push('Drop COGS by about ' + ((cogsGap / d.revenue.actual) * 100).toFixed(1) + '% of revenue to get back on pace.');
     }
     if (d.wages) {
-      var wageGap = plCatchUpGap(d.wages.total, d.budget.wages, r.elapsedFraction, 'down');
+      var wageGap = plCatchUpGap(d.wages.total, pb.wages, r.elapsedFraction, 'down');
       if (wageGap && d.revenue.actual) lines.push('Drop wages by about ' + ((wageGap / d.revenue.actual) * 100).toFixed(1) + '% of revenue to get back on pace.');
     }
     var cu = el('div', 'pl-catchup-card');
-    cu.appendChild(el('div', 'pl-catchup-title', 'Catch-up — prorated to today (' + Math.round(r.elapsedFraction * 100) + '% of the month elapsed)'));
+    cu.appendChild(el('div', 'pl-catchup-title', 'Catch-up — prorated to today (' + Math.round(r.elapsedFraction * 100) + '% of the period elapsed)'));
     if (lines.length) lines.forEach(function (t) { cu.appendChild(el('div', 'pl-catchup-row', esc(t))); });
     else cu.appendChild(el('div', 'pl-catchup-row', 'On pace or ahead across the board — nothing to catch up on.'));
     root.appendChild(cu);
