@@ -2699,6 +2699,8 @@ function renderOwnerInput(root) {
       var msg = oi.wages.reason === 'manual_mode' ? 'You’re in ‘I type them in’ mode, so there’s no Xero connection to pull pay drawn from.'
         : (oi.wages.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : (oi.wages.error || 'Not available right now.'));
       root.appendChild(el('div', 'banner banner-amber', msg));
+    } else if (oi.wages.actual == null) {
+      root.appendChild(el('div', 'banner banner-amber', 'This week’s pay run isn’t in ' + esc(P.accounting) + ' yet - it posts on the Wednesday after next Monday' + (oi.wages.pendingUntil ? ' (by ' + esc(oi.wages.pendingUntil) + ')' : '') + '. Run the Numbers again after that. Everything else for the week has still been saved.'));
     } else {
       var totalHours = entries.reduce(function (sum, e) { return sum + (e.ownerHours || 0); }, 0);
       var wageCard = el('div', 'oi-wage-card');

@@ -1076,6 +1076,48 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #19: owner reported owner wages "dipping" and wages missing for
+  // the latest week. Checked against their real Xero: pay runs post
+  // lumpily (nothing posted 1-7 Oct, two runs 8-14 Oct, nothing yet for
+  // the week ending 1 Nov), and History pulled STAFF wages from the
+  // payroll window (Thu after the week -> Wed after next Monday) but
+  // OWNER wages from the plain Mon-Sun window - two different pay runs on
+  // one row. Owner Input's "pay drawn" had the same mismatch. And a pay
+  // window still open stored a flat $0, which reads as "paid nothing".
+  // ================================================================
+  {
+    const pl = (owner) => xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: owner });
+    const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+    global.fetch = makeMockFetch([
+      { match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2026-08-20&toDate=2026-08-26') ? pl(222) : pl(111)) },
+      { match: 'TrackingCategories', body: { TrackingCategories: [] } }
+    ]);
+    const cookie = await login(env);
+    const json = await (await authedFetch(env, cookie, '/api/ownerwages?from=2026-08-17&to=2026-08-23')).json();
+    const rec = JSON.parse(env.TOKENS._store.get('history:week:2026-08-17'));
+    assert(rec.ownerWages === 222, 'owner wages: History takes them from the same payroll window as staff wages (222), not the plain Mon-Sun week (111), got ' + rec.ownerWages);
+    assert(json.actual === 222, 'owner wages: Owner Input pay drawn reads the same pay run, got ' + json.actual);
+  }
+  {
+    // a pay window that hasn't finished yet is UNKNOWN, never a stored $0
+    const now = new Date();
+    const dow = (now.getUTCDay() + 6) % 7;
+    const thisMon = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dow)).toISOString().slice(0, 10);
+    const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+    global.fetch = makeMockFetch([
+      { match: 'Reports/ProfitAndLoss', body: xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 0, opex: 1000, ownerWages: 0 }) },
+      { match: 'TrackingCategories', body: { TrackingCategories: [] } }
+    ]);
+    const cookie = await login(env);
+    const end = new Date(new Date(thisMon + 'T00:00:00Z').getTime() + 6 * 86400000).toISOString().slice(0, 10);
+    const json = await (await authedFetch(env, cookie, '/api/ownerwages?from=' + thisMon + '&to=' + end)).json();
+    const rec = JSON.parse(env.TOKENS._store.get('history:week:' + thisMon));
+    assert(rec.ownerWages === null, 'open pay window: owner wages stored as unknown (null), not $0, got ' + rec.ownerWages);
+    assert(rec.wages.total === undefined || rec.wages.total === null, 'open pay window: staff wages total is not stored as $0, got ' + JSON.stringify(rec.wages));
+    assert(json.available === true && json.actual === null && !!json.pendingUntil, 'open pay window: Owner Input says "not posted yet" rather than $0 drawn, got ' + JSON.stringify(json));
+  }
+
+  // ================================================================
   // BUG #14: OOLIO can genuinely fail to send a week's report at all
   // (confirmed live, repeatedly - their own developers acknowledged it
   // for one week; two more weeks showed the identical pattern the same

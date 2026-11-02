@@ -1809,7 +1809,13 @@ async function apiOwnerWages(env, url) {
     return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
   }
   try {
-    const split = await fetchXeroPLSplit(h, tenantId, from, to);
+    /* Pay drawn for the week = the owner wages in THAT week's pay run,
+       which posts in the payroll window (Thu after the week through the
+       Wed after next Monday), not inside the Mon-Sun week itself - the
+       plain window returned the PREVIOUS week's run. null while the
+       window is still open: not posted yet, not "$0 drawn". */
+    const pw = payrollWindow(from);
+    const split = pw.open ? null : await fetchXeroPLSplit(h, tenantId, pw.from, pw.to);
     await noteSync(env, 'accounting');
     /* Also extends this same "Run the Numbers" click to capture a full
        History snapshot (#3.4) for the week, since from/to here is always
@@ -1818,7 +1824,7 @@ async function apiOwnerWages(env, url) {
        must never break the owner-wage figure this endpoint has always
        returned, so it's wrapped in its own try/catch and swallowed. */
     try { await saveHistorySnapshot(env, h, tenantId, from); } catch (e) {}
-    return json({ available: true, actual: split.opex.ownerWages });
+    return json({ available: true, actual: split ? split.opex.ownerWages : null, pendingUntil: pw.open ? pw.to : null });
   } catch (err) {
     return json({ available: false, error: plainError(err.status || 500) });
   }
@@ -1864,6 +1870,21 @@ async function apiOwnerWages(env, url) {
    Operating Expenses total for the week, the same figure the P&L tab's
    "Opex total" already shows - replacing the old sheet's hand-typed
    "Cash Flow cost" with the real pulled number now that one exists. */
+/* The Xero window that holds a trading week's PAYROLL: processed the
+   following Monday, posted the Wednesday after - so Thu (week+3) through
+   the Wed after next Monday (weekEnd+3). `open` is true while that window
+   hasn't finished yet (today is on or before its last day): the pay run
+   can't be fully in Xero, so wages/owner wages are UNKNOWN, not zero.
+   CONFIRMED against the owner's real Xero: the run for the week ending 4
+   Oct never posted in Oct 1-7 (nothing at all), then two runs landed in
+   Oct 8-14 - and the week ending 1 Nov had nothing posted as of Mon 2 Nov
+   (it posts Wed 4 Nov), which History showed as a flat $0. */
+function payrollWindow(week) {
+  const from = shiftIsoDate(week, 3);
+  const to = shiftIsoDate(week, 9);
+  return { from, to, open: to >= new Date().toISOString().slice(0, 10) };
+}
+
 async function saveHistorySnapshot(env, h, tenantId, week) {
   const to = shiftIsoDate(week, 6);
   /* Payroll for this trading week is processed the following Monday but
@@ -1874,8 +1895,9 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
      already used for revenue's Tue-Mon posting delay (shiftIsoDate), just
      a different, wages-specific offset - querying the plain week window
      for wages would always come back empty/short. */
-  const wagesFrom = shiftIsoDate(week, 3);
-  const wagesTo = shiftIsoDate(to, 3);
+  const pw = payrollWindow(week);
+  const wagesFrom = pw.from;
+  const wagesTo = pw.to;
   const [split, staffHoursRaw, notesRaw, wagesFlatSplit] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
     env.TOKENS.get('ownerinput:staffhours:' + week),
@@ -1917,13 +1939,20 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
     source: 'live',
     bankFeeds: split.revenue, /* "Bank feeds" here means Xero's P&L "Total Trading Income" line for the week - explicit owner correction, was previously the sum of real BankTransactions (cash literally hitting the account), a different accrual-vs-cash figure entirely and the actual reason it kept looking wrong */
     cogs: { food: split.cogs.buckets.boh, bev: split.cogs.buckets.foh, retail: split.cogs.buckets.retail },
+    /* CONFIRMED LIVE BUG (fixed here): ownerWages used to come from the
+       plain Mon-Sun window (split) while staff wages came from the
+       payroll window above - two DIFFERENT pay runs on the same History
+       row (owner wages = the run for the week BEFORE). Owner wages are
+       in the same pay run as staff wages, so they come from the same
+       window. While that window is still open nothing is stored (null,
+       shown as a dash) rather than a $0 that reads as "we paid nothing". */
     wages: {
-      kitchen: wagesSplit ? wagesSplit.kitchenBoh : null,
-      foh: wagesSplit ? wagesSplit.foh : null,
+      kitchen: (!pw.open && wagesSplit) ? wagesSplit.kitchenBoh : null,
+      foh: (!pw.open && wagesSplit) ? wagesSplit.foh : null,
       hours: staffHours,
-      total: wagesFlatSplit.opex.wagesSuperExclOwner
+      total: pw.open ? null : wagesFlatSplit.opex.wagesSuperExclOwner
     },
-    ownerWages: split.opex.ownerWages,
+    ownerWages: pw.open ? null : wagesFlatSplit.opex.ownerWages,
     covers,
     opex: split.opex.opexTotal,
     /* Owner request: see inside the Opex box on the History-vs-Budget
