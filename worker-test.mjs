@@ -112,6 +112,20 @@ function oolioSalesSummaryPdf(count) {
   return makeSimplePdf(['Sales Summary', 'The Banksia Tree Cafe', count + ' $1000.00 $0.00 $0.00 $1000.00 $0.00 $1000.00']);
 }
 
+// Pins "now" for the code under test (new Date(), Date.now()). The Cash
+// Split quarter logic depends on the real calendar - whether the latest
+// quarter has settled yet - so those tests run at a fixed date instead of
+// quietly changing meaning as the real date moves on.
+const RealDate = Date;
+function useFixedDate(iso) {
+  const FIXED = new RealDate(iso + 'T12:00:00Z').getTime();
+  global.Date = class extends RealDate {
+    constructor(...a) { if (a.length === 0) super(FIXED); else super(...a); }
+    static now() { return FIXED; }
+  };
+}
+function restoreDate() { global.Date = RealDate; }
+
 function gmailMessageFull(from, subject, attachments) {
   return {
     payload: {
@@ -395,6 +409,7 @@ async function main() {
     assert(rec.cogs.food === 5000 && rec.cogs.retail === 0, 'null-merge: second pull updates cleanly, no stale/doubled values, got ' + JSON.stringify(rec.cogs));
   }
 
+  useFixedDate('2026-12-15'); // all four quarters (Oct 2025 - Sep 2026) are settled by then
   // ================================================================
   // BUG #6: Cash Split rates must come from the last 4 completed
   // quarters (a rolling year), not just the single most recent one -
@@ -518,6 +533,8 @@ async function main() {
     const expectedPct = 101439.59 / 948524.65;
     assert(json.pl && Math.abs(json.pl.cashPctRaw - expectedPct) < 0.0001, 'cashsplit cashPctRaw ~10.7%, got ' + (json.pl && (json.pl.cashPctRaw * 100).toFixed(2) + '%'));
   }
+
+  restoreDate();
 
   // ================================================================
   // BUG #8: "Bank feeds" in History means Xero's Total Trading Income
@@ -1175,6 +1192,54 @@ async function main() {
     global.fetch = makeMockFetch([{ match: 'Reports/ProfitAndLoss', body: pl(500, 200) }, { match: 'TrackingCategories', body: { TrackingCategories: [] } }]);
     const live = await (await authedFetch(env, cookie, '/api/pl?from=' + from + '&to=' + to)).json();
     assert(live.payroll && !!live.payroll.pendingUntil, 'P&L: a period still in progress says its last pay run is pending, got ' + JSON.stringify(live.payroll));
+  }
+
+  // ================================================================
+  // BUG #20: the Cash Split saved each quarter the FIRST time it was looked
+  // at - so a quarter loaded just after it closed (before late bank feed
+  // lines, bills and the last pay runs were in) stayed frozen incomplete:
+  // the owner's screen read COGS 23.41% / cash 8.86% against Xero's 23.39% /
+  // 8.89%. A quarter is now only saved once it has settled (6 weeks after
+  // it closes); until then it's fetched live. "Refresh rates" re-pulls.
+  // Old saved entries (no settle rule) are ignored via a new key version.
+  // ================================================================
+  {
+    const plBody = xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: 500 });
+    const run = async (isoDate, seedKv, steps) => {
+      useFixedDate(isoDate);
+      try {
+        const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1', ...(seedKv || {}) }), DASHBOARD_PASSCODE: PASSCODE };
+        let gst = 0, pl = 0;
+        global.fetch = makeMockFetch([
+          { match: 'BankTransactions', body: () => { gst++; return { BankTransactions: [] }; } },
+          { match: 'Payments', body: () => { gst++; return { Payments: [] }; } },
+          { match: 'Reports/ProfitAndLoss', body: () => { pl++; return plBody; } }
+        ]);
+        const cookie = await login(env);
+        const out = [];
+        for (const path of steps) { gst = 0; pl = 0; await authedFetch(env, cookie, path); out.push({ gst, pl }); }
+        return { out, env };
+      } finally { restoreDate(); }
+    };
+
+    // 9 Nov 2026: the Jul-Sep quarter closed 30 Sep, only 40 days ago - NOT settled
+    let r = await run('2026-11-09', null, ['/api/cashsplit', '/api/cashsplit']);
+    assert(r.out[0].gst === 16 && r.out[0].pl === 4, 'quarter settling: first load fetches all four quarters, got ' + JSON.stringify(r.out[0]));
+    assert(r.out[1].gst === 4 && r.out[1].pl === 1, 'quarter settling: the unsettled latest quarter is re-fetched live every time (4 GST + 1 P&L), the other three are served saved, got ' + JSON.stringify(r.out[1]));
+    assert(!r.env.TOKENS._store.has('xero:gst-quarter:v2:2026-07-01') && r.env.TOKENS._store.has('xero:gst-quarter:v2:2026-04-01'), 'quarter settling: the unsettled quarter is not saved, the settled ones are');
+
+    // 12 Nov 2026: 43 days after close - settled, so saved for good
+    r = await run('2026-11-12', null, ['/api/cashsplit', '/api/cashsplit']);
+    assert(r.out[1].gst === 0 && r.out[1].pl === 0 && r.env.TOKENS._store.has('xero:pl-quarter:v2:2026-07-01'), 'quarter settled: all four saved, second load makes no Xero calls, got ' + JSON.stringify(r.out[1]));
+
+    // Refresh rates re-pulls everything and ignores the saved copies
+    r = await run('2026-12-15', null, ['/api/cashsplit', '/api/cashsplit', '/api/cashsplit?refresh=1']);
+    assert(r.out[1].gst === 0 && r.out[2].gst === 16 && r.out[2].pl === 4, 'refresh: normal reload uses saved quarters, ?refresh=1 re-pulls all four, got ' + JSON.stringify(r.out));
+
+    // anything saved under the old rule is never trusted
+    const stale = JSON.stringify({ g1: 999, oneA: 999, oneB: 0, counts: {} });
+    r = await run('2026-12-15', { 'xero:gst-quarter:2026-07-01': stale, 'xero:gst-quarter:2026-04-01': stale, 'xero:gst-quarter:2026-01-01': stale, 'xero:gst-quarter:2025-10-01': stale }, ['/api/cashsplit']);
+    assert(r.out[0].gst === 16, 'old saved quarters (pre-settle rule) are ignored and re-fetched, got ' + JSON.stringify(r.out[0]));
   }
 
   // ================================================================

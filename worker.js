@@ -1217,23 +1217,41 @@ function quarterStepsInRange(from, to) {
    fetched one at a time, not in parallel, so even a cold cache (the very
    first load) spreads its Xero calls out instead of bursting all four
    quarters' worth at once. */
-async function fetchXeroCashBasisGstCached(env, h, tenantId, qFrom, qTo) {
-  const cacheKey = 'xero:gst-quarter:' + qFrom;
-  if (env.TOKENS) {
+/* A quarter only counts as SETTLED - safe to save for good - once enough
+   time has passed after it closed for late bank-feed lines, bills and the
+   last pay runs to have been entered. 6 weeks. CONFIRMED against the
+   owner's screen: saving a quarter the first time it was looked at (the
+   first load after it closed) froze it a few hundred dollars short of
+   what Xero held a month later - 23.41% vs 23.39% COGS, 8.86% vs 8.89%
+   cash. Until it settles it is fetched live every time. */
+const QUARTER_SETTLE_DAYS = 42;
+function quarterSettled(qTo) {
+  return new Date(qTo + 'T00:00:00Z').getTime() + QUARTER_SETTLE_DAYS * 86400000 <= Date.now();
+}
+
+/* The ":v2:" in these keys is deliberate: anything saved under the old
+   rule (no settle period) may already hold a quarter frozen too early, so
+   the old entries are simply never read again and everything re-fetches
+   once. `refresh` (the Cash Split tab's "Refresh rates" button) skips the
+   saved copy and re-pulls. */
+async function fetchXeroCashBasisGstCached(env, h, tenantId, qFrom, qTo, refresh) {
+  const cacheKey = 'xero:gst-quarter:v2:' + qFrom;
+  const settled = quarterSettled(qTo);
+  if (env.TOKENS && settled && !refresh) {
     const cached = await env.TOKENS.get(cacheKey);
     if (cached) { try { return JSON.parse(cached); } catch (e) {} }
   }
   const bas = await fetchXeroCashBasisGst(h, tenantId, qFrom, qTo);
-  if (env.TOKENS) { try { await env.TOKENS.put(cacheKey, JSON.stringify(bas)); } catch (e) {} }
+  if (env.TOKENS && settled) { try { await env.TOKENS.put(cacheKey, JSON.stringify(bas)); } catch (e) {} }
   return bas;
 }
 
-async function fetchXeroCashBasisGstOverRange(env, h, tenantId, from, to) {
+async function fetchXeroCashBasisGstOverRange(env, h, tenantId, from, to, refresh) {
   const quarters = quarterStepsInRange(from, to);
   let g1 = 0, oneA = 0, oneB = 0;
   const counts = { bankReceive: 0, bankSpend: 0, invoicePayments: 0, billPayments: 0 };
   for (const q of quarters) {
-    const bas = await fetchXeroCashBasisGstCached(env, h, tenantId, q.from, q.to);
+    const bas = await fetchXeroCashBasisGstCached(env, h, tenantId, q.from, q.to, refresh);
     g1 += bas.g1; oneA += bas.oneA; oneB += bas.oneB;
     for (const k of Object.keys(counts)) counts[k] += (bas.counts && bas.counts[k]) || 0;
   }
@@ -1252,22 +1270,23 @@ async function fetchXeroCashBasisGstOverRange(env, h, tenantId, from, to) {
    same reasoning: a completed quarter's P&L never changes, so cache each
    quarter's totals in KV indefinitely and only ever live-fetch whichever
    quarter isn't cached yet. */
-async function fetchXeroPLCached(env, h, tenantId, qFrom, qTo) {
-  const cacheKey = 'xero:pl-quarter:' + qFrom;
-  if (env.TOKENS) {
+async function fetchXeroPLCached(env, h, tenantId, qFrom, qTo, refresh) {
+  const cacheKey = 'xero:pl-quarter:v2:' + qFrom;
+  const settled = quarterSettled(qTo);
+  if (env.TOKENS && settled && !refresh) {
     const cached = await env.TOKENS.get(cacheKey);
     if (cached) { try { return JSON.parse(cached); } catch (e) {} }
   }
   const pl = await fetchXeroPL(h, tenantId, qFrom, qTo);
-  if (env.TOKENS) { try { await env.TOKENS.put(cacheKey, JSON.stringify(pl)); } catch (e) {} }
+  if (env.TOKENS && settled) { try { await env.TOKENS.put(cacheKey, JSON.stringify(pl)); } catch (e) {} }
   return pl;
 }
 
-async function fetchXeroPLOverRange(env, h, tenantId, from, to) {
+async function fetchXeroPLOverRange(env, h, tenantId, from, to, refresh) {
   const quarters = quarterStepsInRange(from, to);
   let revenue = 0, cogs = 0, wagesSuper = 0, overheads = 0, netProfit = 0, netProfitKnown = true;
   for (const q of quarters) {
-    const pl = await fetchXeroPLCached(env, h, tenantId, q.from, q.to);
+    const pl = await fetchXeroPLCached(env, h, tenantId, q.from, q.to, refresh);
     revenue += pl.revenue; cogs += pl.cogs; wagesSuper += pl.wagesSuper; overheads += pl.overheads;
     if (pl.netProfit == null) netProfitKnown = false; else netProfit += pl.netProfit;
   }
@@ -1282,7 +1301,8 @@ async function fetchXeroPLOverRange(env, h, tenantId, from, to) {
    the rest of the payload" approach as fetchSlot - a missing/unparsable BAS
    report shouldn't also hide COGS/Cash, and vice versa.
 ---------------------------------------------------------------------------- */
-async function apiCashSplit(env) {
+async function apiCashSplit(env, url) {
+  const refresh = !!(url && url.searchParams && url.searchParams.get('refresh') === '1');
   const adapter = ADAPTERS.accounting;
   if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
 
@@ -1305,7 +1325,7 @@ async function apiCashSplit(env) {
 
   let gst = null, gstError = null;
   try {
-    const bas = await fetchXeroCashBasisGstOverRange(env, h, tenantId, period.from, period.to);
+    const bas = await fetchXeroCashBasisGstOverRange(env, h, tenantId, period.from, period.to, refresh);
     gst = { pct: bas.gstPct, g1: bas.g1, oneA: bas.oneA, oneB: bas.oneB, counts: bas.counts };
   } catch (err) {
     /* TEMP: appending raw diagnostic detail after the friendly message while
@@ -1338,7 +1358,7 @@ async function apiCashSplit(env) {
        from the P&L tab's/History's own "True net profit", which pulls
        owner wages out as a separate line. cogsPct is unchanged (revenue
        and cogs totals, not disputed). */
-    const r = await fetchXeroPLOverRange(env, h, tenantId, period.from, period.to);
+    const r = await fetchXeroPLOverRange(env, h, tenantId, period.from, period.to, refresh);
     const netRevenue = r.revenue - r.cogs;
     const netProfit = r.netProfit;
     const cogsPct = r.revenue ? r.cogs / r.revenue : 0;
@@ -3566,7 +3586,7 @@ export default {
     }
     if (path === '/api/cashsplit' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
-      return apiCashSplit(env);
+      return apiCashSplit(env, url);
     }
     if (path === '/api/pl' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
