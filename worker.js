@@ -889,12 +889,14 @@ async function apiPL(env, url) {
      Wednesday after that, so the pay run recorded inside a week is the
      PREVIOUS week's work. Same rule History uses (owner instruction:
      "the P&L should run the exact same way"), so the two tabs agree.
-     Shifting the whole period by 3 days takes the first week's run to the
-     Thursday-start and the last week's run to the Wednesday after the
+     Shifting the whole period by PAYROLL_LAG_DAYS (4: Friday to Thursday,
+     so a pay run delayed from Wednesday to Thursday by a Monday public
+     holiday stays in ITS week's window) takes the first week's run to
+     the Friday-start and the last week's run to the Thursday after the
      period ends. Anything past today isn't posted yet - reported as
      payroll.pendingUntil, never silently shown as a finished figure. */
-  const wagesFrom = shiftIsoDate(from, 3);
-  const wagesTo = shiftIsoDate(to, 3);
+  const wagesFrom = shiftIsoDate(from, PAYROLL_LAG_DAYS);
+  const wagesTo = shiftIsoDate(to, PAYROLL_LAG_DAYS);
   const todayIso = new Date().toISOString().slice(0, 10);
   let wagesFlat = null;
   try {
@@ -1855,13 +1857,18 @@ async function apiOwnerWages(env, url) {
     return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) });
   }
   try {
-    /* Pay drawn for the week = the owner wages in THAT week's pay run,
-       which posts in the payroll window (Thu after the week through the
-       Wed after next Monday), not inside the Mon-Sun week itself - the
-       plain window returned the PREVIOUS week's run. null while the
-       window is still open: not posted yet, not "$0 drawn". */
-    const pw = payrollWindow(from);
-    const split = pw.open ? null : await fetchXeroPLSplit(h, tenantId, pw.from, pw.to);
+    /* Pay drawn "this week" = what Xero shows was drawn inside this
+       Mon-Sun week: the Wednesday (or Thursday, after a Monday public
+       holiday) pay run that posts DURING the week. This is the original
+       behaviour and the owner's Monday routine - they run the numbers on
+       the Monday, and only THEN schedule that week's pay run, so the
+       run that is already in Xero on the Monday is the one paid last
+       Wednesday. A previous change here switched this to the work-week
+       payroll window, which can never be posted yet on a Monday and
+       made Run the Numbers answer "pay run isn't posted yet" every
+       single week - reverted. (History's per-week wage columns still use
+       the work-week payroll window; see saveHistorySnapshot.) */
+    const split = await fetchXeroPLSplit(h, tenantId, from, to);
     await noteSync(env, 'accounting');
     /* Also extends this same "Run the Numbers" click to capture a full
        History snapshot (#3.4) for the week, since from/to here is always
@@ -1870,7 +1877,15 @@ async function apiOwnerWages(env, url) {
        must never break the owner-wage figure this endpoint has always
        returned, so it's wrapped in its own try/catch and swallowed. */
     try { await saveHistorySnapshot(env, h, tenantId, from); } catch (e) {}
-    return json({ available: true, actual: split ? split.opex.ownerWages : null, pendingUntil: pw.open ? pw.to : null });
+    /* History's wage columns for a week can only be filled once ITS pay
+       run has posted - which is after that week's own Monday run. So
+       every Monday run also tops up the two weeks before this one if
+       their wages are still blank (or a stale $0 saved while the pay run
+       hadn't posted) and their pay window has now closed. Best-effort,
+       one week at a time (Xero allows few concurrent calls), never
+       affecting the figure returned below. */
+    try { await backfillHistoryWages(env, h, tenantId, from); } catch (e) {}
+    return json({ available: true, actual: split.opex.ownerWages });
   } catch (err) {
     return json({ available: false, error: plainError(err.status || 500) });
   }
@@ -1917,18 +1932,44 @@ async function apiOwnerWages(env, url) {
    "Opex total" already shows - replacing the old sheet's hand-typed
    "Cash Flow cost" with the real pulled number now that one exists. */
 /* The Xero window that holds a trading week's PAYROLL: processed the
-   following Monday, posted the Wednesday after - so Thu (week+3) through
-   the Wed after next Monday (weekEnd+3). `open` is true while that window
+   following Monday, posted the Wednesday after (Thursday after a Monday
+   public holiday) - so Fri (week+4) through Thu (weekEnd+4); see
+   PAYROLL_LAG_DAYS below. `open` is true while that window
    hasn't finished yet (today is on or before its last day): the pay run
    can't be fully in Xero, so wages/owner wages are UNKNOWN, not zero.
    CONFIRMED against the owner's real Xero: the run for the week ending 4
    Oct never posted in Oct 1-7 (nothing at all), then two runs landed in
    Oct 8-14 - and the week ending 1 Nov had nothing posted as of Mon 2 Nov
    (it posts Wed 4 Nov), which History showed as a flat $0. */
+/* Owner-confirmed pay rhythm (never changes): the pay week runs Mon-Sun,
+   the numbers are run on the Monday after, THEN the pay run is scheduled
+   and processed, and it is paid on that Wednesday - or the THURSDAY when
+   that Monday is a public holiday (e.g. Labour Day Mon 5 Oct 2026 pushed
+   the week-ending-4-Oct run to Thu 8 Oct, which the old Thu-Wed window
+   missed and counted in the NEXT week). So a week's pay run lands on
+   Wed/Thu = week+9 / week+10. The window runs Friday (week+4) to Thursday
+   (week+10): that excludes the PREVIOUS week's run even when it was
+   delayed to its Thursday (week+3), and includes this week's run whether
+   it was paid on the Wednesday or the Thursday. */
+const PAYROLL_LAG_DAYS = 4;
 function payrollWindow(week) {
-  const from = shiftIsoDate(week, 3);
-  const to = shiftIsoDate(week, 9);
+  const from = shiftIsoDate(week, PAYROLL_LAG_DAYS);
+  const to = shiftIsoDate(week, 6 + PAYROLL_LAG_DAYS);
   return { from, to, open: to >= new Date().toISOString().slice(0, 10) };
+}
+
+/* Re-snapshot up to the two weeks before `week` when their stored wages
+   are missing/$0 and their pay window is now closed (see apiOwnerWages). */
+async function backfillHistoryWages(env, h, tenantId, week) {
+  for (let back = 1; back <= 2; back++) {
+    const prev = shiftIsoDate(week, -7 * back);
+    if (payrollWindow(prev).open) continue;
+    let rec = null;
+    try { rec = JSON.parse(await env.TOKENS.get('history:week:' + prev)); } catch (e) {}
+    const total = rec && rec.wages ? rec.wages.total : null;
+    if (!rec || (total != null && total !== 0)) continue;
+    await saveHistorySnapshot(env, h, tenantId, prev);
+  }
 }
 
 async function saveHistorySnapshot(env, h, tenantId, week) {

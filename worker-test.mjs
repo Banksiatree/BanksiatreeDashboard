@@ -279,8 +279,8 @@ async function main() {
   {
     const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
     global.fetch = makeMockFetch([
-      // the wage split is pulled on the PAYROLL window (period + 3 days: 27 Aug - 2 Sep), same as History
-      { match: 'Reports/ProfitAndLoss?fromDate=2026-08-27&toDate=2026-09-02&trackingCategoryID', body: {
+      // the wage split is pulled on the PAYROLL window (period + 4 days, Fri-Thu: 28 Aug - 3 Sep), same as History
+      { match: 'Reports/ProfitAndLoss?fromDate=2026-08-28&toDate=2026-09-03&trackingCategoryID', body: {
         Reports: [{ Rows: [
           { RowType: 'Header', Cells: [{ Value: '' }, { Value: 'Admin' }, { Value: 'BOH' }, { Value: 'FOH' }] },
           { RowType: 'Section', Title: 'Less Operating Expenses', Rows: [
@@ -332,11 +332,12 @@ async function main() {
     ]);
     const cookie = await login(env);
     // 2026-08-17 is a Monday (week ending 2026-08-23) - payroll should be
-    // queried on 2026-08-20 to 2026-08-26 (both dates +3).
+    // queried on 2026-08-21 to 2026-08-27 (both dates +4: Friday to Thursday,
+    // so a Thursday pay run after a Monday public holiday still counts).
     await authedFetch(env, cookie, '/api/ownerwages?from=2026-08-17&to=2026-08-23');
     const wagesUrl = seenWagesUrls[0] || '';
-    assert(wagesUrl.includes('fromDate=2026-08-20'), 'wages lag: shifted window starts 2026-08-20 (week start +3), got ' + wagesUrl);
-    assert(wagesUrl.includes('toDate=2026-08-26'), 'wages lag: shifted window ends 2026-08-26 (week end +3), got ' + wagesUrl);
+    assert(wagesUrl.includes('fromDate=2026-08-21'), 'wages lag: shifted window starts Fri 2026-08-21 (week start +4), got ' + wagesUrl);
+    assert(wagesUrl.includes('toDate=2026-08-27'), 'wages lag: shifted window ends Thu 2026-08-27 (week end +4), got ' + wagesUrl);
   }
 
   // ================================================================
@@ -1108,14 +1109,14 @@ async function main() {
     const pl = (owner) => xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: owner });
     const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
     global.fetch = makeMockFetch([
-      { match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2026-08-20&toDate=2026-08-26') ? pl(222) : pl(111)) },
+      { match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2026-08-21&toDate=2026-08-27') ? pl(222) : pl(111)) },
       { match: 'TrackingCategories', body: { TrackingCategories: [] } }
     ]);
     const cookie = await login(env);
     const json = await (await authedFetch(env, cookie, '/api/ownerwages?from=2026-08-17&to=2026-08-23')).json();
     const rec = JSON.parse(env.TOKENS._store.get('history:week:2026-08-17'));
     assert(rec.ownerWages === 222, 'owner wages: History takes them from the same payroll window as staff wages (222), not the plain Mon-Sun week (111), got ' + rec.ownerWages);
-    assert(json.actual === 222, 'owner wages: Owner Input pay drawn reads the same pay run, got ' + json.actual);
+    assert(json.actual === 111, 'Run the Numbers: Owner Input pay drawn is what Xero shows drawn INSIDE the Mon-Sun week (the run posted that Wed/Thu), so it is there on the Monday - not the later work-week run, got ' + json.actual);
   }
   {
     // a pay window that hasn't finished yet is UNKNOWN, never a stored $0
@@ -1133,7 +1134,46 @@ async function main() {
     const rec = JSON.parse(env.TOKENS._store.get('history:week:' + thisMon));
     assert(rec.ownerWages === null, 'open pay window: owner wages stored as unknown (null), not $0, got ' + rec.ownerWages);
     assert(rec.wages.total === undefined || rec.wages.total === null, 'open pay window: staff wages total is not stored as $0, got ' + JSON.stringify(rec.wages));
-    assert(json.available === true && json.actual === null && !!json.pendingUntil, 'open pay window: Owner Input says "not posted yet" rather than $0 drawn, got ' + JSON.stringify(json));
+    assert(json.available === true && json.pendingUntil === undefined, 'Run the Numbers never answers "pay run not posted yet" - it reads the pay drawn inside the week (regression: it did every Monday), got ' + JSON.stringify(json));
+  }
+
+
+  // ================================================================
+  // BUG #21: owner said Run the Numbers answered "pay run isn't posted
+  // yet" EVERY Monday. Their rhythm never changes: pay week Mon-Sun, run
+  // the numbers on the Monday, THEN schedule the pay run, paid Wednesday
+  // (Thursday if that Monday is a public holiday). So (a) the Owner Input
+  // pay-drawn figure is what's already in Xero inside the week (reverted
+  // to the original), (b) the payroll window is Fri-Thu so a Thursday
+  // holiday run lands in ITS week, and (c) each Monday run tops up the
+  // previous weeks' History wages once their pay run has posted.
+  // ================================================================
+  {
+    const pl = (wages) => xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages, opex: 1000, ownerWages: 50 });
+    const env = {
+      TOKENS: xeroKv({
+        'xero:tenantId': 'tenant-1',
+        // saved while that week's pay run hadn't posted yet: a stale $0
+        'history:week:2026-08-10': JSON.stringify({ week: '2026-08-10', weekEnding: '2026-08-16', source: 'live', wages: { total: 0 }, ownerWages: 0 }),
+        // already has real wages: must not be re-fetched or touched
+        'history:week:2026-08-03': JSON.stringify({ week: '2026-08-03', weekEnding: '2026-08-09', source: 'live', wages: { total: 7500 }, ownerWages: 3000 })
+      }),
+      DASHBOARD_PASSCODE: PASSCODE
+    };
+    const seen = [];
+    global.fetch = makeMockFetch([
+      { match: 'Reports/ProfitAndLoss', body: (u) => { seen.push(u); return pl(u.includes('fromDate=2026-08-14&toDate=2026-08-20') ? 4321 : 111); } },
+      { match: 'TrackingCategories', body: { TrackingCategories: [] } }
+    ]);
+    const cookie = await login(env);
+    const json = await (await authedFetch(env, cookie, '/api/ownerwages?from=2026-08-17&to=2026-08-23')).json();
+    assert(json.available === true && json.actual !== null, 'Monday run: pay drawn is available straight away, got ' + JSON.stringify(json));
+    const prev = JSON.parse(env.TOKENS._store.get('history:week:2026-08-10'));
+    assert(prev.wages.total > 0 && prev.wages.total !== 0, 'Monday run tops up the previous week whose wages were a stale $0, got ' + JSON.stringify(prev.wages));
+    assert(seen.some((u) => u.includes('fromDate=2026-08-14&toDate=2026-08-20')), 'the top-up read the previous week\'s own Fri-Thu pay window (14-20 Aug)');
+    const prev2 = JSON.parse(env.TOKENS._store.get('history:week:2026-08-03'));
+    assert(prev2.wages.total === 7500 && prev2.ownerWages === 3000, 'a previous week that already has real wages is left alone, got ' + JSON.stringify(prev2));
+    assert(!seen.some((u) => u.includes('fromDate=2026-08-07&toDate=2026-08-13')), 'no pointless Xero pull for a week that is already complete');
   }
 
   // ================================================================
@@ -1175,17 +1215,17 @@ async function main() {
     assert(nb.revenue === null && nb.netProfit === null, 'period budget: a week in a month with no budget gives null, never a part-total, got ' + JSON.stringify(nb));
   }
   {
-    // /api/pl wages and owner wages come from the payroll window (period + 3 days)
+    // /api/pl wages and owner wages come from the payroll window (period + 4 days, Fri-Thu)
     const pl = (wages, owner) => xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages, opex: 1000, ownerWages: owner });
     const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
     global.fetch = makeMockFetch([
-      { match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2026-08-06&toDate=2026-09-02') ? pl(1000, 400) : pl(111, 11)) },
+      { match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2026-08-07&toDate=2026-09-03') ? pl(1000, 400) : pl(111, 11)) },
       { match: 'TrackingCategories', body: { TrackingCategories: [] } }
     ]);
     const cookie = await login(env);
     const d = await (await authedFetch(env, cookie, '/api/pl?from=2026-08-03&to=2026-08-30')).json();
     assert(d.wages && d.wages.total === 1000 && d.ownerWages && d.ownerWages.actual === 400, 'P&L: wages (1000) and owner wages (400) come from the payroll window, not the plain period (111/11), got ' + JSON.stringify({ w: d.wages && d.wages.total, o: d.ownerWages && d.ownerWages.actual }));
-    assert(d.payroll && d.payroll.from === '2026-08-06' && d.payroll.to === '2026-09-02' && d.payroll.pendingUntil === null, 'P&L: a finished period reports its payroll window and nothing pending, got ' + JSON.stringify(d.payroll));
+    assert(d.payroll && d.payroll.from === '2026-08-07' && d.payroll.to === '2026-09-03' && d.payroll.pendingUntil === null, 'P&L: a finished period reports its payroll window and nothing pending, got ' + JSON.stringify(d.payroll));
     assert(d.opex && d.opex.total === 1000 && d.cogs, 'P&L: COGS/Opex still come from the plain period');
     // period still in progress: pay runs may be on their way
     const today = new Date(); const from = new Date(today.getTime() - 10 * 86400000).toISOString().slice(0, 10); const to = today.toISOString().slice(0, 10);
