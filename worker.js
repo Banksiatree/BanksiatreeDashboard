@@ -897,7 +897,7 @@ async function apiPL(env, url) {
      payroll.pendingUntil, never silently shown as a finished figure. */
   const wagesFrom = shiftIsoDate(from, PAYROLL_LAG_DAYS);
   const wagesTo = shiftIsoDate(to, PAYROLL_LAG_DAYS);
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = todaySydneyIso();
   let wagesFlat = null;
   try {
     wagesFlat = await fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo);
@@ -1956,17 +1956,35 @@ async function apiOwnerWages(env, url) {
    delayed to its Thursday (week+3), and includes this week's run whether
    it was paid on the Wednesday or the Thursday. */
 const PAYROLL_LAG_DAYS = 4;
+/* Today's date in the VENUE's timezone (Sydney), not UTC: the old UTC date
+   was a day behind until 11am Sydney, so on a Wednesday morning the pay
+   run that had already posted was still treated as "not posted yet". */
+function todaySydneyIso() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  } catch (e) {
+    return new Date(Date.now() + 11 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+}
+/* open      = the normal pay day (the Wednesday, week+9) hasn't arrived yet:
+               wages are unknown.
+   maybeLate = the Wednesday has arrived but the Thursday (a Monday public
+               holiday pushes pay to Thursday) hasn't ended: if nothing has
+               posted yet that's still "unknown", not $0; if the run IS
+               there (the usual case) it's used straight away - no waiting
+               for Friday. */
 function payrollWindow(week) {
   const from = shiftIsoDate(week, PAYROLL_LAG_DAYS);
   const to = shiftIsoDate(week, 6 + PAYROLL_LAG_DAYS);
-  return { from, to, open: to >= new Date().toISOString().slice(0, 10) };
+  const payDay = shiftIsoDate(week, 9);
+  const today = todaySydneyIso();
+  return { from, to, open: today < payDay, maybeLate: today >= payDay && today <= to };
 }
 
-/* Re-snapshot up to the two weeks before `week` when their stored wages
-   are missing/$0 and their pay window is now closed (see apiOwnerWages). */
-async function backfillHistoryWages(env, h, tenantId, week) {
-  for (let back = 1; back <= 2; back++) {
-    const prev = shiftIsoDate(week, -7 * back);
+/* Re-snapshot the given weeks when their stored wages are missing/$0 and
+   their pay day has passed. */
+async function topUpHistoryWages(env, h, tenantId, weeks) {
+  for (const prev of weeks) {
     if (payrollWindow(prev).open) continue;
     let rec = null;
     try { rec = JSON.parse(await env.TOKENS.get('history:week:' + prev)); } catch (e) {}
@@ -1974,6 +1992,21 @@ async function backfillHistoryWages(env, h, tenantId, week) {
     if (!rec || (total != null && total !== 0)) continue;
     await saveHistorySnapshot(env, h, tenantId, prev);
   }
+}
+/* Every Monday's Run the Numbers tops up the two weeks before it. */
+async function backfillHistoryWages(env, h, tenantId, week) {
+  await topUpHistoryWages(env, h, tenantId, [shiftIsoDate(week, -7), shiftIsoDate(week, -14)]);
+}
+/* The daily background job tops up the last four finished weeks, so a pay
+   run posted on the Wednesday shows in History without anyone clicking. */
+async function backfillRecentHistoryWages(env) {
+  const h = makeHelpers(env, 'accounting');
+  const tenantId = await xeroTenantId(env, h);
+  const today = todaySydneyIso();
+  const [y, m, d] = today.split('-').map(Number);
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
+  const thisMon = shiftIsoDate(today, -dow);
+  await topUpHistoryWages(env, h, tenantId, [1, 2, 3, 4].map((k) => shiftIsoDate(thisMon, -7 * k)));
 }
 
 async function saveHistorySnapshot(env, h, tenantId, week) {
@@ -1995,6 +2028,12 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
     env.TOKENS.get('ownerinput:notes:' + week),
     fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo)
   ]);
+
+  /* Unknown (stored as null, shown as a dash) - never a $0 that reads as
+     "we paid nothing": before the normal pay day, or on/after it but
+     still inside the Thursday grace with nothing posted yet. Once the
+     run is in Xero it is used immediately. */
+  const wagesUnknown = pw.open || (pw.maybeLate && !wagesFlatSplit.opex.wagesSuperExclOwner);
 
   let wagesSplit = null;
   const trackingCategoryId = await xeroTrackingCategoryId(env, h, tenantId, 'labour');
@@ -2038,12 +2077,12 @@ async function saveHistorySnapshot(env, h, tenantId, week) {
        window. While that window is still open nothing is stored (null,
        shown as a dash) rather than a $0 that reads as "we paid nothing". */
     wages: {
-      kitchen: (!pw.open && wagesSplit) ? wagesSplit.kitchenBoh : null,
-      foh: (!pw.open && wagesSplit) ? wagesSplit.foh : null,
+      kitchen: (!wagesUnknown && wagesSplit) ? wagesSplit.kitchenBoh : null,
+      foh: (!wagesUnknown && wagesSplit) ? wagesSplit.foh : null,
       hours: staffHours,
-      total: pw.open ? null : wagesFlatSplit.opex.wagesSuperExclOwner
+      total: wagesUnknown ? null : wagesFlatSplit.opex.wagesSuperExclOwner
     },
-    ownerWages: pw.open ? null : wagesFlatSplit.opex.ownerWages,
+    ownerWages: wagesUnknown ? null : wagesFlatSplit.opex.ownerWages,
     covers,
     opex: split.opex.opexTotal,
     /* Owner request: see inside the Opex box on the History-vs-Budget
@@ -3788,6 +3827,15 @@ export default {
       }
     } catch (e) {
       console.log('gmail OOLIO poll failed: ' + (e && e.message));
+    }
+    /* Pay runs post on the Wednesday (Thursday after a Monday holiday),
+       after the Monday Run the Numbers - so fill in any recent week's
+       wages that are still blank, automatically. */
+    try {
+      const adapter = ADAPTERS.accounting;
+      if (adapter && adapter.configured) await backfillRecentHistoryWages(env);
+    } catch (e) {
+      console.log('history wages top-up failed: ' + (e && e.message));
     }
   },
 
