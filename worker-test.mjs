@@ -1305,6 +1305,13 @@ async function main() {
     assert(rec.revenue.food === 13314.81 && rec.revenue.bev === 7272.13 && rec.revenue.retail === 544.88 && rec.revenue.event === 371, 'manual revenue: figures land in History exactly as typed, got ' + JSON.stringify(rec.revenue));
     assert(rec.revenueSource === 'manual', 'manual revenue: tagged revenueSource:manual, not oolio, got ' + rec.revenueSource);
     assert(rec.covers === undefined, 'manual revenue: an empty covers field is left alone rather than written as 0/NaN, got ' + rec.covers);
+    // figures copied from a real exported OOLIO report are filed AS an OOLIO report
+    await authedFetch(env, cookie, '/api/history/manual-revenue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: '2026-09-14', source: 'oolio', food: 1, bev: 2, retail: 3, event: 4, uncategorised: 5 })
+    });
+    const rec2 = JSON.parse(env.TOKENS._store.get('history:week:2026-09-14'));
+    assert(rec2.revenueSource === 'oolio' && rec2.revenue.food === 1, 'manual revenue: source:oolio files figures from an exported OOLIO report as an OOLIO report, got ' + rec2.revenueSource);
   }
   {
     // A week with a real transaction count too, and where a live pull had

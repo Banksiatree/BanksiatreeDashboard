@@ -1766,7 +1766,11 @@ async function apiHistoryManualRevenue(env, request) {
     food: num(body.food), bev: num(body.bev), event: num(body.event),
     retail: num(body.retail), uncategorised: num(body.uncategorised)
   };
-  const patch = { revenue, revenueSource: 'manual' };
+  /* source:'oolio' = the figures were copied from a real OOLIO Reporting
+     Groups report the owner exported themselves (a downloaded CSV/PDF for
+     a week whose email never arrived or was wrong) - that IS an OOLIO
+     report and is filed as one. Anything else stays 'manual'. */
+  const patch = { revenue, revenueSource: body.source === 'oolio' ? 'oolio' : 'manual' };
   const coversNum = parseFloat(body.covers);
   if (isFinite(coversNum)) patch.covers = coversNum;
   const merged = await mergeHistoryWeek(env, week, patch);
