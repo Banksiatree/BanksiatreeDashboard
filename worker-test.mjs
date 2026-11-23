@@ -1197,6 +1197,33 @@ async function main() {
   }
 
   // ================================================================
+  // BUG #23: owner: "why do my targets etc always reset???". Settings
+  // (targets, weeks in month, transaction/avg-spend/opex targets...) lived
+  // only in the browser's localStorage, so clearing site data / Safari's
+  // 7-day clean-up / a private window / another device wiped them. Now
+  // stored on the server (KV) and synced by the page.
+  // ================================================================
+  {
+    const env = { TOKENS: makeKV(), DASHBOARD_PASSCODE: PASSCODE };
+    const anon = await worker.fetch(new Request('https://x.test/api/settings'), env);
+    assert(anon.status === 401, 'settings: not available without logging in, got ' + anon.status);
+    const cookie = await login(env);
+    let g = await (await authedFetch(env, cookie, '/api/settings')).json();
+    assert(g.settings === null, 'settings: nothing saved yet reads back as null, got ' + JSON.stringify(g));
+    const mine = { targets: { cogs: 27, wage: 31, overheads: 29, profit: 12, acs: 32, acsLow: 30 }, transactionsTargetWeekly: 800, avgSpendTarget: 34.5, weeksInMonth: [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5], opexTargetWeekly: 2700 };
+    const post = await authedFetch(env, cookie, '/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: mine }) });
+    assert(post.status === 200, 'settings: save succeeds');
+    g = await (await authedFetch(env, cookie, '/api/settings')).json();
+    assert(JSON.stringify(g.settings) === JSON.stringify(mine), 'settings: the owner\'s targets read back exactly as saved (so any browser/device gets them), got ' + JSON.stringify(g.settings));
+    const bad = await authedFetch(env, cookie, '/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: 'nope' }) });
+    assert(bad.status === 400, 'settings: a non-object is refused, got ' + bad.status);
+    const big = await authedFetch(env, cookie, '/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { x: 'a'.repeat(30000) } }) });
+    assert(big.status === 413, 'settings: an oversized object is refused, got ' + big.status);
+    g = await (await authedFetch(env, cookie, '/api/settings')).json();
+    assert(g.settings && g.settings.avgSpendTarget === 34.5, 'settings: a refused save leaves the saved targets untouched');
+  }
+
+  // ================================================================
   // P&L on 13 four-week periods (owner instruction) with wages from the
   // payroll window. The period/budget maths lives in dashboard.html, so
   // this lifts those exact functions out of the real file and runs them

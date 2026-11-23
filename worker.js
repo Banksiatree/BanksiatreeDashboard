@@ -1742,6 +1742,30 @@ async function apiOwnerInputNotes(env, request) {
   return json({ ok: true });
 }
 
+/* The owner's Settings (targets, weeks in month, transaction/avg-spend/opex
+   targets, tolerances, surcharge/tax %, default period...) used to live ONLY
+   in the browser's localStorage, so they silently reset whenever that
+   browser's site data was cleared (Safari does it after ~7 days unused),
+   in a private window, or on any other browser/device. Stored here in KV
+   instead (one small JSON object); the page keeps localStorage only as an
+   instant cache. */
+const SETTINGS_KEY = 'sys:settings';
+const SETTINGS_MAX_BYTES = 20000;
+async function apiSettingsGet(env) {
+  let settings = null;
+  try { const raw = await env.TOKENS.get(SETTINGS_KEY); if (raw) settings = JSON.parse(raw); } catch (e) {}
+  return json({ settings });
+}
+async function apiSettingsPost(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'bad request' }, 400); }
+  const settings = body && body.settings;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return json({ ok: false, error: 'bad request' }, 400);
+  const text = JSON.stringify(settings);
+  if (text.length > SETTINGS_MAX_BYTES) return json({ ok: false, error: 'too large' }, 413);
+  await env.TOKENS.put(SETTINGS_KEY, text);
+  return json({ ok: true });
+}
+
 /* POST /api/history/manual-revenue - body {week, food, bev, event, retail,
    uncategorised, covers}. For when OOLIO genuinely never sends a week's
    report at all - confirmed live, more than once now, a real recurring
@@ -3665,6 +3689,14 @@ export default {
     if (path === '/api/ownerinput/notes' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiOwnerInputNotes(env, request);
+    }
+    if (path === '/api/settings' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiSettingsGet(env);
+    }
+    if (path === '/api/settings' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiSettingsPost(env, request);
     }
     if (path === '/api/history/manual-revenue' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);

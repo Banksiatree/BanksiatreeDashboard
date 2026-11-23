@@ -472,8 +472,44 @@ function loadSettings() {
     return s;
   } catch (e) { return defaultSettings(); }
 }
-function saveSettings() { try { localStorage.setItem('vd_settings', JSON.stringify(SETTINGS)); } catch (e) {} }
+/* Settings are kept on the SERVER (so they survive cleared browser data,
+   private windows, other browsers and devices); localStorage is only an
+   instant cache. Every save is pushed up (debounced). */
+var settingsPushTimer = null;
+function pushSettings() {
+  try {
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: SETTINGS })
+    }).catch(function () {});
+  } catch (e) {}
+}
+function saveSettings() {
+  try { localStorage.setItem('vd_settings', JSON.stringify(SETTINGS)); } catch (e) {}
+  clearTimeout(settingsPushTimer);
+  settingsPushTimer = setTimeout(pushSettings, 500);
+}
 var SETTINGS = loadSettings();
+/* On load: the server copy wins. If the server has none yet, upload this
+   browser's settings - but only when they differ from the defaults, so a
+   fresh browser can never overwrite real targets with defaults. */
+function syncSettingsFromServer() {
+  fetch('/api/settings').then(function (r) { return r.ok ? r.json() : null; }).then(function (res) {
+    if (!res) return;
+    var def = defaultSettings();
+    if (res.settings && typeof res.settings === 'object') {
+      var s = res.settings;
+      for (var k in def) { if (!(k in s)) s[k] = def[k]; }
+      s.targets = Object.assign({}, def.targets, s.targets || {});
+      var changed = JSON.stringify(s) !== JSON.stringify(SETTINGS);
+      SETTINGS = s;
+      try { localStorage.setItem('vd_settings', JSON.stringify(SETTINGS)); } catch (e) {}
+      if (changed) { state.period = state.period || SETTINGS.defaultPeriod; render(); }
+    } else if (JSON.stringify(SETTINGS) !== JSON.stringify(def)) {
+      pushSettings();
+    }
+  }).catch(function () {});
+}
 
 function loadJson(key, fallback) {
   try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch (e) { return fallback; }
@@ -4167,6 +4203,7 @@ function renderSettings(root) {
 state.period = SETTINGS.defaultPeriod || 'thisWeek';
 render();
 fetchData();
+syncSettingsFromServer();
 </script>
 </body>
 </html>
