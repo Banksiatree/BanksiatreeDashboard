@@ -106,7 +106,12 @@ const ADAPTERS = {
          undocumented report-cell field and didn't work. Any already-
          connected org needs to Reconnect once more before either new scope
          takes effect. */
-      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read accounting.budgets.read accounting.settings.read',
+      /* payroll.payruns.read added for the Cash Split tab's PAYG: the tax
+         withheld on the week's pay run lives only in Xero Payroll, not in the
+         P&L the rest of the app reads. Already-connected orgs need to
+         Reconnect once before it takes effect; until then Cash Split says so
+         and the PAYG figure can be typed in. */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.payments.read accounting.budgets.read accounting.settings.read payroll.payruns.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -1293,6 +1298,47 @@ async function fetchXeroPLOverRange(env, h, tenantId, from, to, refresh) {
   return { revenue, cogs, wagesSuper, overheads, netProfit: netProfitKnown ? netProfit : null };
 }
 
+/* Xero Payroll (AU) dates come as "/Date(1573171200000+0000)/" (UTC
+   midnight); fall back to anything Date can read. -> 'YYYY-MM-DD' or null. */
+function parseXeroPayrollDate(v) {
+  if (!v) return null;
+  const m = /\/Date\((-?\d+)/.exec(String(v));
+  const d = m ? new Date(Number(m[1])) : new Date(v);
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+/* All pay runs (Xero pages them 100 at a time), tidied. */
+async function fetchXeroPayRuns(h, tenantId) {
+  const runs = [];
+  for (let page = 1; page <= 15; page++) {
+    const data = await h.fetchJson('https://api.xero.com/payroll.xro/1.0/PayRuns?page=' + page, { headers: { 'Xero-Tenant-Id': tenantId, 'Accept': 'application/json' } });
+    const list = (data && data.PayRuns) || [];
+    for (const r of list) {
+      runs.push({
+        payRunId: r.PayRunID || null,
+        status: r.PayRunStatus || null,
+        periodStart: parseXeroPayrollDate(r.PayRunPeriodStartDate),
+        periodEnd: parseXeroPayrollDate(r.PayRunPeriodEndDate),
+        paymentDate: parseXeroPayrollDate(r.PaymentDate),
+        wages: Number(r.Wages) || 0,
+        tax: Number(r.Tax) || 0,
+        super: Number(r.Super) || 0,
+        netPay: Number(r.NetPay) || 0
+      });
+    }
+    if (list.length < 100) break;
+  }
+  return runs;
+}
+/* The pay run the owner is setting PAYG aside for: the one with the LATEST
+   payment date (POSTED, or a DRAFT that is later) - on the Monday after the
+   week it is the run just scheduled for that Wednesday. The payment date and
+   period are returned so the page can show which run it is. */
+function pickCurrentPayRun(runs) {
+  const usable = runs.filter((r) => r.paymentDate && (r.status === 'POSTED' || r.status === 'DRAFT'));
+  usable.sort((a, b) => (a.paymentDate < b.paymentDate ? -1 : a.paymentDate > b.paymentDate ? 1 : 0));
+  return usable.length ? usable[usable.length - 1] : null;
+}
+
 /* ----------------------------------------------------------------------------
    GET /api/cashsplit - powers the Cash Split tab. Live GST%/COGS%/Cash% for
    the most recent BAS period, so the owner only has to type in the one
@@ -1384,12 +1430,27 @@ async function apiCashSplit(env, url) {
     plError = plainError(err.status || 500) + '  [DEBUG: ' + debugBits.join(' | ') + ']';
   }
 
+  /* PAYG = the tax withheld on the current pay run (Xero Payroll). Its own
+     try/catch: needing a reconnect (the payroll scope is new) must never
+     break the GST/COGS/Cash rates above. */
+  let payg = null;
+  try {
+    const run = pickCurrentPayRun(await fetchXeroPayRuns(h, tenantId));
+    payg = run ? { ...run, error: null } : { error: 'No pay run found in Xero Payroll yet.' };
+  } catch (err) {
+    const st = err && err.status;
+    payg = { error: (st === 401 || st === 403)
+      ? 'Xero needs one more reconnect before the dashboard can read your pay runs (Connections, then Reconnect). Until then, type the PAYG amount in.'
+      : plainError(st || 500) };
+  }
+
   await noteSync(env, 'accounting');
   return json({
     available: true,
     period,
     gst: gst ? { ...gst, error: null } : { error: gstError || 'unavailable' },
-    pl: pl ? { ...pl, error: null } : { error: plError || 'unavailable' }
+    pl: pl ? { ...pl, error: null } : { error: plError || 'unavailable' },
+    payg
   });
 }
 
@@ -3754,6 +3815,18 @@ export default {
        most recent run - unlike debug:oolio-email:latest (only the last
        candidate processed, which a later success can overwrite), every
        skip's own record survives here regardless of processing order. */
+    if (path === '/api/debug/payruns' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      try {
+        const h = makeHelpers(env, 'accounting');
+        const tenantId = await xeroTenantId(env, h);
+        const runs = await fetchXeroPayRuns(h, tenantId);
+        runs.sort((a, b) => ((a.paymentDate || '') < (b.paymentDate || '') ? 1 : -1));
+        return json({ count: runs.length, picked: pickCurrentPayRun(runs), latest: runs.slice(0, 6) });
+      } catch (err) {
+        return json({ error: String((err && err.message) || err), status: err && err.status, body: err && err.body ? String(err.body).slice(0, 400) : null }, 200);
+      }
+    }
     if (path === '/api/debug/oolio-email-skipped' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const raw = await env.TOKENS.get('debug:oolio-email:skipped');

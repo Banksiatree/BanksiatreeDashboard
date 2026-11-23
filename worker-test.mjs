@@ -1224,6 +1224,55 @@ async function main() {
   }
 
   // ================================================================
+  // Cash Split PAYG: owner finds the PAYG to set aside by hand every week
+  // and wants it added to the GST/PAYG section (GST % + the tax withheld on
+  // this week's pay run, e.g. 7.57% + $1,682). The tax lives only in Xero
+  // Payroll (new payroll.payruns.read scope, needs one reconnect).
+  // ================================================================
+  {
+    const xd = (iso) => '/Date(' + Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) + '+0000)/';
+    const run = (id, status, start, end, pay, tax) => ({ PayRunID: id, PayRunStatus: status, PayRunPeriodStartDate: xd(start), PayRunPeriodEndDate: xd(end), PaymentDate: xd(pay), Wages: 8000, Tax: tax, Super: 900, NetPay: 6000 });
+    const cashMocks = (payrollRoute) => [
+      { match: 'BankTransactions', body: { BankTransactions: [] } },
+      { match: 'Payments', body: { Payments: [] } },
+      { match: 'Reports/ProfitAndLoss', body: xeroPLReport({ boh: 100, foh: 100, retail: 0, revenue: 10000, wages: 500, opex: 1000, ownerWages: 500 }) },
+      payrollRoute
+    ];
+    const getJson = async (env) => { const cookie = await login(env); return (await authedFetch(env, cookie, '/api/cashsplit?refresh=1')).json(); };
+    let env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+    global.fetch = makeMockFetch(cashMocks({ match: 'payroll.xro/1.0/PayRuns', body: { PayRuns: [
+      run('a', 'POSTED', '2026-11-02', '2026-11-08', '2026-11-11', 1500),
+      run('b', 'POSTED', '2026-11-16', '2026-11-22', '2026-11-25', 1682.5),
+      run('c', 'POSTED', '2026-11-09', '2026-11-15', '2026-11-18', 1600)
+    ] } }));
+    let json = await getJson(env);
+    assert(json.payg && json.payg.error === null && json.payg.tax === 1682.5, 'PAYG: the tax on the pay run with the latest payment date (the one scheduled for Wednesday), got ' + JSON.stringify(json.payg));
+    assert(json.payg.paymentDate === '2026-11-25' && json.payg.periodStart === '2026-11-16' && json.payg.periodEnd === '2026-11-22', 'PAYG: payment date and work period come through as plain dates, got ' + JSON.stringify(json.payg));
+    assert(json.gst && json.gst.error === null && json.pl && json.pl.error === null, 'PAYG: the GST/COGS/Cash rates are unaffected');
+    global.fetch = makeMockFetch(cashMocks({ match: 'payroll.xro/1.0/PayRuns', body: { PayRuns: [
+      run('a', 'POSTED', '2026-11-09', '2026-11-15', '2026-11-18', 1600),
+      run('d', 'DRAFT', '2026-11-16', '2026-11-22', '2026-11-25', 1700)
+    ] } }));
+    json = await getJson(env);
+    assert(json.payg.status === 'DRAFT' && json.payg.tax === 1700, 'PAYG: a later DRAFT run (scheduled but not finalised) is used and labelled DRAFT, got ' + JSON.stringify(json.payg));
+    // Xero pages pay runs 100 at a time - the latest may be on page 2
+    const many = []; for (let i = 0; i < 100; i++) many.push(run('o' + i, 'POSTED', '2025-01-06', '2025-01-12', '2025-01-15', 100));
+    global.fetch = makeMockFetch(cashMocks({ match: 'payroll.xro/1.0/PayRuns', body: (u) => (u.includes('page=2') ? { PayRuns: [run('z', 'POSTED', '2026-11-16', '2026-11-22', '2026-11-25', 1682)] } : { PayRuns: many }) }));
+    json = await getJson(env);
+    assert(json.payg.tax === 1682, 'PAYG: reads every page of pay runs, got ' + JSON.stringify(json.payg));
+    // not reconnected yet (the payroll scope is new): says so, rates still work
+    global.fetch = makeMockFetch(cashMocks({ match: 'payroll.xro/1.0/PayRuns', status: 403, body: { Detail: 'AuthenticationUnsuccessful' } }));
+    json = await getJson(env);
+    assert(json.payg && /reconnect/i.test(json.payg.error || ''), 'PAYG: without the payroll permission it asks for a reconnect instead of failing, got ' + JSON.stringify(json.payg));
+    assert(json.gst.error === null && json.pl.error === null && json.available === true, 'PAYG: a missing payroll permission never breaks the other Cash Split rates');
+    // the debug route used to check the first real pull
+    global.fetch = makeMockFetch(cashMocks({ match: 'payroll.xro/1.0/PayRuns', body: { PayRuns: [run('b', 'POSTED', '2026-11-16', '2026-11-22', '2026-11-25', 1682.5)] } }));
+    const cookie = await login(env);
+    const dbg = await (await authedFetch(env, cookie, '/api/debug/payruns')).json();
+    assert(dbg.count === 1 && dbg.picked && dbg.picked.tax === 1682.5, 'PAYG: debug route shows the pay runs the app can see, got ' + JSON.stringify(dbg));
+  }
+
+  // ================================================================
   // P&L on 13 four-week periods (owner instruction) with wages from the
   // payroll window. The period/budget maths lives in dashboard.html, so
   // this lifts those exact functions out of the real file and runs them

@@ -676,7 +676,8 @@ var state = {
     error: null,
     sales: '',                 /* this week's bank deposit - typed fresh each visit, never persisted */
     loanRepayments: 0,
-    gstOverride: null, cogsOverride: null, cashOverride: null  /* null = use the live figure */
+    gstOverride: null, cogsOverride: null, cashOverride: null,  /* null = use the live figure */
+    paygOverride: null         /* $ PAYG tax from this week's pay run; null = use the live figure from Xero Payroll */
   },
   pl: {
     period: 'thisPeriod',      /* thisPeriod | lastPeriod | ytd | p:<index> (any single 4-week period) */
@@ -1980,6 +1981,22 @@ function csEffectiveRates() {
   return { gstPct: (isFinite(gstPct) ? gstPct : null), cogsPct: (isFinite(cogsPct) ? cogsPct : null), cashPct: (isFinite(cashPct) ? cashPct : null) };
 }
 
+/* PAYG ($) set aside from this week's pay run: a typed figure wins, else the
+   live tax on the latest Xero Payroll pay run, else 0 (nothing to add). */
+function csEffectivePayg() {
+  var cs = state.cashSplit, d = cs.data;
+  var live = (d && d.payg && !d.payg.error && typeof d.payg.tax === 'number') ? d.payg.tax : null;
+  var typed = (cs.paygOverride != null && cs.paygOverride !== '') ? parseFloat(cs.paygOverride) : null;
+  var amt = (typed != null && isFinite(typed)) ? typed : (live != null ? live : 0);
+  return { amount: amt, live: live, typed: (typed != null && isFinite(typed)) ? typed : null, run: (d && d.payg && !d.payg.error) ? d.payg : null, error: (d && d.payg && d.payg.error) ? d.payg.error : null };
+}
+/* '2026-11-25' -> 'Wed 25 Nov' */
+function csShortDate(isoStr) {
+  if (!isoStr) return '';
+  var dt = new Date(isoStr + 'T00:00:00Z');
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()] + ' ' + dt.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dt.getUTCMonth()];
+}
+
 function csRateCell(label, liveValue, overrideVal, onOverride) {
   var cell = el('div', 'set-cell cs-rate-cell');
   var lab = el('div', 'set-label');
@@ -2053,6 +2070,31 @@ function renderCashSplit(root) {
     loanCell.appendChild(el('div', 'set-note', 'Reduces the Cash/profit rate - ' + esc(P.accounting) + ' has no field for this, so it’s not pulled in live.'));
     rgrid.appendChild(loanCell);
 
+    /* PAYG tax withheld on this week's pay run - added to the GST/PAYG transfer */
+    var pg = csEffectivePayg();
+    var paygCell = el('div', 'set-cell cs-rate-cell');
+    var paygLab = el('div', 'set-label');
+    paygLab.appendChild(document.createTextNode('PAYG tax - this week’s pay run ($)'));
+    if (pg.typed == null && pg.live != null) paygLab.appendChild(el('span', 'cs-live-tag', 'Live'));
+    paygCell.appendChild(paygLab);
+    var paygInp = document.createElement('input'); paygInp.type = 'number'; paygInp.step = 'any'; paygInp.min = '0';
+    paygInp.value = pg.typed != null ? cs.paygOverride : (pg.live != null ? pg.live.toFixed(2) : '');
+    paygInp.placeholder = 'e.g. 1682';
+    paygInp.onchange = function () { cs.paygOverride = paygInp.value; render(); };
+    paygCell.appendChild(paygInp);
+    if (pg.run) {
+      var runNote = 'Tax on the pay run paid ' + csShortDate(pg.run.paymentDate) + (pg.run.periodStart && pg.run.periodEnd ? ' (work ' + csShortDate(pg.run.periodStart) + ' to ' + csShortDate(pg.run.periodEnd) + ')' : '') + (pg.run.status === 'DRAFT' ? ' - still a draft, may change' : '') + '.';
+      paygCell.appendChild(el('div', 'set-note', esc(runNote)));
+      var todayIsoCs = new Date().toISOString().slice(0, 10);
+      var ageMs = new Date(todayIsoCs + 'T00:00:00Z').getTime() - new Date(pg.run.paymentDate + 'T00:00:00Z').getTime();
+      if (pg.typed == null && ageMs > 2 * 86400000) {
+        paygCell.appendChild(el('div', 'set-note', 'That pay run has already been paid - this week’s isn’t scheduled in Xero yet. Schedule it, then Refresh rates (or type the figure in).'));
+      }
+    } else if (pg.error) {
+      paygCell.appendChild(el('div', 'set-note', esc(pg.error)));
+    }
+    rgrid.appendChild(paygCell);
+
     ratesCard.appendChild(rgrid);
     if (!isManual()) {
       var refreshBtn = el('button', 'btn-plain', 'Refresh rates');
@@ -2103,7 +2145,12 @@ function renderCashSplit(root) {
     var netRevenue = base - gst - cogsAmt;
     var cash = r2(netRevenue * eff.cashPct);
     var tax = r2(netRevenue * taxPct);
-    var trading = netRevenue - cash - tax;
+    /* PAYG tax from this week's pay run goes to the GST/PAYG account too,
+       but it is part of the wage bill the Cash/Tax rates already allow for,
+       so it comes out of what is left for Trading - Cash and Tax keep their
+       usual amounts. */
+    var payg = r2(Math.max(csEffectivePayg().amount, 0));
+    var trading = netRevenue - cash - tax - payg;
 
     function csRow(cls, name, tag, amt, note) {
       var rw = el('div', 'cs-row' + (cls ? ' ' + cls : ''));
@@ -2115,14 +2162,16 @@ function renderCashSplit(root) {
     }
     csRow('cs-surcharge', 'Card surcharge', (surchargePct * 100).toFixed(2) + '%', surcharge, 'Off the top, first — covers card processing fees.');
     csRow('cs-sub', 'Working balance', null, base, null);
-    csRow(null, 'GST / PAYG', (eff.gstPct * 100).toFixed(2) + '%', gst, 'Set aside for your next BAS.');
+    csRow(null, 'GST', (eff.gstPct * 100).toFixed(2) + '%', gst, 'Set aside for your next BAS.');
     csRow(null, 'COGS', (eff.cogsPct * 100).toFixed(2) + '%', cogsAmt, 'Stock and cost of goods sold.');
     csRow('cs-sub', 'Net revenue', null, netRevenue, null);
     csRow(null, 'Cash (Profit)', (eff.cashPct * 100).toFixed(2) + '%', cash, 'Profit account — floors at 1% minimum.');
     csRow(null, 'Tax', (taxPct * 100).toFixed(2) + '%', tax, 'Reserved for your tax bill.');
+    csRow(null, 'PAYG', 'from pay run', payg, payg > 0 ? 'Tax withheld on this week’s pay run - owed to the ATO.' : 'No PAYG entered or found for this week.');
     csRow('cs-total', 'Trading account', null, trading, 'Remainder — covers OPEX and day-to-day running costs.');
+    csRow(null, 'GST / PAYG account total', null, r2(gst + payg), 'Move this in total: GST ' + fmtMoney(gst, true) + ' + PAYG ' + fmtMoney(payg, true) + '.');
 
-    var total = surcharge + gst + cogsAmt + cash + tax + trading;
+    var total = surcharge + gst + cogsAmt + cash + tax + payg + trading;
     var diff = Math.abs(total - sales);
     balSpan.textContent = diff < 0.01 ? 'Balances to the cent' : ('Off by ' + fmtMoney(diff, true));
     balSpan.className = 'cs-balance' + (diff < 0.01 ? '' : ' off');
