@@ -2140,17 +2140,18 @@ function renderCashSplit(root) {
     function r2(x) { return Math.round((x + Number.EPSILON) * 100) / 100; }
     var surcharge = r2(sales * surchargePct);
     var base = sales - surcharge;
-    var gst = r2(base * eff.gstPct);
+    /* GST and the PAYG tax from this week's pay run come out of the SAME
+       bank account in the SAME step, straight after the working balance and
+       before COGS - so everything after (COGS, Net revenue, Cash, Tax,
+       Trading) works from what is left once both are set aside. */
+    var gstOnly = r2(base * eff.gstPct);
+    var payg = r2(Math.max(csEffectivePayg().amount, 0));
+    var gst = r2(gstOnly + payg);
     var cogsAmt = r2(base * eff.cogsPct);
     var netRevenue = base - gst - cogsAmt;
     var cash = r2(netRevenue * eff.cashPct);
     var tax = r2(netRevenue * taxPct);
-    /* PAYG tax from this week's pay run goes to the GST/PAYG account too,
-       but it is part of the wage bill the Cash/Tax rates already allow for,
-       so it comes out of what is left for Trading - Cash and Tax keep their
-       usual amounts. */
-    var payg = r2(Math.max(csEffectivePayg().amount, 0));
-    var trading = netRevenue - cash - tax - payg;
+    var trading = netRevenue - cash - tax;
 
     function csRow(cls, name, tag, amt, note) {
       var rw = el('div', 'cs-row' + (cls ? ' ' + cls : ''));
@@ -2162,16 +2163,14 @@ function renderCashSplit(root) {
     }
     csRow('cs-surcharge', 'Card surcharge', (surchargePct * 100).toFixed(2) + '%', surcharge, 'Off the top, first — covers card processing fees.');
     csRow('cs-sub', 'Working balance', null, base, null);
-    csRow(null, 'GST', (eff.gstPct * 100).toFixed(2) + '%', gst, 'Set aside for your next BAS.');
+    csRow(null, 'GST / PAYG', (eff.gstPct * 100).toFixed(2) + '%' + (payg > 0 ? ' + ' + fmtMoney(payg, true) : ''), gst, payg > 0 ? ('GST ' + fmtMoney(gstOnly, true) + ' + PAYG ' + fmtMoney(payg, true) + ' from this week’s pay run. Set aside for your next BAS and the ATO.') : 'Set aside for your next BAS. No PAYG entered or found for this week.');
     csRow(null, 'COGS', (eff.cogsPct * 100).toFixed(2) + '%', cogsAmt, 'Stock and cost of goods sold.');
     csRow('cs-sub', 'Net revenue', null, netRevenue, null);
     csRow(null, 'Cash (Profit)', (eff.cashPct * 100).toFixed(2) + '%', cash, 'Profit account — floors at 1% minimum.');
     csRow(null, 'Tax', (taxPct * 100).toFixed(2) + '%', tax, 'Reserved for your tax bill.');
-    csRow(null, 'PAYG', 'from pay run', payg, payg > 0 ? 'Tax withheld on this week’s pay run - owed to the ATO.' : 'No PAYG entered or found for this week.');
     csRow('cs-total', 'Trading account', null, trading, 'Remainder — covers OPEX and day-to-day running costs.');
-    csRow(null, 'GST / PAYG account total', null, r2(gst + payg), 'Move this in total: GST ' + fmtMoney(gst, true) + ' + PAYG ' + fmtMoney(payg, true) + '.');
 
-    var total = surcharge + gst + cogsAmt + cash + tax + payg + trading;
+    var total = surcharge + gst + cogsAmt + cash + tax + trading;
     var diff = Math.abs(total - sales);
     balSpan.textContent = diff < 0.01 ? 'Balances to the cent' : ('Off by ' + fmtMoney(diff, true));
     balSpan.className = 'cs-balance' + (diff < 0.01 ? '' : ' off');
