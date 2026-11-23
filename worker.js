@@ -884,19 +884,16 @@ async function apiPL(env, url) {
     revenueOnly = (await fetchXeroPLSplit(h, tenantId, revFrom, revTo)).revenue;
   } catch (err) { errors.revenue = plainError(err.status || 500); }
 
-  /* Wages and owner wages come from the PAYROLL window, not the plain
-     from/to: a week's work is processed on the Monday after and posted the
-     Wednesday after that, so the pay run recorded inside a week is the
-     PREVIOUS week's work. Same rule History uses (owner instruction:
-     "the P&L should run the exact same way"), so the two tabs agree.
-     Shifting the whole period by PAYROLL_LAG_DAYS (4: Friday to Thursday,
-     so a pay run delayed from Wednesday to Thursday by a Monday public
-     holiday stays in ITS week's window) takes the first week's run to
-     the Friday-start and the last week's run to the Thursday after the
-     period ends. Anything past today isn't posted yet - reported as
-     payroll.pendingUntil, never silently shown as a finished figure. */
-  const wagesFrom = shiftIsoDate(from, PAYROLL_LAG_DAYS);
-  const wagesTo = shiftIsoDate(to, PAYROLL_LAG_DAYS);
+  /* Wages and owner wages are the pay runs PAID inside the period itself
+     (the Wednesday pay run - the Thursday after a Monday public holiday),
+     i.e. exactly what Xero's own P&L shows for the same dates. Owner rule,
+     stated again after two "fixes" that pushed each week's wages a week
+     later and left the latest week blank on every Monday: "every Monday
+     you show the wages that have posted to be paid on Wednesday". While
+     the period is still in progress the later pay days haven't happened,
+     reported as payroll.pendingUntil, never silently shown as final. */
+  const wagesFrom = from;
+  const wagesTo = to;
   const todayIso = todaySydneyIso();
   let wagesFlat = null;
   try {
@@ -1863,15 +1860,8 @@ async function apiOwnerWages(env, url) {
   try {
     /* Pay drawn "this week" = what Xero shows was drawn inside this
        Mon-Sun week: the Wednesday (or Thursday, after a Monday public
-       holiday) pay run that posts DURING the week. This is the original
-       behaviour and the owner's Monday routine - they run the numbers on
-       the Monday, and only THEN schedule that week's pay run, so the
-       run that is already in Xero on the Monday is the one paid last
-       Wednesday. A previous change here switched this to the work-week
-       payroll window, which can never be posted yet on a Monday and
-       made Run the Numbers answer "pay run isn't posted yet" every
-       single week - reverted. (History's per-week wage columns still use
-       the work-week payroll window; see saveHistorySnapshot.) */
+       holiday) pay run. It is all in Xero on the Monday the owner runs
+       the numbers. History's wage columns read the same window. */
     const split = await fetchXeroPLSplit(h, tenantId, from, to);
     await noteSync(env, 'accounting');
     /* Also extends this same "Run the Numbers" click to capture a full
@@ -1935,30 +1925,23 @@ async function apiOwnerWages(env, url) {
    Operating Expenses total for the week, the same figure the P&L tab's
    "Opex total" already shows - replacing the old sheet's hand-typed
    "Cash Flow cost" with the real pulled number now that one exists. */
-/* The Xero window that holds a trading week's PAYROLL: processed the
-   following Monday, posted the Wednesday after (Thursday after a Monday
-   public holiday) - so Fri (week+4) through Thu (weekEnd+4); see
-   PAYROLL_LAG_DAYS below. `open` is true while that window
-   hasn't finished yet (today is on or before its last day): the pay run
-   can't be fully in Xero, so wages/owner wages are UNKNOWN, not zero.
-   CONFIRMED against the owner's real Xero: the run for the week ending 4
-   Oct never posted in Oct 1-7 (nothing at all), then two runs landed in
-   Oct 8-14 - and the week ending 1 Nov had nothing posted as of Mon 2 Nov
-   (it posts Wed 4 Nov), which History showed as a flat $0. */
-/* Owner-confirmed pay rhythm (never changes): the pay week runs Mon-Sun,
-   the numbers are run on the Monday after, THEN the pay run is scheduled
-   and processed, and it is paid on that Wednesday - or the THURSDAY when
-   that Monday is a public holiday (e.g. Labour Day Mon 5 Oct 2026 pushed
-   the week-ending-4-Oct run to Thu 8 Oct, which the old Thu-Wed window
-   missed and counted in the NEXT week). So a week's pay run lands on
-   Wed/Thu = week+9 / week+10. The window runs Friday (week+4) to Thursday
-   (week+10): that excludes the PREVIOUS week's run even when it was
-   delayed to its Thursday (week+3), and includes this week's run whether
-   it was paid on the Wednesday or the Thursday. */
-const PAYROLL_LAG_DAYS = 4;
-/* Today's date in the VENUE's timezone (Sydney), not UTC: the old UTC date
-   was a day behind until 11am Sydney, so on a Wednesday morning the pay
-   run that had already posted was still treated as "not posted yet". */
+/* The Xero window that holds a trading week's WAGES: the Mon-Sun week
+   itself. The owner's rhythm never changes - pay week Mon-Sun, the numbers
+   are run on the Monday, the pay run is processed and PAID on the
+   Wednesday (the THURSDAY when that Monday is a public holiday, e.g.
+   Labour Day Mon 5 Oct 2026). Xero records the wage journal on the pay
+   day, so "the wages posted to be paid on Wednesday" are the ones dated
+   inside the week, and on the Monday after they are all in Xero already.
+   (Two earlier versions looked one week LATER, which can never be in Xero
+   on a Monday - the latest week showed blank every single week. That was
+   a misreading of the owner's rhythm, now reverted for good.)
+   open      = the normal pay day (Wednesday, week+2) hasn't arrived yet:
+               wages unknown, not $0.
+   maybeLate = the Wednesday has arrived but the Thursday grace hasn't
+               ended: a run that IS in Xero is used at once; nothing there
+               yet stays unknown rather than $0. */
+/* Today's date in the VENUE's timezone (Sydney), not UTC: the UTC date is
+   a day behind until 11am Sydney. */
 function todaySydneyIso() {
   try {
     return new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -1966,19 +1949,13 @@ function todaySydneyIso() {
     return new Date(Date.now() + 11 * 3600 * 1000).toISOString().slice(0, 10);
   }
 }
-/* open      = the normal pay day (the Wednesday, week+9) hasn't arrived yet:
-               wages are unknown.
-   maybeLate = the Wednesday has arrived but the Thursday (a Monday public
-               holiday pushes pay to Thursday) hasn't ended: if nothing has
-               posted yet that's still "unknown", not $0; if the run IS
-               there (the usual case) it's used straight away - no waiting
-               for Friday. */
 function payrollWindow(week) {
-  const from = shiftIsoDate(week, PAYROLL_LAG_DAYS);
-  const to = shiftIsoDate(week, 6 + PAYROLL_LAG_DAYS);
-  const payDay = shiftIsoDate(week, 9);
+  const from = week;
+  const to = shiftIsoDate(week, 6);
+  const payDay = shiftIsoDate(week, 2);
+  const thursday = shiftIsoDate(week, 3);
   const today = todaySydneyIso();
-  return { from, to, open: today < payDay, maybeLate: today >= payDay && today <= to };
+  return { from, to, open: today < payDay, maybeLate: today >= payDay && today <= thursday };
 }
 
 /* Re-snapshot the given weeks when their stored wages are missing/$0 and
@@ -2011,23 +1988,20 @@ async function backfillRecentHistoryWages(env) {
 
 async function saveHistorySnapshot(env, h, tenantId, week) {
   const to = shiftIsoDate(week, 6);
-  /* Payroll for this trading week is processed the following Monday but
-     POSTED (the date Xero actually records) the Wednesday after that -
-     confirmed directly by the owner, not guessed - so a wage journal for
-     week-ending Sunday always lands 3 days past this week's own Mon-Sun
-     range, in the FOLLOWING week's dates. Same lag-correction technique
-     already used for revenue's Tue-Mon posting delay (shiftIsoDate), just
-     a different, wages-specific offset - querying the plain week window
-     for wages would always come back empty/short. */
+  /* Wages for a trading week = the pay run PAID inside that Mon-Sun week
+     (Wednesday; Thursday after a Monday public holiday) - exactly what
+     Xero's P&L shows for the same dates, and all in Xero by the Monday
+     the owner runs the numbers. See payrollWindow. */
   const pw = payrollWindow(week);
   const wagesFrom = pw.from;
   const wagesTo = pw.to;
-  const [split, staffHoursRaw, notesRaw, wagesFlatSplit] = await Promise.all([
+  const [split, staffHoursRaw, notesRaw] = await Promise.all([
     fetchXeroPLSplit(h, tenantId, week, to),
     env.TOKENS.get('ownerinput:staffhours:' + week),
-    env.TOKENS.get('ownerinput:notes:' + week),
-    fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo)
+    env.TOKENS.get('ownerinput:notes:' + week)
   ]);
+  /* The wages window IS the trading week, so its P&L is the one just pulled. */
+  const wagesFlatSplit = split;
 
   /* Unknown (stored as null, shown as a dash) - never a $0 that reads as
      "we paid nothing": before the normal pay day, or on/after it but

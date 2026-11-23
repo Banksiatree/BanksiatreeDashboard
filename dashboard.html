@@ -2409,7 +2409,7 @@ function renderPL(root) {
      still be on their way - say so rather than quietly showing a profit that
      is too high. */
   if (d.payroll && d.payroll.pendingUntil) {
-    root.appendChild(el('div', 'banner banner-amber', 'Wages and owner wages only include pay runs posted so far - the last pay run for this period posts by ' + esc(d.payroll.pendingUntil) + '. Wages look lower, and profit higher, than they will once it lands.'));
+    root.appendChild(el('div', 'banner banner-amber', 'This period isn’t finished (ends ' + esc(d.payroll.pendingUntil) + '): wages and owner wages only include the pay runs paid so far, so wages look lower, and profit higher, than they will at the end of the period.'));
   }
 
   var topRow = el('div', 'pl-grid cols-3');
@@ -2779,7 +2779,7 @@ function renderOwnerInput(root) {
         : (oi.wages.reason === 'not_connected' ? ('Connect ' + esc(P.accounting) + ' on the Connections screen first.') : (oi.wages.error || 'Not available right now.'));
       root.appendChild(el('div', 'banner banner-amber', msg));
     } else if (oi.wages.actual == null) {
-      root.appendChild(el('div', 'banner banner-amber', 'This week’s pay run isn’t in ' + esc(P.accounting) + ' yet - it posts on the Wednesday after next Monday' + (oi.wages.pendingUntil ? ' (by ' + esc(oi.wages.pendingUntil) + ')' : '') + '. Run the Numbers again after that. Everything else for the week has still been saved.'));
+      root.appendChild(el('div', 'banner banner-amber', 'No pay drawn shows in ' + esc(P.accounting) + ' for this week yet. Run the Numbers again once the Wednesday pay run has been posted. Everything else for the week has still been saved.'));
     } else {
       var totalHours = entries.reduce(function (sum, e) { return sum + (e.ownerHours || 0); }, 0);
       var wageCard = el('div', 'oi-wage-card');
