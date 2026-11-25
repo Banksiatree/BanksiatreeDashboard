@@ -1273,6 +1273,82 @@ async function main() {
   }
 
   // ================================================================
+  // Break-even calculator ("Run Breakeven"): last 52 completed weeks from
+  // Xero -> minimum weekly sales to cover every cost. Same formula as the
+  // owner's sheet: (operating costs + staff wages + owner wages + typed
+  // repayments x12) / (1 - COGS%). Distribution of profit is NOT a cost.
+  // ================================================================
+  {
+    const row = (label, v) => ({ RowType: 'Row', Cells: [{ Value: label }, { Value: String(v) }] });
+    const pl = ({ revenue, bakery, beer, rent, advertising, staff, ours, dist }) => ({ Reports: [{ Rows: [
+      { RowType: 'Section', Title: 'Income', Rows: [row('Eftpos Sales', revenue), { RowType: 'SummaryRow', Cells: [{ Value: 'Total Income' }, { Value: String(revenue) }] }] },
+      { RowType: 'Section', Title: 'Less Cost of Sales', Rows: [row('Bakery', bakery), row('Beer, wine & spirits', beer), { RowType: 'SummaryRow', Cells: [{ Value: 'Total Cost of Sales' }, { Value: String(bakery + beer) }] }] },
+      { RowType: 'Section', Title: 'Less Operating Expenses', Rows: [
+        row('Wages & salaries - Staff Wages', staff), row('Our Wages', ours), row('Distribution of profit', dist),
+        row('Rent', rent), row('Advertising & marketing', advertising),
+        { RowType: 'SummaryRow', Cells: [{ Value: 'Total Operating Expenses' }, { Value: String(staff + ours + dist + rent + advertising) }] }
+      ] }
+    ] }] });
+    const seen = [];
+    const mkMocks = (rent) => makeMockFetch([{ match: 'Reports/ProfitAndLoss', body: (u) => {
+      seen.push(u);
+      // plain window carries wage/distribution lines too (which must NOT count as operating costs)
+      if (u.includes('fromDate=2025-11-24&toDate=2026-11-22')) return pl({ revenue: 1, bakery: 100000, beer: 20000, rent, advertising: 20000, staff: 999, ours: 888, dist: 777 });
+      if (u.includes('fromDate=2025-11-25&toDate=2026-11-23')) return pl({ revenue: 600000, bakery: 0, beer: 0, rent: 0, advertising: 0, staff: 0, ours: 0, dist: 0 });
+      if (u.includes('fromDate=2025-11-28&toDate=2026-11-26')) return pl({ revenue: 1, bakery: 0, beer: 0, rent: 0, advertising: 0, staff: 220000, ours: 80000, dist: 50000 });
+      throw new Error('unexpected break-even window ' + u);
+    } }]);
+    useFixedDate('2026-11-25');
+    const env = { TOKENS: xeroKv({ 'xero:tenantId': 'tenant-1' }), DASHBOARD_PASSCODE: PASSCODE };
+    // the fake Xero token is good for an hour from NOW; the test moves "today" on, so renew it each time
+    const renew = () => env.TOKENS._store.set('tokens:accounting', JSON.stringify({ access_token: 'fake-token', expires_at: Date.now() + 3600000 }));
+    const anon = await worker.fetch(new Request('https://x.test/api/breakeven/runs'), env);
+    assert(anon.status === 401, 'break-even: needs a login, got ' + anon.status);
+    global.fetch = mkMocks(30000);
+    const cookie = await login(env);
+    const post = (b) => authedFetch(env, cookie, '/api/breakeven/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+    let r = await (await post({ repayments: [{ label: 'Bank loan', monthly: 1000 }, { label: 'junk', monthly: -5 }, { label: 'ATO', monthly: 'abc' }], weekdaySharePct: 50 })).json();
+    assert(r.ok === true && r.run, 'break-even: run succeeds, got ' + JSON.stringify(r).slice(0, 200));
+    const run = r.run;
+    assert(run.period.from === '2025-11-24' && run.period.to === '2026-11-22' && run.period.weeks === 52, 'break-even: the last 52 COMPLETED weeks (Mon 24 Nov 2025 - Sun 22 Nov 2026 on Wed 25 Nov), got ' + JSON.stringify(run.period));
+    assert(run.wagesWindow.from === '2025-11-28' && run.wagesWindow.to === '2026-11-26', 'break-even: wages read from the 52 pay runs window, got ' + JSON.stringify(run.wagesWindow));
+    assert(run.revenue === 600000 && run.cogs === 120000 && Math.abs(run.cogsPct - 0.2) < 1e-9, 'break-even: revenue 600,000, COGS 120,000 (food + bev together) = 20%, got ' + JSON.stringify({ rev: run.revenue, cogs: run.cogs, pct: run.cogsPct }));
+    assert(run.opex.total === 50000, 'break-even: operating costs are Rent + Advertising only - wages, owner wages and distribution are not in it, got ' + run.opex.total);
+    assert(run.wages.staff === 220000 && run.wages.owner === 80000, 'break-even: staff 220,000 and owner (Our Wages) 80,000, got ' + JSON.stringify(run.wages));
+    assert(run.wages.distributionExcluded === 50000, 'break-even: Distribution of profit (50,000) is left out and shown as excluded, got ' + run.wages.distributionExcluded);
+    assert(run.repayments.monthly === 1000 && run.repayments.annual === 12000, 'break-even: typed repayments x12, junk/negative ignored, got ' + JSON.stringify(run.repayments));
+    // (50,000 + 220,000 + 80,000 + 12,000) / (1 - 0.2) = 452,500 a year
+    assert(run.fixed.annual === 362000 && run.bep.annual === 452500, 'break-even: fixed 362,000 -> break-even 452,500 a year, got ' + JSON.stringify({ f: run.fixed, b: run.bep }));
+    assert(run.bep.weekly === 8701.92 && run.bep.monthly === 37708.33, 'break-even: weekly 8,701.92 and monthly 37,708.33, got ' + JSON.stringify(run.bep));
+    assert(run.bep.weekdayEach === 870.19 && run.bep.weekendDayEach === 2175.48, 'break-even: 50% of the week over Mon-Fri (870.19 each) and 50% over Sat-Sun (2,175.48 each), got ' + JSON.stringify(run.bep));
+    assert(run.avgWeeklyRevenue === 11538.46 && run.aboveBreakeven === 2836.54, 'break-even: average week 11,538.46 vs break-even = 2,836.54 above, got ' + JSON.stringify({ a: run.avgWeeklyRevenue, ab: run.aboveBreakeven }));
+    // no repayments and a 60/40 weekday/weekend split: (50,000+220,000+80,000)/0.8 = 437,500 -> 8,413.46 a week
+    useFixedDate('2026-11-26'); renew();
+    global.fetch = mkMocks(30000);
+    r = await (await post({ repayments: [], weekdaySharePct: 60 })).json();
+    assert(r.run.bep.annual === 437500 && r.run.bep.weekly === 8413.46, 'break-even: without repayments 437,500 a year / 8,413.46 a week, got ' + JSON.stringify(r.run.bep));
+    assert(r.run.bep.weekdayEach === 1009.62 && r.run.bep.weekendDayEach === 1682.69, 'break-even: a 60/40 split gives 1,009.62 per weekday and 1,682.69 per weekend day, got ' + JSON.stringify(r.run.bep));
+    // higher rent next time -> a higher break-even, and every run is kept, newest first
+    useFixedDate('2026-11-27'); renew();
+    global.fetch = mkMocks(42000);
+    r = await (await post({ repayments: [], weekdaySharePct: 50 })).json();
+    const list = await (await authedFetch(env, cookie, '/api/breakeven/runs')).json();
+    assert(list.runs.length === 3 && list.runs[0].ranAt > list.runs[1].ranAt && list.runs[1].ranAt > list.runs[2].ranAt, 'break-even: every run is saved, newest first, got ' + list.runs.length);
+    assert(list.runs[0].bep.weekly > list.runs[1].bep.weekly, 'break-even: the change shows - higher rent gives a higher break-even, got ' + JSON.stringify(list.runs.map((x) => x.bep.weekly)));
+    // cost of goods 100%+ -> no break-even, nothing saved
+    useFixedDate('2026-11-28'); renew();
+    global.fetch = makeMockFetch([{ match: 'Reports/ProfitAndLoss', body: (u) => (u.includes('fromDate=2025-11-24&toDate=2026-11-22') ? pl({ revenue: 1, bakery: 700000, beer: 0, rent: 1, advertising: 1, staff: 1, ours: 1, dist: 1 }) : pl({ revenue: 600000, bakery: 0, beer: 0, rent: 0, advertising: 0, staff: 1, ours: 1, dist: 0 })) }]);
+    r = await (await post({ repayments: [] })).json();
+    assert(r.ok === false && /100%|break-even/i.test(r.error || ''), 'break-even: COGS of 100% or more says so instead of a nonsense number, got ' + JSON.stringify(r));
+    // Xero down -> says so, nothing saved
+    global.fetch = makeMockFetch([{ match: 'Reports/ProfitAndLoss', status: 500, body: {} }]);
+    r = await (await post({ repayments: [] })).json();
+    const after = await (await authedFetch(env, cookie, '/api/breakeven/runs')).json();
+    assert(r.available === false && after.runs.length === 3, 'break-even: a Xero failure reports an error and saves nothing');
+    restoreDate();
+  }
+
+  // ================================================================
   // P&L on 13 four-week periods (owner instruction) with wages from the
   // payroll window. The period/budget maths lives in dashboard.html, so
   // this lifts those exact functions out of the real file and runs them

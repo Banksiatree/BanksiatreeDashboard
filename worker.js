@@ -1803,6 +1803,139 @@ async function apiOwnerInputNotes(env, request) {
   return json({ ok: true });
 }
 
+/* ----------------------------------------------------------------------------
+   Break-even calculator (owner's "TBT Breakeven" sheet, now in the tool).
+   Press "Run Breakeven" -> reads the last 52 completed weeks from Xero and
+   works out the MINIMUM weekly sales needed to cover every cost:
+     fixed costs = operating costs + staff wages/super + owner wages
+                   + loan/ATO/other repayments (typed monthly, x12)
+     break-even sales (year) = fixed costs / (1 - COGS %)
+   where COGS % = food + bev cost of goods together / revenue. Same formula as
+   the owner's sheet. Rules from the owner: Distribution of profit and
+   Depreciation are NOT costs here (profit paid out / non-cash); owner wages
+   ARE (Xero "Our Wages" + owner super); wages stay a fixed cost. The goal is
+   the minimum to break even - never a best case.
+   Dates are aligned exactly like the P&L tab: costs on the plain 52 weeks,
+   revenue shifted +1 day (Tue-Mon posting), wages/owner wages on the pay-run
+   window (+4 days, see payrollWindow) = 52 pay runs.
+   Every run is saved (KV breakeven:run:<time>) so the change month to month
+   can be seen. A run is a SNAPSHOT, so it is computed once here and stored
+   with all its lines, rather than recomputed by the page later.
+---------------------------------------------------------------------------- */
+const BREAKEVEN_WEEKS = 52;
+const BREAKEVEN_PREFIX = 'breakeven:run:';
+function breakevenWindow() {
+  const today = todaySydneyIso();
+  const [y, m, d] = today.split('-').map(Number);
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; /* Mon = 0 */
+  const thisMon = shiftIsoDate(today, -dow);
+  const to = shiftIsoDate(thisMon, -1); /* last COMPLETED Sunday */
+  const from = shiftIsoDate(to, -(BREAKEVEN_WEEKS * 7 - 1)); /* a Monday */
+  return { from, to };
+}
+function breakevenRound(x) { return Math.round((x + Number.EPSILON) * 100) / 100; }
+/* Pure maths - returns { error } or the break-even figures. */
+function computeBreakeven(inp) {
+  const { revenue, cogs, opex, staffWages, ownerWages, repaymentsMonthly, weekdaySharePct } = inp;
+  if (!(revenue > 0)) return { error: 'No revenue found for those 52 weeks, so a COGS % can’t be worked out.' };
+  const cogsPct = cogs / revenue;
+  if (!(cogsPct < 1)) return { error: 'Cost of goods is 100% or more of revenue, so there is no break-even.' };
+  const repaymentsAnnual = repaymentsMonthly * 12;
+  const fixedAnnual = opex + staffWages + ownerWages + repaymentsAnnual;
+  const bepAnnual = fixedAnnual / (1 - cogsPct);
+  const weekly = bepAnnual / BREAKEVEN_WEEKS;
+  const share = Math.min(Math.max(weekdaySharePct, 0), 100) / 100;
+  const avgWeeklyRevenue = revenue / BREAKEVEN_WEEKS;
+  return {
+    cogsPct,
+    repaymentsAnnual,
+    fixedAnnual,
+    fixedPerWeek: fixedAnnual / BREAKEVEN_WEEKS,
+    bepAnnual,
+    bepMonthly: bepAnnual / 12,
+    bepWeekly: weekly,
+    weekdayEach: weekly * share / 5,
+    weekendDayEach: weekly * (1 - share) / 2,
+    avgWeeklyRevenue,
+    aboveBreakeven: avgWeeklyRevenue - weekly
+  };
+}
+async function apiBreakevenRun(env, request) {
+  const adapter = ADAPTERS.accounting;
+  if (!adapter || !adapter.configured) return json({ available: false, reason: 'not_configured' });
+  let body = {}; try { body = await request.json(); } catch (e) {}
+  const cleanNum = (v) => { const n = parseFloat(v); return isFinite(n) && n >= 0 ? n : 0; };
+  const repayments = (Array.isArray(body && body.repayments) ? body.repayments : []).slice(0, 10)
+    .map((r) => ({ label: String((r && r.label) || 'Repayment').slice(0, 60), monthly: cleanNum(r && r.monthly) }));
+  const weekdaySharePct = body && body.weekdaySharePct != null && isFinite(parseFloat(body.weekdaySharePct)) ? Math.min(Math.max(parseFloat(body.weekdaySharePct), 0), 100) : 50;
+  const repaymentsMonthly = repayments.reduce((a, r) => a + r.monthly, 0);
+
+  const h = makeHelpers(env, 'accounting');
+  let tenantId;
+  try { tenantId = await xeroTenantId(env, h); }
+  catch (err) { return json({ available: false, reason: 'not_connected', error: plainError(err.status || 401) }); }
+
+  const win = breakevenWindow();
+  const wagesFrom = shiftIsoDate(win.from, PAYROLL_LAG_DAYS);
+  const wagesTo = shiftIsoDate(win.to, PAYROLL_LAG_DAYS);
+  let split, revSplit, wagesSplit;
+  try {
+    split = await fetchXeroPLSplit(h, tenantId, win.from, win.to);
+    revSplit = await fetchXeroPLSplit(h, tenantId, shiftIsoDate(win.from, 1), shiftIsoDate(win.to, 1));
+    wagesSplit = await fetchXeroPLSplit(h, tenantId, wagesFrom, wagesTo);
+  } catch (err) {
+    return json({ available: false, error: plainError(err.status || 500) });
+  }
+  await noteSync(env, 'accounting');
+
+  const b = split.cogs.buckets;
+  const cogs = b.foh + b.boh + b.retail + b.uncategorised;
+  const ownerLines = wagesSplit.opex.ownerWagesLines || [];
+  const ownerWages = ownerLines.filter((l) => !DISTRIBUTION_OF_PROFIT_RE.test(l.label)).reduce((a, l) => a + l.value, 0);
+  const distributionExcluded = ownerLines.filter((l) => DISTRIBUTION_OF_PROFIT_RE.test(l.label)).reduce((a, l) => a + l.value, 0);
+  const inputs = {
+    revenue: revSplit.revenue, cogs, opex: split.opex.opexTotal,
+    staffWages: wagesSplit.opex.wagesSuperExclOwner, ownerWages, repaymentsMonthly, weekdaySharePct
+  };
+  const c = computeBreakeven(inputs);
+  if (c.error) return json({ available: true, ok: false, error: c.error });
+
+  const ranAt = new Date().toISOString();
+  const r2 = breakevenRound;
+  const run = {
+    id: ranAt,
+    ranAt,
+    period: { from: win.from, to: win.to, weeks: BREAKEVEN_WEEKS },
+    wagesWindow: { from: wagesFrom, to: wagesTo },
+    inputs: { repayments, weekdaySharePct },
+    revenue: r2(inputs.revenue),
+    cogs: r2(cogs),
+    cogsPct: c.cogsPct,
+    opex: { total: r2(inputs.opex), lines: (split.opex.opexLines || []).map((l) => ({ label: l.label, value: r2(l.value) })) },
+    wages: { staff: r2(inputs.staffWages), owner: r2(ownerWages), ownerLines: ownerLines.filter((l) => !DISTRIBUTION_OF_PROFIT_RE.test(l.label)).map((l) => ({ label: l.label, value: r2(l.value) })), distributionExcluded: r2(distributionExcluded) },
+    repayments: { monthly: r2(repaymentsMonthly), annual: r2(c.repaymentsAnnual) },
+    fixed: { annual: r2(c.fixedAnnual), perWeek: r2(c.fixedPerWeek) },
+    bep: { annual: r2(c.bepAnnual), monthly: r2(c.bepMonthly), weekly: r2(c.bepWeekly), weekdayEach: r2(c.weekdayEach), weekendDayEach: r2(c.weekendDayEach) },
+    avgWeeklyRevenue: r2(c.avgWeeklyRevenue),
+    aboveBreakeven: r2(c.aboveBreakeven)
+  };
+  await env.TOKENS.put(BREAKEVEN_PREFIX + ranAt, JSON.stringify(run));
+  return json({ available: true, ok: true, run });
+}
+async function apiBreakevenRuns(env) {
+  const runs = [];
+  let cursor;
+  for (;;) {
+    const page = await env.TOKENS.list(cursor ? { prefix: BREAKEVEN_PREFIX, cursor } : { prefix: BREAKEVEN_PREFIX });
+    const raws = await Promise.all(page.keys.map((k) => env.TOKENS.get(k.name)));
+    for (const raw of raws) { if (!raw) continue; try { runs.push(JSON.parse(raw)); } catch (e) {} }
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  runs.sort((a, b) => (a.ranAt < b.ranAt ? 1 : -1));
+  return json({ runs: runs.slice(0, 200) });
+}
+
 /* The owner's Settings (targets, weeks in month, transaction/avg-spend/opex
    targets, tolerances, surcharge/tax %, default period...) used to live ONLY
    in the browser's localStorage, so they silently reset whenever that
@@ -3750,6 +3883,14 @@ export default {
     if (path === '/api/ownerinput/notes' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       return apiOwnerInputNotes(env, request);
+    }
+    if (path === '/api/breakeven/run' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiBreakevenRun(env, request);
+    }
+    if (path === '/api/breakeven/runs' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiBreakevenRuns(env);
     }
     if (path === '/api/settings' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);

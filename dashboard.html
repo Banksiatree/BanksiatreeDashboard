@@ -459,7 +459,20 @@ function defaultSettings() {
        formula rather than a cell anywhere, so there's no real "owner's
        current value" to seed from; kept editable here for whenever
        trading costs move on from that figure. */
-    opexTargetWeekly: 2601
+    opexTargetWeekly: 2601,
+    /* Break-even tab (private link #breakeven for now): the things Xero can't
+       tell it - monthly loan/ATO/card repayments, typed - and how the week's
+       trade splits between Mon-Fri and Sat-Sun (50/50, owner's rule). */
+    breakeven: {
+      weekdaySharePct: 50,
+      repayments: [
+        { label: 'Vehicle repayments', monthly: 0 },
+        { label: 'Bank repayments (commercial loan)', monthly: 0 },
+        { label: 'Bank repayments (equipment finance loan)', monthly: 0 },
+        { label: 'ATO repayments', monthly: 0 },
+        { label: 'Credit card repayments', monthly: 0 }
+      ]
+    }
   };
 }
 function loadSettings() {
@@ -490,6 +503,13 @@ function saveSettings() {
   settingsPushTimer = setTimeout(pushSettings, 500);
 }
 var SETTINGS = loadSettings();
+/* The Break-even tab stays hidden until its private link (#breakeven) has
+   been opened once in this browser. */
+var BE_BETA = false;
+try {
+  if (location.hash === '#breakeven') localStorage.setItem('vd_be_beta', '1');
+  BE_BETA = localStorage.getItem('vd_be_beta') === '1';
+} catch (e) { BE_BETA = location.hash === '#breakeven'; }
 /* On load: the server copy wins. If the server has none yet, upload this
    browser's settings - but only when they differ from the defaults, so a
    fresh browser can never overwrite real targets with defaults. */
@@ -670,6 +690,7 @@ var state = {
   data: null,                  /* last /api/metrics payload */
   fetchedAt: null,
   fetchError: null,
+  breakeven: { runs: null, loading: false, running: false, error: null, openId: null, showLines: false },
   cashSplit: {
     loading: false,
     data: null,                /* last /api/cashsplit payload */
@@ -1013,6 +1034,10 @@ function render() {
   var tabs = isManual()
     ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'history', label: 'History' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'settings', label: 'Settings' } ]
     : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'owner', label: 'Owner input' }, { key: 'pl', label: 'P&L' }, { key: 'budget', label: 'Budget' }, { key: 'whatif', label: 'What-If' }, { key: 'history', label: 'History' }, { key: 'cashsplit', label: 'Cash split' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
+  if (BE_BETA && !isManual()) {
+    var csIdx = -1; tabs.forEach(function (t, i) { if (t.key === 'cashsplit') csIdx = i; });
+    tabs.splice(csIdx + 1, 0, { key: 'breakeven', label: 'Break-even' });
+  }
   tabs.forEach(function (t) {
     var b = el('button', 'nav-tab' + (state.view === t.key ? ' active' : ''));
     b.innerHTML = t.label + ((t.key === 'recon' && anyConfiguredSource() && unconfirmedConnectedMetrics().length) ? '<span class="dot"></span>' : '');
@@ -1053,6 +1078,7 @@ function render() {
   else if (state.view === 'history') renderHistory(root);
   else if (state.view === 'pl') renderPL(root);
   else if (state.view === 'cashsplit') renderCashSplit(root);
+  else if (state.view === 'breakeven' && BE_BETA) renderBreakeven(root);
   else if (state.view === 'connections') renderConnections(root);
   else if (state.view === 'recon') renderRecon(root);
   else renderSettings(root);
@@ -2179,6 +2205,177 @@ function renderCashSplit(root) {
   root.appendChild(ledgerCard);
 
   root.appendChild(el('p', 'set-note', 'Surcharge and tax rates are set in Settings. Everything left in Trading still splits by hand into Owner’s Pay, Annual Leave, Annual Bills or the Drip account, same as before.'));
+}
+
+/* ============================================================
+   Break-even tab. "Run Breakeven" asks the worker for the last 52 completed
+   weeks from Xero and gets back the minimum weekly sales needed to cover
+   every cost (see apiBreakevenRun in worker.js for the formula and rules).
+   Each run is saved, so the change from run to run is visible below.
+============================================================ */
+function fetchBreakevenRuns() {
+  var b = state.breakeven;
+  if (b.loading) return;
+  b.loading = true; render();
+  fetch('/api/breakeven/runs').then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (j) {
+    b.runs = j.runs || []; b.loading = false; render();
+  }).catch(function () {
+    b.loading = false; b.runs = b.runs || []; b.error = 'Could not load past runs just now. Try again.'; render();
+  });
+}
+function runBreakeven() {
+  var b = state.breakeven;
+  if (b.running) return;
+  b.running = true; b.error = null; render();
+  var be = SETTINGS.breakeven || {};
+  fetch('/api/breakeven/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repayments: be.repayments || [], weekdaySharePct: be.weekdaySharePct })
+  }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); }).then(function (res) {
+    var j = res.j || {};
+    b.running = false;
+    if (j.ok && j.run) {
+      b.runs = [j.run].concat(b.runs || []);
+      b.openId = j.run.id;
+    } else if (j.reason === 'not_connected') {
+      b.error = 'Connect ' + P.accounting + ' on the Connections screen first.';
+    } else {
+      b.error = j.error || 'Could not run just now. Try again.';
+    }
+    render();
+  }).catch(function () {
+    b.running = false; b.error = 'Could not reach the dashboard just now. Try again.'; render();
+  });
+}
+function beDate(iso) {
+  try { return new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }); } catch (e) { return iso; }
+}
+function beIsoDate(isoStr) {
+  var dt = new Date(isoStr + 'T00:00:00Z');
+  return dt.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dt.getUTCMonth()] + ' ' + dt.getUTCFullYear();
+}
+function beRow(parent, cls, name, tag, amt, note) {
+  var rw = el('div', 'cs-row' + (cls ? ' ' + cls : ''));
+  rw.appendChild(el('span', 'cs-name', esc(name) + (tag ? ' <span class="cs-tag">' + esc(tag) + '</span>' : '')));
+  rw.appendChild(el('span', 'cs-amt', amt == null ? '' : esc(fmtMoney(amt, true))));
+  if (note) rw.appendChild(el('span', 'cs-note', esc(note)));
+  parent.appendChild(rw);
+}
+function renderBreakevenRun(root, run) {
+  var card = el('div', 'cs-ledger-card');
+  var head = el('div', 'cs-ledger-head');
+  head.appendChild(el('div', 'cs-title', 'Break-even run: ' + esc(beDate(run.ranAt))));
+  card.appendChild(head);
+  var rows = el('div');
+  var fmt = function (v) { return fmtMoney(v, true); };
+  beRow(rows, 'cs-sub', 'Last ' + run.period.weeks + ' completed weeks: ' + beIsoDate(run.period.from) + ' to ' + beIsoDate(run.period.to), null, null, null);
+  beRow(rows, null, 'Operating costs', fmt(run.opex.total / run.period.weeks) + ' a week', run.opex.total, 'Every expense account except wages, owner wages, Distribution of profit and Depreciation.');
+  beRow(rows, null, 'Staff wages + super', fmt(run.wages.staff / run.period.weeks) + ' a week', run.wages.staff, 'The 52 pay runs in the period.');
+  beRow(rows, null, 'Owner wages', fmt(run.wages.owner / run.period.weeks) + ' a week', run.wages.owner, run.wages.distributionExcluded ? ('Distribution of profit (' + fmt(run.wages.distributionExcluded) + ') is not counted.') : 'Distribution of profit is not counted.');
+  beRow(rows, null, 'Loan / ATO / card repayments', fmt(run.repayments.monthly) + ' a month', run.repayments.annual, run.repayments.annual ? null : 'None entered.');
+  beRow(rows, 'cs-sub', 'Fixed costs for the year', fmt(run.fixed.perWeek) + ' a week', run.fixed.annual, null);
+  beRow(rows, null, 'Cost of goods (food + bev together)', (run.cogsPct * 100).toFixed(2) + '% of sales', run.cogs, 'Of ' + fmt(run.revenue) + ' revenue.');
+  beRow(rows, 'cs-sub', 'Break-even sales for the year', null, run.bep.annual, 'Fixed costs ÷ (1 − cost of goods %).');
+  beRow(rows, null, 'Per month', null, run.bep.monthly, null);
+  beRow(rows, 'cs-total', 'Break-even per WEEK', null, run.bep.weekly, 'The least to sell each week to cover every cost.');
+  var share = run.inputs && run.inputs.weekdaySharePct != null ? run.inputs.weekdaySharePct : 50;
+  beRow(rows, null, 'Each weekday (Mon-Fri)', share + '% of the week', run.bep.weekdayEach, 'Five days share ' + share + '% of the week’s trade.');
+  beRow(rows, null, 'Each Saturday and Sunday', (100 - share) + '% of the week', run.bep.weekendDayEach, 'Two days share ' + (100 - share) + '% of the week’s trade.');
+  var above = run.aboveBreakeven;
+  beRow(rows, 'cs-sub', 'Your average week over these 52 weeks', null, run.avgWeeklyRevenue, above >= 0 ? ('That is ' + fmt(above) + ' a week ABOVE break-even.') : ('That is ' + fmt(-above) + ' a week BELOW break-even.'));
+  card.appendChild(rows);
+  root.appendChild(card);
+
+  var lineBtn = el('button', 'btn-plain', state.breakeven.showLines ? 'Hide operating costs by account' : 'See operating costs by account');
+  lineBtn.style.margin = '10px 0';
+  lineBtn.onclick = function () { state.breakeven.showLines = !state.breakeven.showLines; render(); };
+  root.appendChild(lineBtn);
+  if (state.breakeven.showLines) {
+    var lc = el('div', 'cs-ledger-card');
+    var lrows = el('div');
+    run.opex.lines.slice().sort(function (a, b2) { return b2.value - a.value; }).forEach(function (l) {
+      beRow(lrows, null, l.label, fmt(l.value / run.period.weeks) + ' a week', l.value, null);
+    });
+    lc.appendChild(lrows);
+    root.appendChild(lc);
+  }
+}
+function renderBreakeven(root) {
+  var b = state.breakeven;
+  root.appendChild(el('div', 'screen-title', 'Break-even'));
+  root.appendChild(el('p', 'screen-sub', 'The least you need to sell each week to cover every cost. Press Run Breakeven to work it out from the last 52 completed weeks in Xero.'));
+  if (b.error) root.appendChild(el('div', 'banner banner-coral', esc(b.error)));
+  if (b.runs == null && !b.loading) fetchBreakevenRuns();
+
+  /* what Xero can't tell it */
+  if (!SETTINGS.breakeven) SETTINGS.breakeven = defaultSettings().breakeven;
+  var be = SETTINGS.breakeven;
+  var inCard = el('div', 'cs-rates-card');
+  inCard.appendChild(el('div', 'cs-rates-head', 'What Xero can’t tell it'));
+  inCard.appendChild(el('div', 'cs-rates-sub', 'Everything else - operating costs, wages, owner wages and cost of goods - comes straight from Xero when you press the button. Leave repayments at $0 when you have none; they’re counted ×12 as a yearly cost.'));
+  var grid = el('div', 'cs-rate-grid');
+  (be.repayments || []).forEach(function (rp, i) {
+    var cell = el('div', 'set-cell cs-rate-cell');
+    cell.appendChild(el('div', 'set-label', esc(rp.label) + ' - per month ($)'));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.min = '0';
+    inp.value = rp.monthly || 0;
+    inp.onchange = function () { rp.monthly = Math.max(parseFloat(inp.value) || 0, 0); saveSettings(); };
+    cell.appendChild(inp);
+    grid.appendChild(cell);
+  });
+  var shareCell = el('div', 'set-cell cs-rate-cell');
+  shareCell.appendChild(el('div', 'set-label', 'Share of the week’s trade on Mon-Fri (%)'));
+  var shareInp = document.createElement('input'); shareInp.type = 'number'; shareInp.step = 'any'; shareInp.min = '0'; shareInp.max = '100';
+  shareInp.value = be.weekdaySharePct != null ? be.weekdaySharePct : 50;
+  shareInp.onchange = function () { var v = parseFloat(shareInp.value); be.weekdaySharePct = isFinite(v) ? Math.min(Math.max(v, 0), 100) : 50; saveSettings(); render(); };
+  shareCell.appendChild(shareInp);
+  shareCell.appendChild(el('div', 'set-note', 'The rest is Sat-Sun. 50 means half and half.'));
+  grid.appendChild(shareCell);
+  inCard.appendChild(grid);
+  var runBtn = el('button', 'btn-primary-dash', b.running ? 'Running… (reading 52 weeks from Xero)' : 'Run Breakeven');
+  runBtn.style.marginTop = '12px';
+  runBtn.disabled = b.running;
+  runBtn.onclick = function () { runBreakeven(); };
+  inCard.appendChild(runBtn);
+  root.appendChild(inCard);
+
+  if (b.loading && (b.runs == null)) { root.appendChild(el('div', 'cs-empty', 'Loading past runs…')); return; }
+  var runs = b.runs || [];
+  if (!runs.length) {
+    root.appendChild(el('div', 'cs-empty', 'No runs yet. Press Run Breakeven to see your break-even.'));
+    return;
+  }
+  var open = runs[0];
+  runs.forEach(function (r) { if (r.id === b.openId) open = r; });
+  renderBreakevenRun(root, open);
+
+  /* the change from run to run */
+  root.appendChild(el('div', 'section-sub', 'Every run, newest first'));
+  var hist = el('div', 'cs-ledger-card');
+  var hrows = el('div');
+  runs.forEach(function (r, i) {
+    var older = runs[i + 1];
+    var change = '';
+    if (older) {
+      var diff = r.bep.weekly - older.bep.weekly;
+      change = Math.abs(diff) < 0.005 ? 'no change' : ('<span class="' + (diff > 0 ? 'bad' : 'good') + '">' + (diff > 0 ? '▲ ' : '▼ ') + esc(fmtMoney(Math.abs(diff), true)) + ' a week</span>');
+    } else {
+      change = 'first run';
+    }
+    var rw = el('div', 'cs-row' + (r.id === open.id ? ' cs-sub' : ''));
+    rw.appendChild(el('span', 'cs-name', esc(beDate(r.ranAt)) + ' <span class="cs-tag">cost of goods ' + (r.cogsPct * 100).toFixed(2) + '%</span>'));
+    rw.appendChild(el('span', 'cs-amt', esc(fmtMoney(r.bep.weekly, true)) + ' a week'));
+    rw.appendChild(el('span', 'cs-note', change + ' · fixed costs ' + esc(fmtMoney(r.fixed.perWeek, true)) + ' a week'));
+    rw.style.cursor = 'pointer';
+    rw.onclick = function () { b.openId = r.id; render(); window.scrollTo(0, 0); };
+    hrows.appendChild(rw);
+  });
+  hist.appendChild(hrows);
+  root.appendChild(hist);
+  root.appendChild(el('p', 'set-note', 'Click a past run to see its full breakdown. A higher break-even is shown in red, a lower one in green.'));
 }
 
 /* ============================================================
@@ -4249,6 +4446,7 @@ function renderSettings(root) {
    Boot
 ============================================================ */
 state.period = SETTINGS.defaultPeriod || 'thisWeek';
+if (BE_BETA && location.hash === '#breakeven' && !isManual()) state.view = 'breakeven';
 render();
 fetchData();
 syncSettingsFromServer();
